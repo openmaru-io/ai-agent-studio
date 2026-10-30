@@ -1,0 +1,52 @@
+/*
+ * Copyright 2026 OPENMARU, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+// 채널·게이트웨이 화면 (screens/Channels.tsx)
+export default {
+  'channels.title': '메신저 연결',
+  // 「게이트웨이」 열·줄 머리 옆에만 쓰여 상태만 적는다
+  'channels.gatewayUp': '실행 중',
+  'channels.gatewayDisabled': '사용하지 않음',
+  'channels.gatewayDown': '중지됨',
+  'channels.gatewayUnknown': '알 수 없음',
+  'channels.stale': '이전 기록',
+  'channels.connectedWarn': '연결됨 · 주의',
+  'channels.connected': '연결됨',
+  'channels.servicesUnknown': 'AI 에이전트 작업공간 컨테이너의 서비스 상태를 읽지 못해 메신저 연결(게이트웨이) 동작 여부는 상태 파일로만 판단했습니다.',
+  'channels.sub': '읽기 전용 · 토큰 값은 읽지 않습니다',
+  'channels.connectedChannels': '연결된 채널',
+  'channels.connectedChannelsSub': '텔레그램·슬랙 등',
+  'channels.needsAttention': '주의 채널',
+  'channels.needsAttentionSub': '재시도 기록 등',
+  'channels.review': '확인할 것',
+  'channels.reviewEmpty': '확인할 것이 없습니다.',
+  'channels.all': '전체',
+  'channels.cardAllSub': '게이트웨이 실행 {up}/{total}',
+  'channels.cardReviewSub': '작업 멈춘 게이트웨이 {n}',
+  'channels.moreIssues': ' 외 {count}건',
+  'channels.noIssues': '이상 없음',
+  'channels.profileGatewayChannels': '프로파일의 게이트웨이와 채널',
+  'channels.notFound': '프로파일 {id} 을(를) 찾지 못했습니다. 지워졌거나 이름이 바뀌었을 수 있습니다.',
+  'channels.gateway': '게이트웨이',
+  'channels.serviceStatus': '서비스 상태',
+  'channels.unknown': '알 수 없음',
+  'channels.activeCronLabel': '활성 예약 작업',
+  'channels.jobsStopped': ', 게이트웨이가 중지되어 있어 실행되지 않습니다',
+  'channels.channelsTitle': '채널',
+  'channels.updatedAt': ' 갱신 {time}',
+  'channels.noChannels': '연결된 채널이 없습니다',
+  'channels.connectMessenger': '메신저 연결하기',
+  'channels.pickProfileTitle': '메신저를 연결할 프로파일',
+  'channels.pickProfileSub': '고른 프로파일의 채널 탭에서 연결 대화 상자가 열립니다',
+  'channels.seeNext': '관련 항목',
+  'channels.profileSettings': '{name} 프로파일 설정',
+  'channels.connect': '{name} 채널 연결',
+  'channels.profileCron': '{name} 의 예약 작업',
+  'channels.profileCredentials': '{name} 의 API 키·토큰',
+  'channels.profileChat': '{name} 대화 열기',
+  'channels.jobsCount_one': '{count}개',
+  'channels.jobsCount_other': '{count}개',
+  'channels.grid.profile': '프로파일',
+} as Record<string, string>;

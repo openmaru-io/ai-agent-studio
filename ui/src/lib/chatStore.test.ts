@@ -1,0 +1,610 @@
+/*
+ * Copyright 2026 OPENMARU, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { ChatStore, groupLabel, PRIMARY, rowTitle, singleProfile, targetTitle } from './chatStore';
+
+class FakeES {
+  static all: FakeES[] = [];
+  onmessage: ((m: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+  constructor(public url: string) {
+    FakeES.all.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+  seq = 0;
+  emit(type: string, payload: Record<string, unknown> = {}) {
+    this.onmessage?.({ data: JSON.stringify({ type, payload }), lastEventId: String(++this.seq) } as { data: string });
+  }
+}
+
+const STATUS = {
+  configured: true,
+  agents: [{ name: 'ma', title: '마' }, { name: 'ops' }],
+  sessions: [],
+};
+
+function api(over: Record<string, unknown | ((body: Record<string, unknown>) => unknown)> = {}) {
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  const fn = vi.fn((url: string, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    calls.push({ url, body });
+    const key = Object.keys({
+      '/api/chat/status': 1,
+      '/api/chat/history': 1,
+      '/api/chat/resume': 1,
+      '/api/chat/session': 1,
+      '/api/chat/send': 1,
+      '/api/chat/interrupt': 1,
+      '/api/chat/approval': 1,
+      '/api/chat/clarify': 1,
+    }).find((k) => url.startsWith(k));
+    const base: Record<string, unknown> = {
+      '/api/chat/status': STATUS,
+      '/api/chat/history': { sessions: [] },
+      '/api/chat/session': { session_id: 's-new', profile: body.profile, title: '' },
+      '/api/chat/resume': { session_id: 's-old', profile: body.profile, title: '지난' },
+      '/api/chat/send': { ok: true },
+      '/api/chat/interrupt': { ok: true },
+      '/api/chat/approval': { ok: true },
+      '/api/chat/clarify': { ok: true },
+      ...over,
+    };
+    const v = key ? base[key] : undefined;
+    const out = typeof v === 'function' ? (v as (b: Record<string, unknown>) => unknown)(body) : v;
+    if (out instanceof Response) return Promise.resolve(out);
+    if (out instanceof Error)
+      return Promise.resolve(new Response(JSON.stringify({ error: out.message }), { status: 400 }));
+    return Promise.resolve(new Response(JSON.stringify(out ?? {}), { status: 200 }));
+  });
+  vi.stubGlobal('fetch', fn);
+  return {
+    fn,
+    calls,
+    posted: (path: string) =>
+      calls.filter((c) => c.url.startsWith(path) && Object.keys(c.body).length).map((c) => c.body),
+  };
+}
+
+beforeEach(() => {
+  FakeES.all = [];
+  vi.stubGlobal('EventSource', FakeES);
+});
+afterEach(() => vi.unstubAllGlobals());
+
+describe('ChatStore', () => {
+  it('상태를 받아 에이전트 목록을 채운다. 설정이 없으면 안내용 상태를 둔다', async () => {
+    api();
+    const s = new ChatStore();
+    await s.preload();
+    expect(s.status?.agents.map((a) => a.name)).toEqual(['ma', 'ops']);
+    api({ '/api/chat/status': new Error('로그인 정보 없음') });
+    const t = new ChatStore();
+    await t.preload();
+    expect(t.status).toMatchObject({ configured: false, error: '로그인 정보 없음', agents: [] });
+  });
+
+  it('에이전트를 열면 지난 AAS 대화를 이어 붙인다(resume)', async () => {
+    const a = api({
+      '/api/chat/history': {
+        sessions: [
+          { id: 'old1', source: 'cron' },
+          { id: 'old2', source: 'aas' },
+        ],
+      },
+    });
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ma', stored_id: 'old2' }]);
+    expect(s.current()?.id).toBe('s-old');
+    expect(FakeES.all[0].url).toBe('/api/chat/events?session_id=s-old');
+  });
+
+  it('지난 AAS 대화가 없으면 대화 없이 비워 둔다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    expect(s.profile).toBe('ma');
+    expect(s.current()).toBeNull();
+    expect(a.posted('/api/chat/resume')).toEqual([]);
+  });
+
+  it('보내기: 대화가 없으면 새로 시작하고 글을 보낸다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('안녕');
+    expect(a.posted('/api/chat/session')).toEqual([{ profile: 'ma' }]);
+    expect(a.posted('/api/chat/send')).toEqual([{ session_id: 's-new', text: '안녕' }]);
+  });
+
+  it('답하는 중에는 보내지 못한다. 빈 글도 보내지 않는다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('첫');
+    FakeES.all[0].emit('aas.user', { text: '첫' });
+    expect(s.current()?.busy).toBe(true);
+    expect(await s.send('둘')).toBe('busy');
+    expect(await s.send('   ')).toBe('empty');
+    expect(a.posted('/api/chat/send')).toHaveLength(1);
+  });
+
+  it('보내기가 실패하면 다시 보내기 글이 달린 오류 줄을 남기고 busy 를 푼다', async () => {
+    api({ '/api/chat/send': new Error('연결 거부') });
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('안녕');
+    const last = s.current()!.items.at(-1)!;
+    expect(last).toMatchObject({ kind: 'error', retry: '안녕' });
+    expect(last.text).toContain('보내지 못했습니다: 연결 거부');
+    expect(s.current()!.busy).toBe(false);
+  });
+
+  it('이벤트가 들어오면 현재 대화를 갱신하고 구독자에게 알린다', async () => {
+    api();
+    const s = new ChatStore();
+    const seen = vi.fn();
+    s.subscribe(seen);
+    await s.openAgent('ma');
+    await s.send('안녕');
+    seen.mockClear();
+    FakeES.all[0].emit('message.delta', { text: '반' });
+    FakeES.all[0].emit('message.delta', { text: '가워' });
+    expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'assistant', text: '반가워' });
+    expect(seen).toHaveBeenCalled();
+  });
+
+  it('다른 에이전트의 대화에서 온 완료·요청 이벤트는 안 읽은 수로 센다. 승인 대기 수도 센다', async () => {
+    api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('a');
+    await s.openAgent('ops');
+    const es = FakeES.all[0];
+    es.emit('message.complete', { text: '완료' });
+    es.emit('approval.request', { request_id: 'r' });
+    expect(s.sessionOf('ma')!.unread).toBe(2);
+    expect(s.waiting()).toBe(1);
+    await s.openAgent('ma');
+    expect(s.sessionOf('ma')!.unread).toBe(0);
+  });
+
+  it('새 대화는 지금 대화를 놓고 새 세션을 연다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('a');
+    await s.newChat();
+    expect(a.posted('/api/chat/session')).toHaveLength(2);
+  });
+
+  it('중단·승인·되묻기 답은 현재 세션 id 와 함께 보낸다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('a');
+    await s.interrupt();
+    await s.approve('once', 'r1');
+    await s.clarify('rq', 'qid', '답');
+    expect(a.posted('/api/chat/interrupt')).toEqual([{ session_id: 's-new' }]);
+    expect(a.posted('/api/chat/approval')).toEqual([{ session_id: 's-new', choice: 'once', request_id: 'r1' }]);
+    expect(a.posted('/api/chat/clarify')).toEqual([
+      { session_id: 's-new', request_id: 'rq', question_id: 'qid', answer: '답' },
+    ]);
+  });
+
+  it('지난 대화를 골라 이어 쓴다', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.resume('stored-9');
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ma', stored_id: 'stored-9' }]);
+    expect(s.current()?.id).toBe('s-old');
+  });
+
+  it('fillDraft: 지금 대화의 입력창 초안만 채운다(새 세션도 보내기도 없다)', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    const seen = vi.fn();
+    s.subscribe?.(seen);
+    s.fillDraft('이 파일을 열어 줘');
+    expect(s.draft).toBe('이 파일을 열어 줘');
+    expect(a.posted('/api/chat/session')).toEqual([]);
+    expect(a.posted('/api/chat/send')).toEqual([]);
+  });
+
+  it('ask: 새 대화를 열고 초안을 채운다(보내지는 않는다)', async () => {
+    const a = api();
+    const s = new ChatStore();
+    await s.ask('ma', '이 스킬을 설명해 줘');
+    expect(s.profile).toBe('ma');
+    expect(s.draft).toBe('이 스킬을 설명해 줘');
+    expect(a.posted('/api/chat/session')).toEqual([{ profile: 'ma' }]);
+    expect(a.posted('/api/chat/send')).toEqual([]);
+  });
+
+  it('ask: 주 에이전트를 쓰는 POD 는 루트(default)가 없으므로 default 를 주 에이전트로 바꿔 연다(2026-10-15, 「없는 프로파일」)', async () => {
+    const a = api({ '/api/chat/status': { ...STATUS, agents: [{ name: 'main' }], primary: 'main' } });
+    const s = new ChatStore();
+    await s.ask('default', '이 스킬을 설명해 줘');
+    expect(s.profile).toBe('main');
+    expect(a.posted('/api/chat/session')).toEqual([{ profile: 'main' }]);
+    await s.openAgent('default');
+    expect(s.profile).toBe('main');
+    expect(a.calls.some((c) => c.url.includes('profile=default'))).toBe(false);
+  });
+
+  it('ask: 루트가 있는 POD 의 default 는 그대로 두고, 아는 이름이 아니어도 default 가 아니면 바꾸지 않는다', async () => {
+    const a = api({ '/api/chat/status': { ...STATUS, agents: [{ name: 'default' }, { name: 'ma' }], primary: 'default' } });
+    const s = new ChatStore();
+    await s.ask('default', 'x');
+    expect(a.posted('/api/chat/session')).toEqual([{ profile: 'default' }]);
+    await s.ask('ghost', 'y');
+    expect(s.profile).toBe('ghost');
+  });
+
+  it('ask: 앞선 실패의 안내는 새 대화를 열 때 지운다(성공했는데도 옛 「없는 프로파일」이 남아 보이던 문제)', async () => {
+    api();
+    const s = new ChatStore();
+    await s.preload();
+    s.notice = '없는 프로파일';
+    await s.ask('ma', '설명해 줘');
+    expect(s.notice).toBe('');
+    expect(s.current()?.id).toBe('s-new');
+  });
+
+  // ---- 연결이 끊긴 대화를 저절로 다시 연다(스펙 2026-10-20-030). 여기는 SSE 경로 — 웹소켓 경로는 chatStore.fallback.test.ts ----
+  /** 대화 하나를 SSE 로 열고 저장 대화 id(session.title)와 반쯤 받은 답을 넣어 둔다 */
+  async function opened(over: Parameters<typeof api>[0] = {}) {
+    const a = api({ '/api/chat/resume': (b: Record<string, unknown>) => ({ session_id: 's-new', profile: b.profile, reused: false, history: true }), ...over });
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('a');
+    const es = FakeES.all[0];
+    es.emit('session.title', { session_id: 'st-1', title: 'a' });
+    es.emit('aas.user', { text: 'a' });
+    es.emit('message.delta', { text: '반쯤' });
+    return { a, s, es };
+  }
+
+  it('SSE 가 끊기면 브라우저 재시도에 맡기지 않고 끊긴 그 대화를 resume 해 목록에 기록 끝부분만 합친다', async () => {
+    const { a, s, es } = await opened();
+    es.onerror?.();
+    expect(es.closed).toBe(true);
+    await vi.waitFor(() => expect(FakeES.all).toHaveLength(2));
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ma', stored_id: 'st-1' }]);
+    expect(FakeES.all[1].url).toBe('/api/chat/events?session_id=s-new'); // 기록을 다시 보내므로 처음부터
+    const S = s.current()!;
+    expect(S.closed).toBe(false);
+    expect(S.reconnect).toBeUndefined();
+    FakeES.all[1].emit('aas.history', { messages: [{ role: 'user', text: 'a' }, { role: 'assistant', text: '끝난 답' }] });
+    expect(S.items.map((i) => [i.kind, i.text])).toEqual([['user', 'a'], ['assistant', '끝난 답']]); // 「지난 대화」 구분선 없음(RD1)
+    expect(s.announce).toBe('대화를 다시 열었습니다');
+  });
+
+  it('서버가 503 이면 1·2초… 간격을 늘려 다시 열고, 그동안 보내기·승인 답하기를 막는다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    let n = 0;
+    const { a, s, es } = await opened({
+      '/api/chat/resume': () => (++n < 3 ? new Response('{}', { status: 503 }) : { session_id: 's-new', profile: 'ma', reused: true, history: false }),
+    });
+    try {
+      es.onerror?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(n).toBe(1);
+      const S = s.current()!;
+      expect(s.reconnectView(S)).toMatchObject({ mode: 'reopen' });
+      expect(await s.send('보내지 마')).toBe('reconnecting');
+      await s.interrupt();
+      expect(a.posted('/api/chat/send')).toHaveLength(1);
+      expect(a.posted('/api/chat/interrupt')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(n).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(n).toBe(2);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(n).toBe(3);
+      expect(S.closed).toBe(false);
+      expect(FakeES.all.at(-1)!.url).toContain('after='); // 같은 서버 — 받던 번호 뒤부터
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('5분이 넘으면 「다시 열지 못했습니다」 줄과 「다시 열기」로 내리고, 누르면 한도를 새로 시작한다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    let n = 0;
+    const { s, es } = await opened({ '/api/chat/resume': () => (++n, new Response('{}', { status: 503 })) });
+    try {
+      es.onerror?.();
+      await vi.advanceTimersByTimeAsync(6 * 60000);
+      const S = s.current()!;
+      expect(S.reconnect).toBeUndefined();
+      expect(S.items.at(-1)).toMatchObject({ kind: 'error', text: '이 대화를 다시 열지 못했습니다.', reopen: true });
+      expect(n).toBeLessThanOrEqual(12);
+      const before = n;
+      await s.reopen();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(n).toBe(before + 1);
+      expect(S.reconnect).toMatchObject({ tries: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Hermes 에서 대화를 찾지 못하면(404) 바로 「새 대화」 줄로 내린다', async () => {
+    const { a, s, es } = await opened({ '/api/chat/resume': () => new Response(JSON.stringify({ error: 'x', code: 'not_found' }), { status: 404 }) });
+    es.onerror?.();
+    await vi.waitFor(() => expect(s.current()!.reconnect).toBeUndefined());
+    expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'error', newChat: true });
+    expect(a.posted('/api/chat/resume')).toHaveLength(1);
+  });
+
+  it('Hermes 대시보드가 끊겼다는 이벤트를 받으면 기다리지 않고 resume 한다(D6)', async () => {
+    const { a, es } = await opened({ '/api/chat/resume': () => ({ session_id: 's-new', profile: 'ma', reused: false, history: false }) });
+    es.emit('aas.disconnected', { code: 'hub_disconnected', text: 'x' });
+    await vi.waitFor(() => expect(a.posted('/api/chat/resume')).toHaveLength(1));
+    expect(a.calls.filter((c) => c.url.startsWith('/api/chat/status')).length).toBe(1); // 처음 목록 읽기뿐
+    await vi.waitFor(() => expect(FakeES.all).toHaveLength(2));
+    expect(FakeES.all[1].url).toContain('after='); // 같은 서버 프로세스라 기록을 다시 보내지 않는다
+  });
+
+  it('다른 아이디로 다시 열리면 지금 대화·목록을 새 아이디로 옮긴다', async () => {
+    const { s, es } = await opened({ '/api/chat/resume': () => ({ session_id: 's-other', profile: 'ma', reused: false, history: true }) });
+    es.onerror?.();
+    await vi.waitFor(() => expect(s.current()?.id).toBe('s-other'));
+    expect(s.sessionOf('ma')?.id).toBe('s-other');
+    expect(s.current()!.items.map((i) => i.text)).toEqual(['a', '반쯤']);
+  });
+
+  it('다시 여는 중에 사람이 새 대화를 열면 그 대화는 그만둔다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const { a, s, es } = await opened({ '/api/chat/resume': () => new Response('{}', { status: 503 }) });
+      es.onerror?.();
+      await vi.advanceTimersByTimeAsync(0);
+      const old = s.current()!;
+      await s.newChat();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(old.reconnect).toBeUndefined();
+      expect(a.posted('/api/chat/resume')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 대시보드가 새로고침 없이 에이전트를 바꾼 뒤 채팅이 옛 에이전트의 main 을 보여 「없는 프로파일」이 나던 문제(2026-10-19-001 R1)
+  it('podChanged: 에이전트를 바꾸면 목록을 다시 읽고, 이름만 넘긴 열기는 새 지금 에이전트에서 연다', async () => {
+    let pod = 'a';
+    const a = api({
+      '/api/chat/status': () =>
+        pod === 'a'
+          ? { configured: true, pod: 'a', primary: 'main', agents: [{ name: 'main' }], sessions: [] }
+          : { configured: true, pod: 'b', primary: 'default', agents: [{ name: 'default' }], sessions: [] },
+    });
+    const s = new ChatStore();
+    await s.openAgent('main');
+    expect(s.profile).toBe('main');
+    pod = 'b';
+    s.podChanged();
+    expect(s.status).toBeNull();
+    await s.preload();
+    expect(s.status!.agents.map((x) => x.name)).toEqual(['default']);
+    // 화면에 남아 있던 옛 이름으로 열어도 새 에이전트에 없는 이름이면 서버에 묻지 않고 주 에이전트를 연다
+    a.calls.length = 0;
+    await s.openAgent('main');
+    expect(s.profile).toBe('default');
+    expect(a.calls.some((c) => c.url.includes('profile=main'))).toBe(false);
+  });
+
+  it('podChanged: 바꾸기 전에 나간 옛 상태 요청의 응답은 버린다', async () => {
+    let release: (v: Response) => void = () => {};
+    let first = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        if (first) {
+          first = false;
+          return new Promise<Response>((r) => (release = r));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ configured: true, pod: 'b', agents: [{ name: 'default' }] }), { status: 200 }));
+      })
+    );
+    const s = new ChatStore();
+    const old = s.preload();
+    s.podChanged();
+    await s.preload();
+    release(new Response(JSON.stringify({ configured: true, pod: 'a', agents: [{ name: 'main' }] }), { status: 200 }));
+    await old;
+    expect(s.status!.pod).toBe('b');
+  });
+
+  // 2026-10-19-001 R2: 채팅에 내 에이전트를 모두 보인다. 에이전트마다 main 이 있어 이름만으로는 대화가 섞였다(발견 1·2)
+  describe('여러 에이전트', () => {
+    const GROUPS = {
+      pod: 'a',
+      groups: [
+        { pod: 'a', current: true, configured: true, name: '관리자 AAS', primary: 'main', agents: [{ name: 'main' }], sessions: [] },
+        { pod: 'b', configured: true, name: '마케팅 도우미', primary: 'main', agents: [{ name: 'main' }], sessions: [] },
+      ],
+    };
+
+    it('두 에이전트의 main 은 따로 열리고, 요청·이벤트 주소에 대화의 에이전트가 실린다', async () => {
+      const a = api({
+        '/api/chat/status': GROUPS,
+        '/api/chat/session': (b: Record<string, unknown>) => ({ session_id: `s-${b.pod}`, profile: b.profile, title: '' }),
+      });
+      const s = new ChatStore();
+      await s.openAgent('main', 'a');
+      await s.send('안녕');
+      await s.openAgent('main', 'b');
+      expect(s.currentId).toBeNull(); // a 의 대화를 b 의 main 으로 열지 않는다
+      await s.send('반가워');
+      expect(a.posted('/api/chat/session')).toEqual([{ profile: 'main', pod: 'a' }, { profile: 'main', pod: 'b' }]);
+      expect(a.posted('/api/chat/send')).toEqual([
+        { session_id: 's-a', text: '안녕', pod: 'a' },
+        { session_id: 's-b', text: '반가워', pod: 'b' },
+      ]);
+      expect(FakeES.all.map((e) => e.url)).toEqual([
+        '/api/chat/events?session_id=s-a&pod=a',
+        '/api/chat/events?session_id=s-b&pod=b',
+      ]);
+      expect(a.calls.some((c) => c.url === '/api/chat/history?profile=main&pod=b')).toBe(true);
+      await s.openAgent('main', 'a');
+      expect(s.currentId).toBe('s-a'); // 다시 고르면 a 의 대화가 그대로 있다
+      await s.interrupt();
+      expect(a.posted('/api/chat/interrupt')).toEqual([{ session_id: 's-a', pod: 'a' }]);
+    });
+
+    it('이름만 넘긴 열기(링크·팝업)는 지금 에이전트에서 연다. PRIMARY 는 채팅 기본 → 주 프로파일', async () => {
+      api({
+        '/api/chat/status': {
+          pod: 'b',
+          groups: [
+            { pod: 'b', current: true, configured: true, primary: 'main', chat_default: 'ops', agents: [{ name: 'main' }, { name: 'ops' }], sessions: [] },
+            { pod: 'a', configured: true, primary: 'main', agents: [{ name: 'main' }], sessions: [] },
+          ],
+        },
+      });
+      const s = new ChatStore();
+      await s.openAgent(PRIMARY);
+      expect([s.status?.pod, s.profile]).toEqual(['b', 'ops']);
+    });
+
+    it('목록에서 진짜 루트 default 를 누르면 주 에이전트로 바꾸지 않는다', async () => {
+      api({
+        '/api/chat/status': { pod: 'a', groups: [{ pod: 'a', current: true, configured: true, primary: 'main', agents: [{ name: 'default' }, { name: 'main' }], sessions: [] }] },
+      });
+      const s = new ChatStore();
+      await s.openAgent('default', 'a');
+      expect(s.profile).toBe('default');
+    });
+
+    // 대시보드에서 바꾼 뒤 다시 읽으면 고른 묶음을 잊어, 대화는 b 의 것인데 머리는 a 로 나왔다(2026-10-19 OKE 시험)
+    it('지금 에이전트가 바뀌어 다시 읽어도 대화 중이던 에이전트의 묶음을 그대로 고른다', async () => {
+      let cur = 'a';
+      api({ '/api/chat/status': () => ({ pod: cur, groups: GROUPS.groups.map((g) => ({ ...g, current: g.pod === cur })) }) });
+      const s = new ChatStore();
+      await s.openAgent('main', 'b');
+      cur = 'b';
+      s.podChanged();
+      await s.preload();
+      expect(s.status?.pod).toBe('b');
+      expect(s.currentPod).toBe('b');
+      cur = 'a';
+      s.podChanged();
+      await s.preload();
+      expect(s.status?.pod).toBe('b'); // 지금 에이전트(a)로 바뀌어도 대화 중이던 b 를 고른 채로 둔다
+    });
+
+    it('다른 에이전트의 프로파일로 옮기면 첨부를 비운다(OMAI-1153 D6·D13)', async () => {
+      api({ '/api/chat/status': { ...GROUPS, groups: GROUPS.groups.map((g) => ({ ...g, files: true })) } });
+      const s = new ChatStore();
+      await s.openAgent('main', 'a');
+      s.addFiles([], [{ name: 'x.bin', code: 'type' }]);
+      expect(s.uploads).toHaveLength(1);
+      await s.openAgent('main', 'a');
+      expect(s.uploads).toHaveLength(1); // 같은 에이전트면 남는다
+      await s.openAgent('main', 'b');
+      expect(s.uploads).toHaveLength(0);
+    });
+  });
+});
+
+// 2026-10-19-013: 프로파일이 하나뿐인 에이전트는 에이전트 이름만 보인다
+describe('채팅 이름 규칙', () => {
+  const g = (over: object = {}) => ({ configured: true, pod: 'aas-agent-x-1a2b', name: '관리자 AAS', primary: 'main', state: 'ok' as const, primary_ready: true, agents: [{ name: 'main' }], ...over });
+  const main = { name: 'main' };
+  const sales = { name: 'sales', title: '영업' };
+
+  it('정상이고 프로파일이 1개일 때만 하나로 본다(R1·DD3)', () => {
+    expect(singleProfile(g())).toBe(true);
+    expect(singleProfile(g({ state: undefined }))).toBe(true);
+    expect(singleProfile(g({ agents: [main, sales] }))).toBe(false);
+    expect(singleProfile(g({ agents: [] }))).toBe(false);
+    expect(singleProfile(g({ state: 'starting' }))).toBe(false);
+    expect(singleProfile(g({ state: 'error' }))).toBe(false);
+    expect(singleProfile(g({ primary_ready: false }))).toBe(false); // main 을 만드는 중(옛 POD 의 default 하나) — 대상이 바뀔 수 있다
+    expect(singleProfile(null)).toBe(false);
+  });
+
+  it('줄 제목: 1개면 에이전트 이름, 이름이 없거나 여럿이면 프로파일 제목 — id 는 쓰지 않는다(R2)', () => {
+    expect(rowTitle(g(), main)).toBe('관리자 AAS');
+    expect(rowTitle(g({ name: '' }), main)).toBe('main');
+    expect(rowTitle(g({ agents: [main, sales] }), sales)).toBe('영업');
+    expect(rowTitle(undefined, sales)).toBe('영업');
+  });
+
+  it('대상 제목: 1개면 에이전트 이름, 여럿이고 묶음이 여럿이면 「이름 / 프로파일」, 이름이 없으면 프로파일만(C5)', () => {
+    expect(targetTitle(g(), main, true)).toBe('관리자 AAS');
+    expect(targetTitle(g({ agents: [main, sales] }), sales, true)).toBe('관리자 AAS / 영업');
+    expect(targetTitle(g({ agents: [main, sales] }), sales, false)).toBe('영업');
+    expect(targetTitle(g({ agents: [main, sales], name: '' }), sales, true)).toBe('영업');
+  });
+
+  it('묶음 머리 이름은 id 대신 주 프로파일 이름, 그것도 없으면 「이름 없는 에이전트」(DD14)', () => {
+    expect(groupLabel(g())).toBe('관리자 AAS');
+    expect(groupLabel(g({ name: '' }))).toBe('main');
+    expect(groupLabel(g({ name: '', primary: '' }))).toBe('이름 없는 AI 에이전트 작업공간');
+  });
+});
+
+// 스펙 2026-10-28-014 §4-2: 채팅 링크(agent·pod·session·text)로 여는 길
+describe('ChatStore — 채팅 링크', () => {
+  const GROUPS = {
+    pod: 'a',
+    groups: [
+      { pod: 'a', current: true, configured: true, primary: 'main', agents: [{ name: 'main' }], sessions: [] },
+      { pod: 'b', configured: true, primary: 'main', agents: [{ name: 'main' }, { name: 'plan' }], sessions: [] },
+    ],
+  };
+
+  it('openStored: 가장 최근 대화가 있어도 링크의 대화만 그 묶음에서 잇는다(외부 검토 C1)', async () => {
+    const a = api({ '/api/chat/status': GROUPS, '/api/chat/history': { sessions: [{ id: 'recent', source: 'aas' }] } });
+    const s = new ChatStore();
+    expect(await s.openStored('plan', 'b', 'y')).toBe(true);
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'plan', stored_id: 'y', pod: 'b' }]);
+    expect(a.calls.some((c) => c.url.startsWith('/api/chat/history'))).toBe(false);
+    expect(s.status?.pod).toBe('b');
+    expect(s.current()?.storedId).toBe('y');
+    // 같은 대화가 열려 있으면 다시 묻지 않고 그것을 쓴다
+    await s.openAgent('main', 'a');
+    expect(await s.openStored('plan', 'b', 'y')).toBe(true);
+    expect(a.posted('/api/chat/resume').filter((b) => b.stored_id === 'y')).toHaveLength(1); // a 의 main 은 최근 대화(recent)를 이었다
+    expect(s.current()?.storedId).toBe('y');
+  });
+
+  it('openStored: 못 열면 거짓을 돌려주고 안내를 남긴다. 다른 대화를 대신 열지 않는다', async () => {
+    api({ '/api/chat/status': GROUPS, '/api/chat/resume': new Error('없는 대화') });
+    const s = new ChatStore();
+    expect(await s.openStored('plan', 'b', 'gone')).toBe(false);
+    expect(s.profile).toBe('plan');
+    expect(s.current()).toBeNull();
+    expect(s.opening).toBe('');
+    expect(s.notice).toBe('링크의 대화를 열지 못했습니다: 없는 대화');
+  });
+
+  it('ask: pod 를 넘기면 그 묶음에서 새 대화를 연다(외부 검토 H2). 없으면 지금 에이전트', async () => {
+    const a = api({ '/api/chat/status': GROUPS });
+    const s = new ChatStore();
+    await s.ask('plan', '설명해 줘', 'b');
+    expect(s.status?.pod).toBe('b');
+    expect(s.profile).toBe('plan');
+    expect(s.draft).toBe('설명해 줘');
+    await s.ask('main', '다시');
+    expect(a.posted('/api/chat/session')).toEqual([
+      { profile: 'plan', pod: 'b' },
+      { profile: 'main', pod: 'a' },
+    ]);
+  });
+});

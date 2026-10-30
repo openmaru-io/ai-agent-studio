@@ -1,0 +1,147 @@
+# Copyright 2026 The OPENMARU Authors.
+# AAS 빠른 시작: Hermes 1 + 읽기 사이드카 1 + AAS 서버 1. 이미 돌고 있는 Hermes 가 없어도 된다.
+#   cp .env.example .env      # 맨 위의 「필수」 칸을 채운다
+#   docker compose up -d      # 콘솔: http://127.0.0.1:17900 (.env 의 AAS_ADMIN_EMAIL·AAS_ADMIN_PASSWORD 로 로그인)
+# - Hermes 는 상류 공개 이미지(nousresearch/hermes-agent)다. 대시보드는 이미지 안 s6 서비스(HERMES_DASHBOARD=1),
+#   게이트웨이(크론·채널)는 CMD gateway run 으로 함께 뜬다.
+# - AAS 는 Hermes 폴더를 직접 붙이지 않는다. 읽기는 사이드카, 바꾸기와 대화는 Hermes 대시보드 API 로 간다(쿠버네티스와 같은 길).
+# - AAS·사이드카 이미지는 GHCR 에서 받는다. 받을 수 없으면 이 레포의 소스로 빌드한다(build:).
+# - 이미 돌고 있는 Hermes 에 붙이려면 docker-compose.attach.yml, Hermes 여러 개는 docker-compose.multi.yml.
+name: aas
+
+services:
+  hermes-seed:
+    image: busybox:1.36
+    # 설정 파일과 기본 프로파일 .env 의 LLM 값을 없을 때만 넣고 끝난다(hermes-seed.sh)
+    command: ["sh", "/seed/hermes-seed.sh", "/opt/data"]
+    environment:
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:?HERMES_LLM_BASE_URL 에 OpenAI 호환 주소(/v1 포함)를 적으세요. 예 http://host.docker.internal:11434/v1}
+      HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:?HERMES_LLM_MODEL 에 모델 이름을 적으세요}
+      HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+      # 시드 파일 주인(hermes-seed.sh 끝의 chown). 사내 패치 이미지는 처음부터 이 사용자로 돌아 root 소유 .env 를 읽지 못한다
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+    volumes:
+      - hermes-data:/opt/data
+      - ./hermes-config.seed.yaml:/seed/config.yaml:ro
+      - ./hermes-seed.sh:/seed/hermes-seed.sh:ro
+
+  hermes:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:v0.22.2}
+    restart: unless-stopped
+    depends_on:
+      hermes-seed: {condition: service_completed_successfully}
+    command: ["gateway", "run"]
+    environment:
+      # 상류 이미지는 --user 를 받지 않는다. 이 번호로 hermes 사용자를 바꾸고, 사이드카가 같은 번호로 읽는다(0600 파일)
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USER:-aas}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD:?HERMES_DASHBOARD_PASSWORD 를 .env 에 정하세요(Hermes 대시보드 비밀번호, AAS 만 쓴다)}
+      # 게이트웨이 하나가 모든 프로파일을 돌린다(쿠버네티스 오퍼레이터와 같은 값)
+      GATEWAY_MULTIPLEX_PROFILES: "true"
+      # 칸반 카드 실행처럼 별도 프로세스로 도는 일은 이 값을 바로 읽는다
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL}
+      HERMES_LLM_MODEL: ${HERMES_LLM_MODEL}
+      HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"         # 이 컴퓨터의 Ollama 같은 LLM 에 닿는 길
+    volumes:
+      - hermes-data:/opt/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9119), 3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  sidecar:
+    build:
+      context: ../../sidecar
+    image: ${AAS_SIDECAR_IMAGE:-ghcr.io/openmaru-io/cogentai-aas-sidecar:${AAS_VERSION:-latest}}
+    pull_policy: missing
+    restart: unless-stopped
+    # Hermes 와 같은 사용자로 읽는다. state.db·.env 는 소유자만 읽도록(0600) 만들어진다
+    user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
+    environment:
+      AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상, 예 openssl rand -hex 24)}"
+    volumes:
+      - hermes-data:/opt/data:ro
+    healthcheck:
+      test: ["CMD", "python", "-m", "aas_sidecar", "check"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  aas:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ${AAS_IMAGE:-ghcr.io/openmaru-io/cogentai-aas-server:${AAS_VERSION:-latest}}
+    pull_policy: missing
+    restart: unless-stopped
+    depends_on:
+      hermes: {condition: service_healthy}
+      sidecar: {condition: service_healthy}
+    ports:
+      - "${AAS_BIND:-127.0.0.1}:${AAS_PORT:-17900}:17900"
+    environment:
+      AAS_DATA_DIR: /data
+      AAS_CONFIG_DIR: /etc/aas
+      AAS_SIDECAR_URL: http://sidecar:17950
+      AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN}"
+      AAS_DASHBOARD_URL: http://hermes:9119
+      AAS_DASHBOARD_USER: ${HERMES_DASHBOARD_USER:-aas}
+      AAS_DASHBOARD_PASSWORD: ${HERMES_DASHBOARD_PASSWORD}
+      # 첫 관리자: 계정이 하나도 없을 때만 이 값으로 만든다. 그 뒤 비밀번호를 바꿔도 다시 덮지 않는다
+      AAS_ADMIN_EMAIL: ${AAS_ADMIN_EMAIL:?AAS_ADMIN_EMAIL 에 첫 관리자 이메일을 적으세요}
+      AAS_ADMIN_PASSWORD: ${AAS_ADMIN_PASSWORD:?AAS_ADMIN_PASSWORD 에 첫 관리자 비밀번호(10자 이상)를 적으세요}
+      AAS_ADMINS: ${AAS_ADMIN_EMAIL}
+      # 설치본 default(이 Hermes)의 주인. 첫 관리자의 「내 에이전트」로 보인다
+      AAS_DEFAULT_POD_OWNER: ${AAS_ADMIN_EMAIL}
+      AAS_ALLOWED_HOSTS: ${AAS_ALLOWED_HOSTS:-localhost:${AAS_PORT:-17900},127.0.0.1:${AAS_PORT:-17900}}
+      # 스킬 허브(마켓) 설치는 쿠버네티스 전용이다. 화면에 이유가 보인다
+      AAS_MARKET_INSTALL: "off"
+      AAS_SKILLHUB_URL: ""
+      # Docmost MCP 카탈로그 항목의 주소 미리 채우기(선택)
+      AAS_DOCMOST_MCP_URL: ${AAS_DOCMOST_MCP_URL:-}
+      # Outline MCP 카탈로그 항목의 주소 미리 채우기(선택)
+      AAS_OUTLINE_MCP_URL: ${AAS_OUTLINE_MCP_URL:-}
+      # 모델 화면·AI 보조도 Hermes 와 같은 LLM 을 쓴다. 쿠버네티스가 아니면 이 기본 주소에 /models·/chat/completions 를 붙인다
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL}
+      HERMES_LLM_MODEL: ${HERMES_LLM_MODEL}
+      HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+      # 모델 화면은 이름으로 거르지 않는다(운영 LiteLLM 의 cogentai-aas 접두어가 여기는 없다). AI 보조는 같은 모델을 쓴다(F2)
+      AAS_LITELLM_MODEL_PREFIX: ""
+      AAS_MARKET_TAG_MODEL: ${HERMES_LLM_MODEL}
+      AAS_SKILL_SUMMARY_MODEL: ${HERMES_LLM_MODEL}
+      AAS_SKILL_DESC_MODEL: ${HERMES_LLM_MODEL}
+      # AI 보조 호출의 생각 끄기(chat_template_kwargs, vLLM 확장). 모르는 인자를 거절하는 서버면 off
+      AAS_CHAT_TEMPLATE_KWARGS: ${AAS_CHAT_TEMPLATE_KWARGS:-on}
+      AAS_WS: ${AAS_WS:-on}
+      # 음성 입력. 비우면 마이크 단추가 없다. 적으면 그 모델 이름으로 각 프로파일에 stt 절을 한 번 넣는다
+      # (주소·키는 HERMES_LLM_*). OpenAI 형식 /v1/audio/transcriptions 를 주는 서버(LiteLLM 별칭 등)여야 한다.
+      # Groq 모델 이름(whisper-large-v3-turbo 등)은 Hermes 가 whisper-1 로 바꿔 부르므로 쓰지 않는다(.env.example)
+      AAS_STT_MODEL: ${AAS_STT_MODEL:-}
+      # 답 읽어 주기. 둘 다 있어야 켜진다. AAS 가 LiteLLM /v1/audio/speech 를 바로 부른다(주소·키는 HERMES_LLM_*).
+      # AAS_TTS_VOICES 는 목소리 목록 JSON(id·name·gender·sample). 깨진 값이면 꺼지고 기동 로그에 경고가 남는다(.env.example)
+      AAS_TTS_MODEL: ${AAS_TTS_MODEL:-}
+      AAS_TTS_VOICES: ${AAS_TTS_VOICES:-}
+      # https 리버스 프록시 뒤에서 X-Forwarded-Proto 를 믿을 연결(true 또는 CIDR). 비우면 믿지 않고 http 로 본다
+      AAS_TRUSTED_PROXY: ${AAS_TRUSTED_PROXY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - aas-data:/data
+      - aas-config:/etc/aas
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:17900/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  hermes-data:
+  aas-data:
+  aas-config:

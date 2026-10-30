@@ -1,0 +1,83 @@
+# Copyright 2026 The OPENMARU Authors.
+# AAS 붙기 구성: 이미 돌고 있는 Hermes 에 AAS 서버 1 + 읽기 사이드카 1 을 붙인다(옛 단일 compose).
+#   docker compose -f docker-compose.attach.yml up -d     (Hermes 까지 함께 띄우려면 docker-compose.yml)
+#   - Hermes 는 이미 돌고 있는 것에 붙는다. 데이터 폴더(HERMES_DATA_DIR)를 사이드카가 읽기 전용으로 붙여 읽고,
+#     서버는 그 사이드카를 거쳐서만 읽는다(쿠버네티스와 같은 읽기 경로). 바꾸는 일은 대시보드 API 로 간다.
+#   - Hermes 만들기와 마켓 설치는 끈다(쿠버네티스에서만). 호스트 경로·호스트 이름은 이 파일에 없다. 모두 .env 에서 온다.
+#   - 사용법: README.md. 프로젝트 이름은 빠른 시작과 같은 aas 다(옛 단일 compose 의 볼륨을 그대로 쓴다). 둘 중 하나만 띄운다
+name: aas
+services:
+  aas:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ${AAS_IMAGE:-ghcr.io/openmaru-io/cogentai-aas-server:${AAS_VERSION:-latest}}
+    pull_policy: missing
+    restart: unless-stopped
+    depends_on:
+      aas-sidecar:
+        condition: service_healthy
+    ports:
+      - "${AAS_BIND:-127.0.0.1}:${AAS_PORT:-17900}:17900"
+    environment:
+      AAS_DATA_DIR: /data
+      AAS_CONFIG_DIR: /etc/aas
+      AAS_SIDECAR_URL: http://aas-sidecar:17950
+      AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상, 예 openssl rand -hex 24)}"
+      AAS_DASHBOARD_URL: ${AAS_DASHBOARD_URL:-}
+      AAS_DASHBOARD_USER: ${AAS_DASHBOARD_USER:-}
+      AAS_DASHBOARD_PASSWORD: ${AAS_DASHBOARD_PASSWORD:-}
+      AAS_LITELLM_URL: ${AAS_LITELLM_URL:-}
+      # 모델 화면·AI 보조가 쓸 OpenAI 호환 기본 주소(/v1 포함). 비우면 AAS_LITELLM_URL + /v1
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+      HERMES_LLM_MODEL: ${HERMES_LLM_MODEL:-}
+      HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+      AAS_LITELLM_MODEL_PREFIX: ${AAS_LITELLM_MODEL_PREFIX:-}
+      AAS_MARKET_TAG_MODEL: ${HERMES_LLM_MODEL:-cogentai-aas}
+      AAS_SKILL_SUMMARY_MODEL: ${HERMES_LLM_MODEL:-cogentai-aas}
+      AAS_SKILL_DESC_MODEL: ${HERMES_LLM_MODEL:-cogentai-aas}
+      AAS_CHAT_TEMPLATE_KWARGS: ${AAS_CHAT_TEMPLATE_KWARGS:-on}
+      # 첫 관리자: 계정이 하나도 없을 때만 만든다. 비우면 create-user.sh 로 만든다
+      AAS_ADMIN_EMAIL: ${AAS_ADMIN_EMAIL:-}
+      AAS_ADMIN_PASSWORD: ${AAS_ADMIN_PASSWORD:-}
+      AAS_ADMINS: ${AAS_ADMINS:-${AAS_ADMIN_EMAIL:-}}
+      AAS_DEFAULT_POD_OWNER: ${AAS_DEFAULT_POD_OWNER:-${AAS_ADMIN_EMAIL:-}}
+      # 기본은 AAS_PORT 를 따라간다(포트를 바꾸면 Host 검사도 함께 바뀐다). 다른 이름으로 접속하면 .env 의 AAS_ALLOWED_HOSTS 에 더한다.
+      AAS_ALLOWED_HOSTS: ${AAS_ALLOWED_HOSTS:-localhost:${AAS_PORT:-17900},127.0.0.1:${AAS_PORT:-17900}}
+      AAS_MARKET_INSTALL: "off"
+      # 화면이 웹소켓(/ws) 하나로 받는다. 기본은 켜짐 — off 면 HTTP 폴링·SSE 로 받는다
+      AAS_WS: ${AAS_WS:-on}
+      # https 리버스 프록시 뒤에서 X-Forwarded-Proto 를 믿을 연결(true 또는 CIDR). 비우면 믿지 않고 http 로 본다
+      AAS_TRUSTED_PROXY: ${AAS_TRUSTED_PROXY:-}
+    volumes:
+      - aas-data:/data
+      - aas-config:/etc/aas
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:17900/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  aas-sidecar:
+    build:
+      context: ../../sidecar
+    image: ${AAS_SIDECAR_IMAGE:-ghcr.io/openmaru-io/cogentai-aas-sidecar:${AAS_VERSION:-latest}}
+    pull_policy: missing
+    restart: unless-stopped
+    # Hermes 와 같은 사용자로 읽는다. state.db·.env 는 소유자만 읽도록(0600) 만들어진다(B5). 붙는 Hermes 의 번호는 `id` 로 확인한다
+    user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
+    environment:
+      AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요}"
+    volumes:
+      - "${HERMES_DATA_DIR:?HERMES_DATA_DIR 에 Hermes 데이터 폴더의 호스트 경로를 적으세요}:/opt/data:ro"
+    healthcheck:
+      test: ["CMD", "python", "-m", "aas_sidecar", "check"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  aas-data:
+  aas-config:

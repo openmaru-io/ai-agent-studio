@@ -1,0 +1,28 @@
+{
+  "pods": [
+    {
+      "id": "one",
+      "owner": "admin@example.com",
+      "sidecar_url": "http://sidecar-one:17950",
+      "dashboard_url": "http://hermes-one:9119",
+      "dashboard_user_env": "HERMES_DASHBOARD_USER",
+      "dashboard_password_env": "HERMES_DASHBOARD_PASSWORD"
+    },
+    {
+      "id": "two",
+      "owner": "admin@example.com",
+      "sidecar_url": "http://sidecar-two:17950",
+      "dashboard_url": "http://hermes-two:9119",
+      "dashboard_user_env": "HERMES_DASHBOARD_USER",
+      "dashboard_password_env": "HERMES_DASHBOARD_PASSWORD"
+    },
+    {
+      "id": "three",
+      "owner": "member@example.com",
+      "sidecar_url": "http://sidecar-three:17950",
+      "dashboard_url": "http://hermes-three:9119",
+      "dashboard_user_env": "HERMES_DASHBOARD_USER",
+      "dashboard_password_env": "HERMES_DASHBOARD_PASSWORD"
+    }
+  ]
+}

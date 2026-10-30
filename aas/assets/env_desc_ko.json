@@ -1,0 +1,2134 @@
+{
+ "A2A_AGENT_NAME": [
+  {
+   "ko": "이 에이전트의 Agent Card 에 알리는 이름(기본값: 호스트 이름에서 만든다).",
+   "src": "Name advertised on this agent's Agent Card (default: hostname-derived)."
+  }
+ ],
+ "A2A_ALLOW_ALL_USERS": [
+  {
+   "ko": "인증한 A2A 상대라면 누구나 에이전트에 닿게 한다(개발용).",
+   "src": "Allow any authenticated A2A peer to reach the agent (dev only)."
+  }
+ ],
+ "A2A_BEARER_TOKEN": [
+  {
+   "ko": "받는 A2A 호출에 쓰는 공용 Bearer 토큰(없으면 호출한 쪽 IP 로 구분한다). 토큰이 하나도 없으면 127.0.0.1 에만 바인드한다(원격 접속 불가).",
+   "src": "Shared bearer token for inbound A2A calls (identity falls back to caller IP). With no token of any kind => bind to 127.0.0.1 only (no remote access)."
+  }
+ ],
+ "A2A_HOME_CHANNEL": [
+  {
+   "ko": "deliver=a2a 일 때 크론·알림을 보낼 대상 작업/맥락 ID.",
+   "src": "Task/context id used as the cron / notification delivery target for deliver=a2a."
+  }
+ ],
+ "A2A_HOST": [
+  {
+   "ko": "받는 쪽 바인드 호스트. 기본값은 127.0.0.1 이다. Bearer 토큰을 넣고 여기서 직접 켤 때만 0.0.0.0 으로 넓힌다.",
+   "src": "Inbound bind host. Defaults to 127.0.0.1; only widens to 0.0.0.0 when a bearer token is set AND you opt in here."
+  }
+ ],
+ "A2A_PEER_TOKENS": [
+  {
+   "ko": "상대별 Bearer 토큰('alice:tok1,bob:tok2'). 원격 에이전트마다 자격증명을 따로 준다. 맞은 이름이 속도 제한·신뢰·감사에 쓰는 인증 신원이 된다.",
+   "src": "Per-peer bearer tokens ('alice:tok1,bob:tok2'). Each remote agent gets its own credential; the matched name is the authenticated identity used for rate limiting, trust, and audit."
+  }
+ ],
+ "A2A_PORT": [
+  {
+   "ko": "A2A 서버가 받는 포트(기본값: 9900).",
+   "src": "Inbound A2A server port (default 9900)."
+  }
+ ],
+ "A2A_PUSH_SECRET": [
+  {
+   "ko": "푸시 알림 서명에 쓰는 HMAC 비밀값(기본값: 공용 Bearer 토큰).",
+   "src": "HMAC secret for signing push notifications (default: the shared bearer token)."
+  }
+ ],
+ "ACTUAL_API_KEY": [
+  {
+   "ko": "Actual Computer 추론 키(ac_...).",
+   "src": "Actual Computer inference key (ac_...)"
+  }
+ ],
+ "ACTUAL_BASE_URL": [
+  {
+   "ko": "Actual Computer 기본 URL 을 바꾼다.",
+   "src": "Actual Computer base URL override"
+  }
+ ],
+ "AGENT_BROWSER_ENGINE": [
+  {
+   "ko": "로컬 브라우저 엔진: auto(기본 Chrome), lightpanda(더 빠르지만 스크린샷 없음), chrome.",
+   "src": "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode spawns lightpanda serve), chrome"
+  }
+ ],
+ "AIRTABLE_API_KEY": [
+  {
+   "ko": "Airtable 개인 접근 토큰(`airtable` 스킬이 쓴다).",
+   "src": "Airtable personal access token (used by the `airtable` skill)"
+  }
+ ],
+ "AI_GATEWAY_API_KEY": [
+  {
+   "ko": "ai-gateway API 키.",
+   "src": "ai-gateway API key"
+  }
+ ],
+ "AI_GATEWAY_BASE_URL": [
+  {
+   "ko": "Vercel AI Gateway 기본 URL 을 바꾼다.",
+   "src": "Vercel AI Gateway base URL override"
+  }
+ ],
+ "ALIBABA_CODING_PLAN_API_KEY": [
+  {
+   "ko": "Alibaba Cloud(Coding Plan) API 키.",
+   "src": "Alibaba Cloud (Coding Plan) API key"
+  }
+ ],
+ "ALIBABA_CODING_PLAN_BASE_URL": [
+  {
+   "ko": "Alibaba Cloud(Coding Plan) 기본 URL 을 바꾼다.",
+   "src": "Alibaba Cloud (Coding Plan) base URL override"
+  }
+ ],
+ "ALIBABA_CODING_PLAN_CN_API_KEY": [
+  {
+   "ko": "Alibaba Cloud(Coding Plan, 중국) API 키.",
+   "src": "Alibaba Cloud (Coding Plan, China) API key"
+  }
+ ],
+ "ALIBABA_CODING_PLAN_CN_BASE_URL": [
+  {
+   "ko": "Alibaba Cloud(Coding Plan, 중국) 기본 URL 을 바꾼다.",
+   "src": "Alibaba Cloud (Coding Plan, China) base URL override"
+  }
+ ],
+ "ALIBABA_TOKEN_PLAN_API_KEY": [
+  {
+   "ko": "Alibaba Cloud(Token Plan) API 키.",
+   "src": "Alibaba Cloud (Token Plan) API key"
+  }
+ ],
+ "ALIBABA_TOKEN_PLAN_BASE_URL": [
+  {
+   "ko": "Alibaba Cloud(Token Plan) 기본 URL 을 바꾼다.",
+   "src": "Alibaba Cloud (Token Plan) base URL override"
+  }
+ ],
+ "ALIBABA_TOKEN_PLAN_CN_API_KEY": [
+  {
+   "ko": "Alibaba Cloud(Token Plan, 중국) API 키.",
+   "src": "Alibaba Cloud (Token Plan, China) API key"
+  }
+ ],
+ "ALIBABA_TOKEN_PLAN_CN_BASE_URL": [
+  {
+   "ko": "Alibaba Cloud(Token Plan, 중국) 기본 URL 을 바꾼다.",
+   "src": "Alibaba Cloud (Token Plan, China) base URL override"
+  }
+ ],
+ "ANTHROPIC_API_KEY": [
+  {
+   "ko": "Anthropic API 키.",
+   "src": "anthropic API key"
+  }
+ ],
+ "ANTHROPIC_BASE_URL": [
+  {
+   "ko": "Anthropic 기본 URL 을 바꾼다.",
+   "src": "Anthropic base URL override"
+  }
+ ],
+ "ANTHROPIC_TOKEN": [
+  {
+   "ko": "Anthropic API 키.",
+   "src": "anthropic API key"
+  }
+ ],
+ "API_SERVER_ENABLED": [
+  {
+   "ko": "OpenAI 호환 API 서버를 켠다(true/false). Open WebUI, LobeChat 같은 화면이 붙을 수 있다.",
+   "src": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect."
+  }
+ ],
+ "API_SERVER_HOST": [
+  {
+   "ko": "API 서버의 호스트·바인드 주소(기본값: 127.0.0.1). 루프백에 바인드해도 API_SERVER_KEY 는 필요하다.",
+   "src": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds."
+  }
+ ],
+ "API_SERVER_KEY": [
+  {
+   "ko": "API 서버 인증에 쓰는 Bearer 토큰. API 서버를 켜면 꼭 넣어야 하며, 없으면 서버가 시작하지 않는다.",
+   "src": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it."
+  }
+ ],
+ "API_SERVER_MODEL_NAME": [
+  {
+   "ko": "/v1/models 에 알리는 모델 이름. 기본값은 프로파일 이름이다(기본 프로파일은 'hermes-agent'). OpenWebUI 로 여러 사용자가 쓸 때 쓸모 있다.",
+   "src": "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' for the default profile). Useful for multi-user setups with OpenWebUI."
+  }
+ ],
+ "API_SERVER_PORT": [
+  {
+   "ko": "API 서버 포트(기본값: 8642).",
+   "src": "Port for the API server (default: 8642)."
+  }
+ ],
+ "ARCEEAI_API_KEY": [
+  {
+   "ko": "Arcee AI API 키.",
+   "src": "Arcee AI API key"
+  }
+ ],
+ "ARCEE_BASE_URL": [
+  {
+   "ko": "Arcee AI 기본 URL 을 바꾼다.",
+   "src": "Arcee AI base URL override"
+  }
+ ],
+ "AWS_PROFILE": [
+  {
+   "ko": "Bedrock 인증에 쓰는 AWS 이름 있는 프로필(~/.aws/credentials 에 있는 것).",
+   "src": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)"
+  }
+ ],
+ "AWS_REGION": [
+  {
+   "ko": "Bedrock API 를 부를 AWS 리전(예: us-east-1, eu-central-1).",
+   "src": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)"
+  }
+ ],
+ "AZURE_FOUNDRY_API_KEY": [
+  {
+   "ko": "직접 설정한 Azure 엔드포인트에 쓰는 Azure Foundry API 키.",
+   "src": "Azure Foundry API key for custom Azure endpoints"
+  }
+ ],
+ "AZURE_FOUNDRY_BASE_URL": [
+  {
+   "ko": "Azure Foundry 기본 URL(엔드포인트별 설정은 'hermes model' 로 넣는다).",
+   "src": "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)"
+  }
+ ],
+ "BLUEBUBBLES_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 iMessage 주소(이메일 또는 전화번호)를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated iMessage addresses (email or phone) allowed to use the bot"
+  }
+ ],
+ "BLUEBUBBLES_ALLOW_ALL_USERS": [
+  {
+   "ko": "허용 목록 없이 모든 BlueBubbles 사용자를 허용한다.",
+   "src": "Allow all BlueBubbles users without allowlist"
+  }
+ ],
+ "BLUEBUBBLES_PASSWORD": [
+  {
+   "ko": "BlueBubbles 서버 비밀번호(BlueBubbles Server → Settings → API 에서 확인).",
+   "src": "BlueBubbles server password (from BlueBubbles Server → Settings → API)"
+  }
+ ],
+ "BLUEBUBBLES_SERVER_URL": [
+  {
+   "ko": "iMessage 연동에 쓰는 BlueBubbles 서버 URL(예: http://192.168.1.10:1234).",
+   "src": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)"
+  }
+ ],
+ "BRAVE_SEARCH_API_KEY": [
+  {
+   "ko": "Brave Search API 구독 토큰(무료: 한 달 2,000 회 검색).",
+   "src": "Brave Search API subscription token (free tier: 2,000 queries/mo)"
+  }
+ ],
+ "BROWSERBASE_API_KEY": [
+  {
+   "ko": "클라우드 브라우저용 Browserbase 의 API 키(선택 — 로컬 브라우저는 없어도 된다).",
+   "src": "Browserbase API key for cloud browser (optional — local browser works without this)"
+  }
+ ],
+ "BROWSERBASE_PROJECT_ID": [
+  {
+   "ko": "Browserbase 프로젝트 ID(선택 — 클라우드 브라우저에만 필요하다).",
+   "src": "Browserbase project ID (optional — only needed for cloud browser)"
+  }
+ ],
+ "BROWSER_USE_API_KEY": [
+  {
+   "ko": "클라우드 브라우저용 Browser Use 의 API 키(선택 — 로컬 브라우저는 없어도 된다).",
+   "src": "Browser Use API key for cloud browser (optional — local browser works without this)"
+  }
+ ],
+ "BRV_API_KEY": [
+  {
+   "ko": "ByteRover 의 API 키(선택, 클라우드 동기화용 — 기본은 로컬 우선).",
+   "src": "ByteRover API key (optional, for cloud sync — local-first by default)"
+  }
+ ],
+ "BUZZ_ALLOWED_USERS": [
+  {
+   "ko": "에이전트와 대화할 수 있는 npub 또는 hex 공개 키를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated npubs or hex pubkeys allowed to talk to the agent"
+  }
+ ],
+ "BUZZ_ALLOW_ALL_USERS": [
+  {
+   "ko": "커뮤니티 구성원 누구나 에이전트와 대화하게 한다(true/false).",
+   "src": "Allow any community member to talk to the agent (true/false)"
+  }
+ ],
+ "BUZZ_AUTH_TAG": [
+  {
+   "ko": "NIP-42 WebSocket 인증에 쓰는 NIP-OA 주인 증명 인증 태그 JSON(선택).",
+   "src": "Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth"
+  }
+ ],
+ "BUZZ_CHANNELS": [
+  {
+   "ko": "지켜볼 채널 UUID 를 쉼표로 구분해 적는다(기본값: 참여한 모든 채널).",
+   "src": "Comma-separated channel UUIDs to watch (default: all joined channels)"
+  }
+ ],
+ "BUZZ_CLI_PATH": [
+  {
+   "ko": "buzz CLI 실행 파일 경로(기본값: PATH 의 'buzz', 그다음 ~/bin/buzz).",
+   "src": "Path to the buzz CLI binary (default: 'buzz' on PATH, then ~/bin/buzz)"
+  }
+ ],
+ "BUZZ_CREDENTIALS_FILE": [
+  {
+   "ko": "nsec 를 담은 JSON 자격증명 파일(BUZZ_PRIVATE_KEY 가 비었을 때 쓴다).",
+   "src": "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
+  }
+ ],
+ "BUZZ_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 채널 UUID(기본값: 지켜보는 첫 채널).",
+   "src": "Channel UUID for cron / notification delivery (defaults to the first watched channel)"
+  }
+ ],
+ "BUZZ_POLL_INTERVAL": [
+  {
+   "ko": "받은 메시지를 확인하는 간격(초, 기본값: 4).",
+   "src": "Seconds between inbound poll sweeps (default: 4)"
+  }
+ ],
+ "BUZZ_PRIVATE_KEY": [
+  {
+   "ko": "에이전트의 Buzz 신원에 쓰는 Nostr 개인 키(nsec 또는 hex). Buzz 의 유일한 비밀값이다.",
+   "src": "Nostr private key for the agent's Buzz identity (nsec or hex) — the only Buzz secret"
+  }
+ ],
+ "BUZZ_RELAY_URL": [
+  {
+   "ko": "Buzz 커뮤니티 릴레이의 기본 URL(예: https://mycommunity.communities.buzz.xyz).",
+   "src": "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)"
+  }
+ ],
+ "BUZZ_REPLY_IN_THREAD": [
+  {
+   "ko": "답을 받은 메시지 아래 스레드로 단다(true/false, 기본값: true). false 면 채널 타임라인에 바로 올린다.",
+   "src": "Thread replies under the triggering message (true/false, default: true); false posts flat to the channel timeline"
+  }
+ ],
+ "BUZZ_TRANSPORT": [
+  {
+   "ko": "받는 방식: auto(WebSocket, 안 되면 폴링, 기본값), websocket, poll 중 하나.",
+   "src": "Inbound transport: auto (WebSocket w/ poll fallback, default), websocket, or poll"
+  }
+ ],
+ "CAMOFOX_API_KEY": [
+  {
+   "ko": "인증이 필요한 원격 Camofox 서버에 Authorization 헤더로 보내는 Bearer 토큰(선택).",
+   "src": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server"
+  }
+ ],
+ "CAMOFOX_URL": [
+  {
+   "ko": "탐지를 피하는 로컬 브라우징용 Camofox 브라우저 서버 URL(예: http://localhost:9377).",
+   "src": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)"
+  }
+ ],
+ "CLAUDE_CODE_OAUTH_TOKEN": [
+  {
+   "ko": "Anthropic API 키.",
+   "src": "anthropic API key"
+  }
+ ],
+ "COMMANDCODE_ANTHROPIC_BASE_URL": [
+  {
+   "ko": "CommandCode(Anthropic) 기본 URL 을 바꾼다.",
+   "src": "CommandCode (Anthropic) base URL override"
+  }
+ ],
+ "COMMANDCODE_API_KEY": [
+  {
+   "ko": "CommandCode API 키(GOAT/Pro/Max/Provider 요금제, 키 하나로 30개 넘는 모델을 쓴다).",
+   "src": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)"
+  }
+ ],
+ "COMMANDCODE_BASE_URL": [
+  {
+   "ko": "CommandCode 기본 URL 을 바꾼다.",
+   "src": "CommandCode base URL override"
+  }
+ ],
+ "CONNECTOR_GATEWAY_URL": [
+  {
+   "ko": "커넥터 API 가 쓰는 connector-gateway 의 정확한 출처 주소(선택).",
+   "src": "Exact connector-gateway origin for the connectors API (optional)"
+  }
+ ],
+ "COPILOT_API_BASE_URL": [
+  {
+   "ko": "GitHub Copilot 기본 URL 을 바꾼다.",
+   "src": "GitHub Copilot base URL override"
+  }
+ ],
+ "COPILOT_GITHUB_TOKEN": [
+  {
+   "ko": "GitHub Copilot 토큰(GITHUB_TOKEN 또는 gh auth token 을 쓴다).",
+   "src": "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"
+  }
+ ],
+ "DASHSCOPE_API_KEY": [
+  {
+   "ko": "Alibaba Cloud DashScope API 키(Qwen 과 여러 제공자의 모델).",
+   "src": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)"
+  }
+ ],
+ "DASHSCOPE_BASE_URL": [
+  {
+   "ko": "직접 정하는 DashScope 기본 URL(기본값: coding-intl 의 OpenAI 호환 엔드포인트).",
+   "src": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)"
+  }
+ ],
+ "DASHSCOPE_CN_BASE_URL": [
+  {
+   "ko": "Alibaba Cloud DashScope(중국) 기본 URL 을 바꾼다.",
+   "src": "Alibaba Cloud DashScope (China) base URL override"
+  }
+ ],
+ "DEEPINFRA_API_KEY": [
+  {
+   "ko": "DeepInfra API 키.",
+   "src": "DeepInfra API key"
+  }
+ ],
+ "DEEPINFRA_BASE_URL": [
+  {
+   "ko": "DeepInfra 기본 URL 을 바꾼다.",
+   "src": "DeepInfra base URL override"
+  }
+ ],
+ "DEEPSEEK_API_KEY": [
+  {
+   "ko": "DeepSeek 에 바로 연결할 때 쓰는 DeepSeek API 키.",
+   "src": "DeepSeek API key for direct DeepSeek access"
+  }
+ ],
+ "DEEPSEEK_BASE_URL": [
+  {
+   "ko": "직접 정하는 DeepSeek API 기본 URL(고급).",
+   "src": "Custom DeepSeek API base URL (advanced)"
+  }
+ ],
+ "DINGTALK_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 직원·보낸 사람 ID 를 쉼표로 구분해 적는다(* = 누구나).",
+   "src": "Comma-separated staff/sender IDs allowed to talk to the bot (* = any)"
+  }
+ ],
+ "DINGTALK_CLIENT_ID": [
+  {
+   "ko": "DingTalk 앱 키(Client ID).",
+   "src": "DingTalk app key (Client ID)"
+  }
+ ],
+ "DINGTALK_CLIENT_SECRET": [
+  {
+   "ko": "DingTalk 앱 비밀값(Client Secret).",
+   "src": "DingTalk app secret (Client Secret)"
+  }
+ ],
+ "DINGTALK_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 대화 ID.",
+   "src": "Default conversation ID for cron / notification delivery"
+  }
+ ],
+ "DINGTALK_HOME_CHANNEL_NAME": [
+  {
+   "ko": "DingTalk 기본 채널의 표시 이름.",
+   "src": "Display name for the DingTalk home channel"
+  }
+ ],
+ "DINGTALK_WEBHOOK_URL": [
+  {
+   "ko": "다른 플랫폼·크론 전달에 쓰는 고정 로봇 웹훅 URL.",
+   "src": "Static robot webhook URL for cross-platform / cron delivery"
+  }
+ ],
+ "DISCORD_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 Discord 사용자 ID 를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated Discord user IDs allowed to use the bot"
+  }
+ ],
+ "DISCORD_ALLOW_ALL_USERS": [
+  {
+   "ko": "Discord 사용자 누구나 봇을 부르게 한다(개발용).",
+   "src": "Allow any Discord user to trigger the bot (dev only)"
+  }
+ ],
+ "DISCORD_BOT_TOKEN": [
+  {
+   "ko": "Developer Portal 에서 받은 Discord 봇 토큰.",
+   "src": "Discord bot token from Developer Portal"
+  }
+ ],
+ "DISCORD_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채널 ID.",
+   "src": "Default channel ID for cron / notification delivery"
+  }
+ ],
+ "DISCORD_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Discord 기본 채널의 표시 이름.",
+   "src": "Display name for the Discord home channel"
+  }
+ ],
+ "DISCORD_REPLY_TO_MODE": [
+  {
+   "ko": "Discord 답장 방식: 'off'(답장 표시 없음), 'first'(첫 메시지만 답장, 기본값), 'all'(나눠 보내는 모든 조각에 답장).",
+   "src": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)"
+  }
+ ],
+ "ELEVENLABS_API_KEY": [
+  {
+   "ko": "고품질 음성 합성과 Scribe 받아쓰기에 쓰는 ElevenLabs 의 API 키.",
+   "src": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription"
+  }
+ ],
+ "EMAIL_ADDRESS": [
+  {
+   "ko": "이메일 계정 주소.",
+   "src": "Email account address"
+  }
+ ],
+ "EMAIL_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 이메일 주소를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated email addresses allowed to talk to the bot"
+  }
+ ],
+ "EMAIL_AUTHSERV_ID": [
+  {
+   "ko": "메일 서버의 맨 위 Authentication-Results 헤더에 있는 authserv-id 그대로(예: mx.google.com). EMAIL_TRUST_FROM_HEADER=true 가 아니면 필요하다.",
+   "src": "Exact authserv-id on your mail server's topmost Authentication-Results header, e.g. mx.google.com (required unless EMAIL_TRUST_FROM_HEADER=true)"
+  }
+ ],
+ "EMAIL_HOME_ADDRESS": [
+  {
+   "ko": "크론·알림을 보낼 기본 주소.",
+   "src": "Default address for cron / notification delivery"
+  }
+ ],
+ "EMAIL_IMAP_HOST": [
+  {
+   "ko": "받은 메일을 확인할 IMAP 호스트(예: imap.gmail.com).",
+   "src": "IMAP host for inbound polling (e.g. imap.gmail.com)"
+  }
+ ],
+ "EMAIL_PASSWORD": [
+  {
+   "ko": "이메일 계정 비밀번호 또는 앱 비밀번호.",
+   "src": "Email account password / app password"
+  }
+ ],
+ "EMAIL_SMTP_HOST": [
+  {
+   "ko": "SMTP 호스트(예: smtp.gmail.com).",
+   "src": "SMTP host (e.g. smtp.gmail.com)"
+  }
+ ],
+ "EMAIL_SMTP_PORT": [
+  {
+   "ko": "SMTP 포트(기본값: 587).",
+   "src": "SMTP port (default 587)"
+  }
+ ],
+ "EXA_API_KEY": [
+  {
+   "ko": "AI 용 웹 검색과 본문 가져오기에 쓰는 Exa 의 API 키.",
+   "src": "Exa API key for AI-native web search and contents"
+  }
+ ],
+ "FAL_KEY": [
+  {
+   "ko": "이미지·영상 생성에 쓰는 FAL 의 API 키.",
+   "src": "FAL API key for image and video generation"
+  }
+ ],
+ "FEISHU_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 Feishu 사용자 ID 를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated Feishu user IDs allowed to talk to the bot"
+  }
+ ],
+ "FEISHU_ALLOW_ALL_USERS": [
+  {
+   "ko": "Feishu 사용자 누구나 봇을 부르게 한다(개발용).",
+   "src": "Allow any Feishu user to trigger the bot (dev only)"
+  }
+ ],
+ "FEISHU_APP_ID": [
+  {
+   "ko": "Feishu/Lark 앱 ID.",
+   "src": "Feishu/Lark app ID"
+  }
+ ],
+ "FEISHU_APP_SECRET": [
+  {
+   "ko": "Feishu/Lark 앱 비밀값.",
+   "src": "Feishu/Lark app secret"
+  }
+ ],
+ "FEISHU_DOMAIN": [
+  {
+   "ko": "도메인: 'feishu'(중국) 또는 'lark'(해외).",
+   "src": "Domain: 'feishu' (China) or 'lark' (International)"
+  }
+ ],
+ "FEISHU_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채팅 ID.",
+   "src": "Default chat ID for cron / notification delivery"
+  }
+ ],
+ "FEISHU_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Feishu 기본 채널의 표시 이름.",
+   "src": "Display name for the Feishu home channel"
+  }
+ ],
+ "FIRECRAWL_API_KEY": [
+  {
+   "ko": "웹 검색과 스크래핑에 쓰는 Firecrawl 의 API 키.",
+   "src": "Firecrawl API key for web search and scraping"
+  }
+ ],
+ "FIRECRAWL_API_URL": [
+  {
+   "ko": "직접 운영하는 Firecrawl 의 API URL(선택).",
+   "src": "Firecrawl API URL for self-hosted instances (optional)"
+  }
+ ],
+ "FIRECRAWL_BROWSER_TTL": [
+  {
+   "ko": "Firecrawl 브라우저 세션 유지 시간(초, 선택, 기본값: 300).",
+   "src": "Firecrawl browser session TTL in seconds (optional, default 300)"
+  }
+ ],
+ "FIRECRAWL_GATEWAY_URL": [
+  {
+   "ko": "Firecrawl tool-gateway 출처 주소를 바꾼다. Nous 구독자만 쓴다(선택).",
+   "src": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)"
+  }
+ ],
+ "FIREWORKS_API_KEY": [
+  {
+   "ko": "Fireworks AI API 키.",
+   "src": "Fireworks AI API key"
+  }
+ ],
+ "GATEWAY_ALLOW_ALL_USERS": [
+  {
+   "ko": "메신저 봇을 모든 사용자가 쓰게 한다(true/false). 기본값: false.",
+   "src": "Allow all users to interact with messaging bots (true/false). Default: false."
+  }
+ ],
+ "GATEWAY_PROXY_KEY": [
+  {
+   "ko": "원격 Hermes API 서버 인증에 쓰는 Bearer 토큰(프록시 모드). 원격 호스트의 API_SERVER_KEY 와 같아야 한다.",
+   "src": "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must match the API_SERVER_KEY on the remote host."
+  }
+ ],
+ "GATEWAY_PROXY_URL": [
+  {
+   "ko": "메시지를 넘길 원격 Hermes API 서버 URL(프록시 모드). 넣으면 게이트웨이는 플랫폼 입출력만 하고 에이전트 일은 원격 서버가 한다. Docker E2EE 컨테이너용. config.yaml 의 gateway.proxy_url 로도 정한다.",
+   "src": "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Use for Docker E2EE containers that relay to a host agent. Also configurable via gateway.proxy_url in config.yaml."
+  }
+ ],
+ "GEMINI_API_KEY": [
+  {
+   "ko": "Google AI Studio API 키(GOOGLE_API_KEY 의 다른 이름).",
+   "src": "Google AI Studio API key (alias for GOOGLE_API_KEY)"
+  }
+ ],
+ "GEMINI_BASE_URL": [
+  {
+   "ko": "Google AI Studio 기본 URL 을 바꾼다.",
+   "src": "Google AI Studio base URL override"
+  }
+ ],
+ "GH_TOKEN": [
+  {
+   "ko": "GitHub Copilot 토큰(GITHUB_TOKEN 또는 gh auth token 을 쓴다).",
+   "src": "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"
+  }
+ ],
+ "GITHUB_TOKEN": [
+  {
+   "ko": "Skills Hub 에 쓰는 GitHub 토큰(API 호출 한도를 늘리고 스킬을 올린다).",
+   "src": "GitHub token for Skills Hub (higher API rate limits, skill publish)"
+  }
+ ],
+ "GLM_API_KEY": [
+  {
+   "ko": "Z.AI / GLM API 키(ZAI_API_KEY / Z_AI_API_KEY 로도 알아본다).",
+   "src": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)"
+  }
+ ],
+ "GLM_BASE_URL": [
+  {
+   "ko": "Z.AI / GLM 기본 URL 을 바꾼다.",
+   "src": "Z.AI / GLM base URL override"
+  }
+ ],
+ "GMI_API_KEY": [
+  {
+   "ko": "GMI Cloud API 키.",
+   "src": "GMI Cloud API key"
+  }
+ ],
+ "GMI_BASE_URL": [
+  {
+   "ko": "GMI Cloud 기본 URL 을 바꾼다.",
+   "src": "GMI Cloud base URL override"
+  }
+ ],
+ "GOOGLE_API_KEY": [
+  {
+   "ko": "Google AI Studio API 키(GEMINI_API_KEY 로도 알아본다).",
+   "src": "Google AI Studio API key (also recognized as GEMINI_API_KEY)"
+  }
+ ],
+ "GOOGLE_CHAT_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 사용자 이메일을 쉼표로 구분해 적는다.",
+   "src": "Comma-separated user emails allowed to interact with the bot."
+  }
+ ],
+ "GOOGLE_CHAT_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 스페이스(예: spaces/AAAA...).",
+   "src": "Default space for cron / notification delivery (e.g. spaces/AAAA...)."
+  }
+ ],
+ "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE": [
+  {
+   "ko": "Google 이 서명한 HTTP 이벤트 Bearer 토큰의 기대 audience. 기본값은 GOOGLE_CHAT_HTTP_EVENTS_URL 이다.",
+   "src": "Expected audience for Google-signed HTTP event bearer tokens. Defaults to GOOGLE_CHAT_HTTP_EVENTS_URL."
+  }
+ ],
+ "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL": [
+  {
+   "ko": "HTTP 이벤트 Bearer 토큰에 기대하는 Google 서비스 계정 이메일.",
+   "src": "Expected Google service account email for HTTP event bearer tokens."
+  }
+ ],
+ "GOOGLE_CHAT_HTTP_EVENTS_URL": [
+  {
+   "ko": "Chat 메시지 이벤트를 받는 인증된 HTTP 엔드포인트.",
+   "src": "Authenticated HTTP endpoint for Chat message events."
+  }
+ ],
+ "GOOGLE_CHAT_PROJECT_ID": [
+  {
+   "ko": "Pub/Sub 받기 모드(선택)에 쓰는 GCP 프로젝트 ID. 없으면 GOOGLE_CLOUD_PROJECT 를 쓴다.",
+   "src": "GCP project ID for optional Pub/Sub inbound mode. Falls back to GOOGLE_CLOUD_PROJECT."
+  }
+ ],
+ "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON": [
+  {
+   "ko": "서비스 계정 JSON 키 경로(또는 JSON 내용). 비우면 Cloud Run / GCE 의 기본 자격증명을 쓴다. 없으면 GOOGLE_APPLICATION_CREDENTIALS 를 쓴다.",
+   "src": "Path to Service Account JSON key (or inline JSON). Leave empty to use Application Default Credentials on Cloud Run / GCE. Falls back to GOOGLE_APPLICATION_CREDENTIALS."
+  }
+ ],
+ "GOOGLE_CHAT_SUBSCRIPTION_NAME": [
+  {
+   "ko": "pull 방식으로 이벤트를 받을 Pub/Sub 구독 경로(선택).",
+   "src": "Optional Pub/Sub subscription path for pull-mode inbound events."
+  }
+ ],
+ "HASS_TOKEN": [
+  {
+   "ko": "Home Assistant 장기 액세스 토큰(Long-Lived Access Token).",
+   "src": "Home Assistant Long-Lived Access Token"
+  }
+ ],
+ "HASS_URL": [
+  {
+   "ko": "Home Assistant 기본 URL(기본값: http://homeassistant.local:8123).",
+   "src": "Home Assistant base URL (default: http://homeassistant.local:8123)"
+  }
+ ],
+ "HERMES_ANON_API_SECRET": [
+  {
+   "ko": "Nous 무료 등급 가입 엔드포인트가 제한 연동 단계일 때 쓰는 공유 비밀값(제한이 풀리면 필요 없다).",
+   "src": "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated integration phase (not needed once the gate is removed)"
+  }
+ ],
+ "HERMES_EPHEMERAL_SYSTEM_PROMPT": [
+  {
+   "ko": "API 를 부를 때만 넣는 임시 시스템 프롬프트. 세션에 저장하지 않는다.",
+   "src": "Ephemeral system prompt injected at API-call time (never persisted to sessions)"
+  }
+ ],
+ "HERMES_LANGFUSE_BASE_URL": [
+  {
+   "ko": "Langfuse 서버 URL(기본값: https://cloud.langfuse.com).",
+   "src": "Langfuse server URL (default: https://cloud.langfuse.com)"
+  }
+ ],
+ "HERMES_LANGFUSE_PUBLIC_KEY": [
+  {
+   "ko": "Langfuse 프로젝트 공개 키(pk-lf-...).",
+   "src": "Langfuse project public key (pk-lf-...)"
+  }
+ ],
+ "HERMES_LANGFUSE_SECRET_KEY": [
+  {
+   "ko": "Langfuse 프로젝트 비밀 키(sk-lf-...).",
+   "src": "Langfuse project secret key (sk-lf-...)"
+  }
+ ],
+ "HERMES_PREFILL_MESSAGES_FILE": [
+  {
+   "ko": "예시 대화(few-shot)로 앞에 넣는 임시 메시지를 담은 JSON 파일 경로.",
+   "src": "Path to JSON file with ephemeral prefill messages for few-shot priming"
+  }
+ ],
+ "HERMES_QWEN_BASE_URL": [
+  {
+   "ko": "Qwen Portal 기본 URL 을 바꾼다(기본값: https://portal.qwen.ai/v1).",
+   "src": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)"
+  }
+ ],
+ "HERMES_SIMPLEX_TEXT_BATCH_DELAY": [
+  {
+   "ko": "잇달아 들어온 글 메시지를 MessageEvent 하나로 합칠 때 기다리는 시간(초, 기본값: 0.8). Telegram 의 글 묶기와 같은 방식이다.",
+   "src": "Quiet-period seconds (default: 0.8) used to concatenate rapid-fire inbound text messages into a single MessageEvent — same pattern as Telegram's text batching."
+  }
+ ],
+ "HF_BASE_URL": [
+  {
+   "ko": "Hugging Face Inference Providers 기본 URL 을 바꾼다.",
+   "src": "Hugging Face Inference Providers base URL override"
+  }
+ ],
+ "HF_TOKEN": [
+  {
+   "ko": "Inference Providers 에 쓰는 Hugging Face 토큰(router.huggingface.co 로 20개 넘는 공개 모델을 쓴다).",
+   "src": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)"
+  }
+ ],
+ "HINDSIGHT_API_KEY": [
+  {
+   "ko": "그래프 기반 장기 기억에 쓰는 Hindsight 의 API 키.",
+   "src": "Hindsight API key for graph-aware persistent memory"
+  }
+ ],
+ "HINDSIGHT_API_URL": [
+  {
+   "ko": "Hindsight API 의 기본 URL(기본값: https://api.hindsight.vectorize.io).",
+   "src": "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)"
+  }
+ ],
+ "HONCHO_API_KEY": [
+  {
+   "ko": "AI 용 장기 기억에 쓰는 Honcho 의 API 키.",
+   "src": "Honcho API key for AI-native persistent memory"
+  }
+ ],
+ "HONCHO_BASE_URL": [
+  {
+   "ko": "직접 운영하는 Honcho 의 기본 URL(API 키가 필요 없다).",
+   "src": "Base URL for self-hosted Honcho instances (no API key needed)"
+  }
+ ],
+ "IRC_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 IRC 닉네임을 쉼표로 구분해 적는다.",
+   "src": "Comma-separated IRC nicks allowed to talk to the bot"
+  }
+ ],
+ "IRC_ALLOW_ALL_USERS": [
+  {
+   "ko": "채널의 누구나 봇과 대화하게 한다(개발용).",
+   "src": "Allow anyone in the channel to talk to the bot (dev only)"
+  }
+ ],
+ "IRC_CHANNEL": [
+  {
+   "ko": "참여할 IRC 채널(예: #hermes).",
+   "src": "IRC channel to join (e.g. #hermes)"
+  }
+ ],
+ "IRC_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 채널(기본값: IRC_CHANNEL).",
+   "src": "Channel for cron / notification delivery (defaults to IRC_CHANNEL)"
+  }
+ ],
+ "IRC_NICKNAME": [
+  {
+   "ko": "IRC 에서 쓰는 봇 닉네임(기본값: hermes-bot).",
+   "src": "Bot nickname on IRC (default: hermes-bot)"
+  }
+ ],
+ "IRC_NICKSERV_PASSWORD": [
+  {
+   "ko": "닉네임 인증에 쓰는 NickServ 비밀번호.",
+   "src": "NickServ password for nick identification"
+  }
+ ],
+ "IRC_PORT": [
+  {
+   "ko": "IRC 서버 포트(기본값: TLS 면 6697, 아니면 6667).",
+   "src": "IRC server port (default: 6697 with TLS, 6667 without)"
+  }
+ ],
+ "IRC_SERVER": [
+  {
+   "ko": "IRC 서버 호스트 이름(예: irc.libera.chat).",
+   "src": "IRC server hostname (e.g. irc.libera.chat)"
+  }
+ ],
+ "IRC_SERVER_PASSWORD": [
+  {
+   "ko": "IRC 서버 비밀번호(필요할 때만).",
+   "src": "IRC server password (if required)"
+  }
+ ],
+ "IRC_USE_TLS": [
+  {
+   "ko": "IRC 연결에 TLS 를 쓴다(1/true/yes 로 켠다, 기본값: 포트 6697 이면 true).",
+   "src": "Use TLS for the IRC connection (1/true/yes to enable, default: true on port 6697)"
+  }
+ ],
+ "KEENABLE_API_KEY": [
+  {
+   "ko": "웹 검색과 페이지 가져오기에 쓰는 Keenable 의 API 키(선택 — 키 없는 무료 단계도 동작한다).",
+   "src": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)"
+  }
+ ],
+ "KILOCODE_API_KEY": [
+  {
+   "ko": "Kilo Code API 키.",
+   "src": "kilocode API key"
+  }
+ ],
+ "KILOCODE_BASE_URL": [
+  {
+   "ko": "Kilo Code 기본 URL 을 바꾼다.",
+   "src": "Kilo Code base URL override"
+  }
+ ],
+ "KIMI_API_KEY": [
+  {
+   "ko": "Kimi / Moonshot API 키.",
+   "src": "Kimi / Moonshot API key"
+  }
+ ],
+ "KIMI_BASE_URL": [
+  {
+   "ko": "Kimi / Moonshot 기본 URL 을 바꾼다.",
+   "src": "Kimi / Moonshot base URL override"
+  }
+ ],
+ "KIMI_CN_API_KEY": [
+  {
+   "ko": "Kimi / Moonshot 중국 API 키.",
+   "src": "Kimi / Moonshot China API key"
+  }
+ ],
+ "KIMI_CODING_API_KEY": [
+  {
+   "ko": "kimi-coding API 키.",
+   "src": "kimi-coding API key"
+  }
+ ],
+ "KREA_API_KEY": [
+  {
+   "ko": "Krea 2 이미지 생성(Medium + Large)에 쓰는 Krea 의 API 키.",
+   "src": "Krea API key for Krea 2 image generation (Medium + Large)"
+  }
+ ],
+ "LINEAR_API_KEY": [
+  {
+   "ko": "Linear 개인 API 키(`linear` 스킬이 쓴다).",
+   "src": "Linear personal API key (used by the `linear` skill)"
+  }
+ ],
+ "LINE_ALLOWED_GROUPS": [
+  {
+   "ko": "봇이 답할 LINE 그룹 ID(C 로 시작)를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated LINE group IDs the bot will respond in (C-prefixed)"
+  }
+ ],
+ "LINE_ALLOWED_ROOMS": [
+  {
+   "ko": "봇이 답할 LINE 방 ID(R 로 시작)를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated LINE room IDs the bot will respond in (R-prefixed)"
+  }
+ ],
+ "LINE_ALLOWED_USERS": [
+  {
+   "ko": "봇에게 개인 메시지를 보낼 수 있는 LINE 사용자 ID(U 로 시작)를 쉼표로 구분해 적는다.",
+   "src": "Comma-separated LINE user IDs allowed to DM the bot (U-prefixed)"
+  }
+ ],
+ "LINE_ALLOW_ALL_USERS": [
+  {
+   "ko": "LINE 사용자 누구나 봇과 대화하게 한다(개발용, 허용 목록을 끈다).",
+   "src": "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
+  }
+ ],
+ "LINE_CHANNEL_ACCESS_TOKEN": [
+  {
+   "ko": "LINE 채널 장기 액세스 토큰(LINE Developers Console > Messaging API > Channel access token).",
+   "src": "LINE channel long-lived access token (LINE Developers Console > Messaging API > Channel access token)"
+  }
+ ],
+ "LINE_CHANNEL_SECRET": [
+  {
+   "ko": "LINE 채널 비밀값(HMAC-SHA256 웹훅 서명 확인에 쓴다).",
+   "src": "LINE channel secret (used for HMAC-SHA256 webhook signature verification)"
+  }
+ ],
+ "LINE_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 사용자·그룹·방 ID.",
+   "src": "Default user/group/room ID for cron / notification delivery"
+  }
+ ],
+ "LINE_HOST": [
+  {
+   "ko": "웹훅 바인드 호스트(기본값: 비움 → IPv4+IPv6 모든 인터페이스).",
+   "src": "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
+  }
+ ],
+ "LINE_PORT": [
+  {
+   "ko": "웹훅이 받는 포트(기본값: 8646).",
+   "src": "Webhook listen port (default: 8646)"
+  }
+ ],
+ "LINE_PUBLIC_URL": [
+  {
+   "ko": "LINE 에 이미지·오디오·영상을 보낼 공개 HTTPS 기본 URL(예: https://my-tunnel.example.com). 바인드 주소에 바로 닿을 수 없을 때 미디어를 보내려면 꼭 넣는다.",
+   "src": "Public HTTPS base URL for serving images/audio/video to LINE (e.g. https://my-tunnel.example.com). Required for media sending when the bind address is not directly reachable."
+  }
+ ],
+ "LINE_SLOW_RESPONSE_THRESHOLD": [
+  {
+   "ko": "LLM 답이 느릴 때 포스트백 버튼을 보내기까지 기다리는 초(기본값: 45. 0 이면 끄고 늘 Push 로 보낸다).",
+   "src": "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
+  }
+ ],
+ "LM_API_KEY": [
+  {
+   "ko": "인증을 켠 로컬 서버에 쓰는 LM Studio Bearer 토큰.",
+   "src": "LM Studio bearer token for auth-enabled local servers"
+  }
+ ],
+ "LM_BASE_URL": [
+  {
+   "ko": "LM Studio 기본 URL 을 바꾼다.",
+   "src": "LM Studio base URL override"
+  }
+ ],
+ "MATRIX_ACCESS_TOKEN": [
+  {
+   "ko": "Matrix 접근 토큰. 비밀번호 로그인보다 이것을 먼저 쓴다.",
+   "src": "Matrix access token (preferred over password login)"
+  }
+ ],
+ "MATRIX_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 Matrix 사용자 ID 를 쉼표로 구분한 목록(@user:server 형식).",
+   "src": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)"
+  }
+ ],
+ "MATRIX_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 Matrix 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any Matrix user to trigger the bot (dev only)"
+  }
+ ],
+ "MATRIX_AUTO_THREAD": [
+  {
+   "ko": "Matrix 방의 메시지에 스레드를 자동으로 만든다(기본값: true).",
+   "src": "Auto-create threads for messages in Matrix rooms (default: true)"
+  }
+ ],
+ "MATRIX_DEVICE_ID": [
+  {
+   "ko": "다시 시작해도 E2EE 상태를 유지하는 고정 Matrix 기기 ID(예: HERMES_BOT).",
+   "src": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)"
+  }
+ ],
+ "MATRIX_DM_AUTO_THREAD": [
+  {
+   "ko": "Matrix DM 메시지에 스레드를 자동으로 만든다(기본값: false).",
+   "src": "Auto-create threads for DM messages in Matrix (default: false)"
+  }
+ ],
+ "MATRIX_FREE_RESPONSE_ROOMS": [
+  {
+   "ko": "@멘션 없이도 봇이 답하는 Matrix 방 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated Matrix room IDs where bot responds without @mention"
+  }
+ ],
+ "MATRIX_HOMESERVER": [
+  {
+   "ko": "Matrix 홈서버 URL(예: https://matrix.example.org).",
+   "src": "Matrix homeserver URL (e.g. https://matrix.example.org)"
+  }
+ ],
+ "MATRIX_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 방 ID.",
+   "src": "Default room ID for cron / notification delivery"
+  }
+ ],
+ "MATRIX_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Matrix 기본 방의 표시 이름.",
+   "src": "Display name for the Matrix home room"
+  }
+ ],
+ "MATRIX_PASSWORD": [
+  {
+   "ko": "Matrix 계정 비밀번호(MATRIX_ACCESS_TOKEN 대신 쓴다).",
+   "src": "Matrix account password (alternative to MATRIX_ACCESS_TOKEN)"
+  }
+ ],
+ "MATRIX_RECOVERY_KEY": [
+  {
+   "ko": "기기 키를 바꾼 뒤 교차 서명 확인에 쓰는 Matrix 복구 키(Element: 설정 → 보안 → 복구 키).",
+   "src": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)"
+  }
+ ],
+ "MATRIX_REQUIRE_MENTION": [
+  {
+   "ko": "Matrix 방에서 @멘션이 있어야 답한다(기본값: true). false 면 모든 메시지에 답한다.",
+   "src": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages."
+  }
+ ],
+ "MATRIX_USER_ID": [
+  {
+   "ko": "Matrix 사용자 ID(예: @hermes:example.org).",
+   "src": "Matrix user ID (e.g. @hermes:example.org)"
+  }
+ ],
+ "MATTERMOST_ALLOWED_CHANNELS": [
+  {
+   "ko": "넣으면 봇이 이 채널에서만 답한다(허용 목록).",
+   "src": "If set, the bot only responds in these channels (whitelist)."
+  }
+ ],
+ "MATTERMOST_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 Mattermost 사용자 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated Mattermost user IDs allowed to use the bot"
+  }
+ ],
+ "MATTERMOST_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 Mattermost 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any Mattermost user to trigger the bot (dev only)"
+  }
+ ],
+ "MATTERMOST_FREE_RESPONSE_CHANNELS": [
+  {
+   "ko": "@멘션 없이도 봇이 답하는 Mattermost 채널 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated Mattermost channel IDs where bot responds without @mention"
+  }
+ ],
+ "MATTERMOST_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채널 ID.",
+   "src": "Default channel ID for cron / notification delivery"
+  }
+ ],
+ "MATTERMOST_REPLY_MODE": [
+  {
+   "ko": "답을 보내는 방식: 'thread'(스레드로) 또는 'off'(평평하게). 기본값: off.",
+   "src": "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
+  }
+ ],
+ "MATTERMOST_REQUIRE_MENTION": [
+  {
+   "ko": "Mattermost 채널에서 @멘션이 있어야 답한다(기본값: true). false 면 모든 메시지에 답한다.",
+   "src": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages."
+  }
+ ],
+ "MATTERMOST_TOKEN": [
+  {
+   "ko": "Mattermost 봇 토큰 또는 개인 접근 토큰.",
+   "src": "Mattermost bot token or personal access token"
+  }
+ ],
+ "MATTERMOST_URL": [
+  {
+   "ko": "Mattermost 서버 URL(예: https://mm.example.com).",
+   "src": "Mattermost server URL (e.g. https://mm.example.com)"
+  }
+ ],
+ "MEM0_API_KEY": [
+  {
+   "ko": "의미 기반 장기 기억에 쓰는 Mem0 Platform 의 API 키.",
+   "src": "Mem0 Platform API key for semantic persistent memory"
+  }
+ ],
+ "META_API_KEY": [
+  {
+   "ko": "Meta Model API 의 API 키.",
+   "src": "Meta Model API API key"
+  }
+ ],
+ "META_BASE_URL": [
+  {
+   "ko": "Meta Model API 기본 URL 을 바꾼다.",
+   "src": "Meta Model API base URL override"
+  }
+ ],
+ "META_MODEL_API_KEY": [
+  {
+   "ko": "Meta Model API 의 API 키.",
+   "src": "Meta Model API API key"
+  }
+ ],
+ "MINIMAX_API_KEY": [
+  {
+   "ko": "MiniMax API 키(국제).",
+   "src": "MiniMax API key (international)"
+  }
+ ],
+ "MINIMAX_BASE_URL": [
+  {
+   "ko": "MiniMax 기본 URL 을 바꾼다.",
+   "src": "MiniMax base URL override"
+  }
+ ],
+ "MINIMAX_CN_API_KEY": [
+  {
+   "ko": "MiniMax API 키(중국 엔드포인트).",
+   "src": "MiniMax API key (China endpoint)"
+  }
+ ],
+ "MINIMAX_CN_BASE_URL": [
+  {
+   "ko": "MiniMax(중국) 기본 URL 을 바꾼다.",
+   "src": "MiniMax (China) base URL override"
+  }
+ ],
+ "MISTRAL_API_KEY": [
+  {
+   "ko": "Voxtral 음성 합성(TTS)과 받아쓰기(STT)에 쓰는 Mistral 의 API 키.",
+   "src": "Mistral API key for Voxtral TTS and transcription (STT)"
+  }
+ ],
+ "MODEL_API_KEY": [
+  {
+   "ko": "Meta Model API 의 API 키.",
+   "src": "Meta Model API API key"
+  }
+ ],
+ "NEBIUS_API_KEY": [
+  {
+   "ko": "Nebius Token Factory 의 API 키.",
+   "src": "Nebius Token Factory API key"
+  }
+ ],
+ "NEBIUS_BASE_URL": [
+  {
+   "ko": "Nebius Token Factory 기본 URL 을 바꾼다.",
+   "src": "Nebius Token Factory base URL override"
+  }
+ ],
+ "NEBIUS_TOKEN_FACTORY_API_KEY": [
+  {
+   "ko": "Nebius Token Factory 의 API 키.",
+   "src": "Nebius Token Factory API key"
+  }
+ ],
+ "NOTION_API_KEY": [
+  {
+   "ko": "Notion 연동 토큰(`notion` 스킬이 쓴다).",
+   "src": "Notion integration token (used by the `notion` skill)"
+  }
+ ],
+ "NOUS_BASE_URL": [
+  {
+   "ko": "Nous Portal 기본 URL 을 바꾼다.",
+   "src": "Nous Portal base URL override"
+  }
+ ],
+ "NOVITA_API_KEY": [
+  {
+   "ko": "NovitaAI 의 API 키.",
+   "src": "NovitaAI API key"
+  }
+ ],
+ "NOVITA_BASE_URL": [
+  {
+   "ko": "NovitaAI 기본 URL 을 바꾼다.",
+   "src": "NovitaAI base URL override"
+  }
+ ],
+ "NTFY_ALLOWED_USERS": [
+  {
+   "ko": "허용할 토픽 이름을 쉼표로 구분한 목록(허용 목록).",
+   "src": "Comma-separated topic names allowed (allowlist)"
+  }
+ ],
+ "NTFY_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 토픽이 봇과 대화할 수 있게 한다(개발용 — 허용 목록을 끈다).",
+   "src": "Allow any topic to talk to the bot (dev only — disables allowlist)"
+  }
+ ],
+ "NTFY_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 토픽.",
+   "src": "Default topic for cron / notification delivery"
+  }
+ ],
+ "NTFY_HOME_CHANNEL_NAME": [
+  {
+   "ko": "기본 채널의 표시 이름(기본값: 토픽 이름).",
+   "src": "Human label for the home channel (defaults to the topic name)"
+  }
+ ],
+ "NTFY_MARKDOWN": [
+  {
+   "ko": "답에 X-Markdown: true 헤더를 붙여 보낸다(true/false, 기본값: false).",
+   "src": "Send replies with X-Markdown: true header (true/false, default: false)"
+  }
+ ],
+ "NTFY_PUBLISH_TOPIC": [
+  {
+   "ko": "답을 올릴 토픽(기본값: NTFY_TOPIC).",
+   "src": "Topic to publish replies to (defaults to NTFY_TOPIC)"
+  }
+ ],
+ "NTFY_SERVER_URL": [
+  {
+   "ko": "ntfy 서버 URL(기본값: https://ntfy.sh).",
+   "src": "ntfy server URL (default: https://ntfy.sh)"
+  }
+ ],
+ "NTFY_TOKEN": [
+  {
+   "ko": "Bearer 토큰 또는 Basic 인증용 'user:pass'(선택).",
+   "src": "Bearer token or 'user:pass' for Basic auth (optional)"
+  }
+ ],
+ "NTFY_TOPIC": [
+  {
+   "ko": "구독할 토픽 이름(예: hermes-in).",
+   "src": "Topic name to subscribe to (e.g. hermes-in)"
+  }
+ ],
+ "NVIDIA_API_KEY": [
+  {
+   "ko": "NVIDIA NIM 의 API 키(build.nvidia.com 또는 로컬 NIM 엔드포인트).",
+   "src": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)"
+  }
+ ],
+ "NVIDIA_BASE_URL": [
+  {
+   "ko": "NVIDIA NIM 기본 URL 을 바꾼다(예: 로컬 NIM 은 http://localhost:8000/v1).",
+   "src": "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)"
+  }
+ ],
+ "OLLAMA_API_KEY": [
+  {
+   "ko": "Ollama Cloud 의 API 키(ollama.com — 클라우드에서 돌리는 공개 모델).",
+   "src": "Ollama Cloud API key (ollama.com — cloud-hosted open models)"
+  }
+ ],
+ "OLLAMA_BASE_URL": [
+  {
+   "ko": "Ollama Cloud 기본 URL 을 바꾼다(기본값: https://ollama.com/v1).",
+   "src": "Ollama Cloud base URL override (default: https://ollama.com/v1)"
+  }
+ ],
+ "OPENAI_API_KEY": [
+  {
+   "ko": "OpenAI API(api.openai.com)의 API 키.",
+   "src": "OpenAI API (api.openai.com, API key)"
+  }
+ ],
+ "OPENAI_BASE_URL": [
+  {
+   "ko": "OpenAI API 기본 URL 을 바꾼다.",
+   "src": "OpenAI API base URL override"
+  }
+ ],
+ "OPENCODE_GO_API_KEY": [
+  {
+   "ko": "OpenCode Go 의 API 키(공개 모델용 월 $10 구독).",
+   "src": "OpenCode Go API key ($10/month subscription for open models)"
+  }
+ ],
+ "OPENCODE_GO_BASE_URL": [
+  {
+   "ko": "OpenCode Go 기본 URL 을 바꾼다.",
+   "src": "OpenCode Go base URL override"
+  }
+ ],
+ "OPENCODE_ZEN_API_KEY": [
+  {
+   "ko": "OpenCode Zen 의 API 키(골라 둔 모델을 쓴 만큼 낸다).",
+   "src": "OpenCode Zen API key (pay-as-you-go access to curated models)"
+  }
+ ],
+ "OPENCODE_ZEN_BASE_URL": [
+  {
+   "ko": "OpenCode Zen 기본 URL 을 바꾼다.",
+   "src": "OpenCode Zen base URL override"
+  }
+ ],
+ "OPENROUTER_API_KEY": [
+  {
+   "ko": "OpenRouter 의 API 키(이미지 분석, 웹 스크래핑 보조, MoA 에 쓴다).",
+   "src": "OpenRouter API key (for vision, web scraping helpers, and MoA)"
+  }
+ ],
+ "OPENVIKING_API_KEY": [
+  {
+   "ko": "OpenViking 의 API 키(로컬 개발 모드에서는 비워 둔다).",
+   "src": "OpenViking API key (leave blank for local dev mode)"
+  }
+ ],
+ "OPENVIKING_ENDPOINT": [
+  {
+   "ko": "OpenViking 서버 URL(기본값: http://127.0.0.1:1933).",
+   "src": "OpenViking server URL (default: http://127.0.0.1:1933)"
+  }
+ ],
+ "PARALLEL_API_KEY": [
+  {
+   "ko": "AI 용 웹 검색과 본문 추출에 쓰는 Parallel 의 API 키.",
+   "src": "Parallel API key for AI-native web search and extract"
+  }
+ ],
+ "PERPLEXITY_API_KEY": [
+  {
+   "ko": "웹 검색 백엔드(Search API)에 쓰는 Perplexity 의 API 키(순위 결과와 질문에 맞는 페이지 발췌).",
+   "src": "Perplexity API key for the Search API web backend (ranked results + query-relevant page snippets)"
+  }
+ ],
+ "PHOTON_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 E.164 전화번호를 쉼표로 구분한 목록.",
+   "src": "Comma-separated E.164 phone numbers allowed to talk to the bot"
+  }
+ ],
+ "PHOTON_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 발신자가 봇을 부를 수 있게 한다(개발용 — 허용 목록을 끈다).",
+   "src": "Allow any sender to trigger the bot (dev only — disables allowlist)"
+  }
+ ],
+ "PHOTON_DASHBOARD_HOST": [
+  {
+   "ko": "Photon Dashboard API 호스트(기본값: https://app.photon.codes).",
+   "src": "Photon Dashboard API host (default https://app.photon.codes)"
+  }
+ ],
+ "PHOTON_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 Photon 대상: Spectrum 공간 id, DM GUID, 또는 E.164 전화번호.",
+   "src": "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number"
+  }
+ ],
+ "PHOTON_HOME_CHANNEL_NAME": [
+  {
+   "ko": "기본 채널의 표시 이름.",
+   "src": "Human label for the home channel"
+  }
+ ],
+ "PHOTON_MARKDOWN": [
+  {
+   "ko": "에이전트 답을 마크다운으로 보낸다. iMessage 는 그대로 그리고 다른 Spectrum 플랫폼은 일반 글로 보인다(true/false, 기본값: true).",
+   "src": "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
+  }
+ ],
+ "PHOTON_MENTION_PATTERNS": [
+  {
+   "ko": "그룹 대화에서 봇을 부르는 말의 정규식(JSON 목록 또는 쉼표·줄바꿈 구분. 기본값: Hermes 호출어).",
+   "src": "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+  }
+ ],
+ "PHOTON_NODE_BIN": [
+  {
+   "ko": "node 실행 파일 경로(기본값: PM 이 고정한 node, 다음은 PATH).",
+   "src": "Path to the node binary (default: PM's pinned node, then PATH)"
+  },
+  {
+   "ko": "node 실행 파일 경로(기본값: shutil.which('node')).",
+   "src": "Path to the node binary (default: shutil.which('node'))"
+  }
+ ],
+ "PHOTON_PROJECT_ID": [
+  {
+   "ko": "Spectrum 프로젝트 id(프로젝트의 spectrumProjectId. `hermes photon setup` 이 넣는다).",
+   "src": "Spectrum project id (the project's spectrumProjectId; set by `hermes photon setup`)"
+  }
+ ],
+ "PHOTON_PROJECT_SECRET": [
+  {
+   "ko": "Spectrum 프로젝트 id 와 짝인 프로젝트 비밀값(`hermes photon setup` 이 넣는다).",
+   "src": "Project secret paired with the Spectrum project id (set by `hermes photon setup`)"
+  }
+ ],
+ "PHOTON_REACTIONS": [
+  {
+   "ko": "처리 상태를 메시지에 탭백 👀/👍/👎 으로 표시하고, 봇 메시지에 단 탭백을 에이전트에 전달한다(true/false, 기본값: false).",
+   "src": "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
+  }
+ ],
+ "PHOTON_READ_RECEIPTS": [
+  {
+   "ko": "받은 iMessage 를 Hermes 에 넘긴 뒤 읽음으로 표시한다(true/false, 기본값: true).",
+   "src": "Mark inbound iMessages read after forwarding to Hermes (true/false, default true)"
+  }
+ ],
+ "PHOTON_REQUIRE_MENTION": [
+  {
+   "ko": "그룹 대화 메시지는 호출어와 맞을 때만 답한다(true/false, 기본값: false).",
+   "src": "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
+  }
+ ],
+ "PHOTON_SIDECAR_AUTOSTART": [
+  {
+   "ko": "연결할 때 Node 사이드카를 띄운다(true/false, 기본값: true).",
+   "src": "Spawn the Node sidecar on connect (true/false, default true)"
+  }
+ ],
+ "PHOTON_SIDECAR_PORT": [
+  {
+   "ko": "Node 사이드카 제어·받는 채널용 루프백 포트(기본값: 8789).",
+   "src": "Loopback port for the Node sidecar control + inbound channel (default 8789)"
+  }
+ ],
+ "PHOTON_SIDECAR_TOKEN": [
+  {
+   "ko": "루프백 사이드카 채널의 공유 비밀값(기본값: 시작할 때마다 무작위).",
+   "src": "Shared secret for the loopback sidecar channel (default: random per start)"
+  }
+ ],
+ "PHOTON_SPECTRUM_HOST": [
+  {
+   "ko": "Photon Spectrum API 호스트(기본값: https://spectrum.photon.codes).",
+   "src": "Photon Spectrum API host (default https://spectrum.photon.codes)"
+  }
+ ],
+ "PHOTON_TELEMETRY": [
+  {
+   "ko": "사이드카에서 Spectrum SDK 원격 수집을 켠다(true/false, 기본값: false. `hermes photon telemetry on|off` 로 바꾼다).",
+   "src": "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"
+  }
+ ],
+ "PORCUPINE_ACCESS_KEY": [
+  {
+   "ko": "Porcupine 'Hey Hermes' 호출어 엔진에 쓰는 Picovoice 접근 키(선택, 기본은 무료인 openWakeWord).",
+   "src": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)"
+  }
+ ],
+ "QQBOT_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 QQ 채널·그룹.",
+   "src": "Default QQ channel/group for cron delivery and notifications"
+  }
+ ],
+ "QQBOT_HOME_CHANNEL_NAME": [
+  {
+   "ko": "QQ 기본 채널의 표시 이름.",
+   "src": "Display name for the QQ home channel"
+  }
+ ],
+ "QQ_ALLOWED_USERS": [
+  {
+   "ko": "봇을 쓸 수 있는 QQ 사용자 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated QQ user IDs allowed to use the bot"
+  }
+ ],
+ "QQ_ALLOW_ALL_USERS": [
+  {
+   "ko": "허용 목록 없이 모든 QQ 사용자를 허용한다(true/false).",
+   "src": "Allow all QQ users without an allowlist (true/false)"
+  }
+ ],
+ "QQ_APP_ID": [
+  {
+   "ko": "QQ Open Platform(q.qq.com)에서 받은 QQ 봇 App ID.",
+   "src": "QQ Bot App ID from QQ Open Platform (q.qq.com)"
+  }
+ ],
+ "QQ_CLIENT_SECRET": [
+  {
+   "ko": "QQ Open Platform 에서 받은 QQ 봇 Client Secret.",
+   "src": "QQ Bot Client Secret from QQ Open Platform"
+  }
+ ],
+ "QQ_GROUP_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 QQ 그룹 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated QQ group IDs allowed to interact with the bot"
+  }
+ ],
+ "QQ_SANDBOX": [
+  {
+   "ko": "개발 시험용 QQ 샌드박스 모드를 켠다(true/false).",
+   "src": "Enable QQ sandbox mode for development testing (true/false)"
+  }
+ ],
+ "RAFT_PROFILE": [
+  {
+   "ko": "Raft 에이전트 프로파일 이름(slug). 넣으면 어댑터가 저절로 켜진다.",
+   "src": "Raft agent profile slug — auto-enables the adapter when set"
+  }
+ ],
+ "RAMP_ROUTER_API_KEY": [
+  {
+   "ko": "Ramp Router 의 API 키.",
+   "src": "Ramp Router API key"
+  }
+ ],
+ "RAMP_ROUTER_BASE_URL": [
+  {
+   "ko": "Ramp Router 기본 URL 을 바꾼다.",
+   "src": "Ramp Router base URL override"
+  }
+ ],
+ "RETAINDB_API_KEY": [
+  {
+   "ko": "장기 기억에 쓰는 RetainDB 의 API 키.",
+   "src": "RetainDB API key for persistent memory"
+  }
+ ],
+ "RETAINDB_BASE_URL": [
+  {
+   "ko": "직접 운영하는 RetainDB 의 기본 URL(기본값: https://api.retaindb.com).",
+   "src": "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)"
+  }
+ ],
+ "ROUTER_API_KEY": [
+  {
+   "ko": "Ramp Router 의 API 키.",
+   "src": "Ramp Router API key"
+  }
+ ],
+ "SEARXNG_URL": [
+  {
+   "ko": "직접 운영하는 무료 웹 검색 SearXNG 의 URL.",
+   "src": "URL of your SearXNG instance for free self-hosted web search"
+  }
+ ],
+ "SIMPLEX_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 SimpleX 연락처 ID 를 쉼표로 구분한 목록.",
+   "src": "Comma-separated SimpleX contact IDs allowed to talk to the bot"
+  }
+ ],
+ "SIMPLEX_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 연락처가 봇과 대화할 수 있게 한다(개발용 — 허용 목록을 끈다).",
+   "src": "Allow any contact to talk to the bot (dev only — disables allowlist)"
+  }
+ ],
+ "SIMPLEX_AUTO_ACCEPT": [
+  {
+   "ko": "들어온 연락처 요청을 자동으로 받아들인다(기본값: true).",
+   "src": "Auto-accept incoming contact requests (default: true)"
+  }
+ ],
+ "SIMPLEX_GROUP_ALLOWED": [
+  {
+   "ko": "봇이 참여할 SimpleX 그룹 ID 를 쉼표로 구분한 목록, '*' 면 모든 그룹. 비우면 그룹 메시지를 모두 무시한다(더 안전한 기본값).",
+   "src": "Comma-separated SimpleX group IDs the bot should participate in, or '*' to allow any group. Omit to ignore group messages entirely (safer default — a bot in a group otherwise processes every member's traffic)."
+  }
+ ],
+ "SIMPLEX_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 연락처·그룹 ID.",
+   "src": "Default contact/group ID for cron / notification delivery"
+  }
+ ],
+ "SIMPLEX_HOME_CHANNEL_NAME": [
+  {
+   "ko": "기본 채널의 표시 이름(기본값: ID).",
+   "src": "Human label for the home channel (defaults to the ID)"
+  }
+ ],
+ "SIMPLEX_WS_URL": [
+  {
+   "ko": "simplex-chat 데몬의 WebSocket URL(예: ws://127.0.0.1:5225).",
+   "src": "WebSocket URL of the simplex-chat daemon (e.g. ws://127.0.0.1:5225)"
+  }
+ ],
+ "SLACK_ALLOWED_USERS": [
+  {
+   "ko": "Hermes 를 쓸 수 있는 Slack 멤버 ID 를 쉼표로 구분한 목록(예: U01ABC2DEF3). 없으면 연결은 돼도 메시지를 기본으로 거절한다.",
+   "src": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default."
+  }
+ ],
+ "SLACK_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 Slack 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any Slack user to trigger the bot (dev only)"
+  }
+ ],
+ "SLACK_APP_TOKEN": [
+  {
+   "ko": "Socket Mode 용 Slack 앱 수준 토큰(xapp-). Basic Information → App-Level Tokens 에서 받는다. Event Subscriptions 에 message.im 등 메시지 이벤트와 app_mention 을 넣는다.",
+   "src": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → App-Level Tokens. Also ensure Event Subscriptions include: message.im, message.channels, message.groups, message.mpim, app_mention"
+  }
+ ],
+ "SLACK_BOT_TOKEN": [
+  {
+   "ko": "Slack 봇 토큰(xoxb-). 앱을 설치한 뒤 OAuth & Permissions 에서 받는다. chat:write·channels:history·im:history·users:read·files:write 등의 권한이 필요하다.",
+   "src": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. Required scopes: chat:write, app_mentions:read, channels:history, groups:history, im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write"
+  }
+ ],
+ "SLACK_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채널 ID(C 로 시작).",
+   "src": "Default channel ID for cron / notification delivery (starts with C)"
+  }
+ ],
+ "SLACK_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Slack 기본 채널의 표시 이름.",
+   "src": "Display name for the Slack home channel"
+  }
+ ],
+ "SLACK_THREAD_REQUIRE_MENTION": [
+  {
+   "ko": "Slack 스레드 답에는 @멘션을 요구한다. 멘션 없이 답하는 채널의 최상위 메시지는 그대로 둔다.",
+   "src": "Require an explicit @mention for Slack thread replies while preserving top-level free response channels"
+  }
+ ],
+ "SMS_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 전화번호를 쉼표로 구분한 목록.",
+   "src": "Comma-separated phone numbers allowed to talk to the bot"
+  }
+ ],
+ "SMS_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 전화번호.",
+   "src": "Default phone number for cron / notification delivery"
+  }
+ ],
+ "STEPFUN_API_KEY": [
+  {
+   "ko": "StepFun Step Plan 의 API 키.",
+   "src": "StepFun Step Plan API key"
+  }
+ ],
+ "STEPFUN_BASE_URL": [
+  {
+   "ko": "StepFun Step Plan 기본 URL 을 바꾼다.",
+   "src": "StepFun Step Plan base URL override"
+  }
+ ],
+ "SUDO_PASSWORD": [
+  {
+   "ko": "root 권한이 필요한 터미널 명령에 쓰는 sudo 비밀번호. 빈 문자열을 넣으면 묻지 않고 빈 비밀번호로 시도한다.",
+   "src": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting"
+  }
+ ],
+ "SUPERMEMORY_API_KEY": [
+  {
+   "ko": "대화 단위 장기 기억에 쓰는 Supermemory 의 API 키.",
+   "src": "Supermemory API key for conversation-scoped persistent memory"
+  }
+ ],
+ "TAVILY_API_KEY": [
+  {
+   "ko": "AI 용 웹 검색과 본문 추출에 쓰는 Tavily 의 API 키(선택 — Tavily 를 고르면 키 없이도 동작한다).",
+   "src": "Tavily API key for AI-native web search and extract (optional — keyless works when Tavily is selected)"
+  }
+ ],
+ "TEAMS_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 Teams 사용자 ID·UPN 을 쉼표로 구분한 목록.",
+   "src": "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
+  }
+ ],
+ "TEAMS_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 Teams 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any Teams user to trigger the bot (dev only)"
+  }
+ ],
+ "TEAMS_CLIENT_ID": [
+  {
+   "ko": "Azure AD 애플리케이션(Bot Framework) 클라이언트 ID.",
+   "src": "Azure AD application (Bot Framework) client ID"
+  }
+ ],
+ "TEAMS_CLIENT_SECRET": [
+  {
+   "ko": "Azure AD 애플리케이션 클라이언트 비밀값.",
+   "src": "Azure AD application client secret"
+  }
+ ],
+ "TEAMS_GRAPH_ACCESS_TOKEN": [
+  {
+   "ko": "graph 모드에서 회의 요약을 보낼 때 쓰는 Microsoft Graph 접근 토큰.",
+   "src": "Microsoft Graph access token for meeting-summary delivery in graph mode"
+  }
+ ],
+ "TEAMS_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 대화·채널 ID.",
+   "src": "Default chat/channel ID for cron / notification delivery"
+  }
+ ],
+ "TEAMS_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Teams 기본 채널의 표시 이름.",
+   "src": "Display name for the Teams home channel"
+  }
+ ],
+ "TEAMS_HOST": [
+  {
+   "ko": "웹훅 바인드 호스트(기본값: 비움 → IPv4+IPv6 모든 인터페이스).",
+   "src": "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
+  }
+ ],
+ "TEAMS_INCOMING_WEBHOOK_URL": [
+  {
+   "ko": "webhook 모드에서 회의 요약을 보낼 Incoming Webhook URL(URL 자체가 자격증명이다).",
+   "src": "Incoming-webhook URL for meeting-summary delivery in webhook mode (the URL is the credential)"
+  }
+ ],
+ "TEAMS_PORT": [
+  {
+   "ko": "웹훅이 받는 포트(Bot Framework 기본값: 3978).",
+   "src": "Webhook listen port (Bot Framework default: 3978)"
+  }
+ ],
+ "TEAMS_REQUIRE_MENTION": [
+  {
+   "ko": "봇을 @멘션하거나 봇에 답한 채널·그룹 메시지에만 답한다(기본값: false. 앱이 RSC 메시지 읽기 동의를 받으면 필요하다).",
+   "src": "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
+  }
+ ],
+ "TEAMS_TENANT_ID": [
+  {
+   "ko": "봇 애플리케이션이 있는 Azure AD 테넌트 ID.",
+   "src": "Azure AD tenant ID hosting the bot application"
+  }
+ ],
+ "TELEGRAM_ALLOWED_USERS": [
+  {
+   "ko": "바로 허용할 Telegram 사용자 ID(숫자)를 쉼표로 구분해 넣는다. 비워 두면 새 사용자를 DM 짝짓기로 승인한다.",
+   "src": "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to approve new users through DM pairing"
+  }
+ ],
+ "TELEGRAM_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 Telegram 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any Telegram user to trigger the bot (dev only)"
+  }
+ ],
+ "TELEGRAM_BOT_TOKEN": [
+  {
+   "ko": "@BotFather 가 만든 Telegram 봇 토큰 전체(숫자 봇 ID, 콜론, 비밀값 순서).",
+   "src": "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon and secret)"
+  }
+ ],
+ "TELEGRAM_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채팅 ID.",
+   "src": "Default chat ID for cron / notification delivery"
+  }
+ ],
+ "TELEGRAM_HOME_CHANNEL_NAME": [
+  {
+   "ko": "Telegram 기본 채널의 표시 이름.",
+   "src": "Display name for the Telegram home channel"
+  }
+ ],
+ "TELEGRAM_PROXY": [
+  {
+   "ko": "Telegram 연결에 쓰는 프록시 URL(HTTPS_PROXY 보다 우선한다). http://, https://, socks5:// 를 지원한다.",
+   "src": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://"
+  }
+ ],
+ "TELEGRAM_WEBHOOK_SECRET": [
+  {
+   "ko": "Telegram 이 웹훅 갱신마다 보내는 비밀값 토큰(TELEGRAM_WEBHOOK_URL 을 쓰면 필요하다).",
+   "src": "Secret token Telegram sends with each webhook update (required with TELEGRAM_WEBHOOK_URL)"
+  }
+ ],
+ "TENOR_API_KEY": [
+  {
+   "ko": "GIF 검색에 쓰는 Tenor 의 API 키(`gif-search` 스킬이 쓴다).",
+   "src": "Tenor API key for GIF search (used by the `gif-search` skill)"
+  }
+ ],
+ "TOKENHUB_API_KEY": [
+  {
+   "ko": "Tencent TokenHub 의 API 키.",
+   "src": "Tencent TokenHub API key"
+  },
+  {
+   "ko": "Tencent TokenHub(tokenhub.tencentmaas.com 을 거치는 Hy4 미리 보기).",
+   "src": "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"
+  }
+ ],
+ "TOKENHUB_BASE_URL": [
+  {
+   "ko": "Tencent TokenHub 기본 URL 을 바꾼다.",
+   "src": "Tencent TokenHub base URL override"
+  }
+ ],
+ "TOKENPLAN_API_KEY": [
+  {
+   "ko": "Tencent TokenPlan(api.lkeap.cloud.tencent.com 을 거치는 Hy4 미리 보기, Anthropic Messages 형식).",
+   "src": "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"
+  }
+ ],
+ "TOKENPLAN_BASE_URL": [
+  {
+   "ko": "Tencent TokenPlan 기본 URL 을 바꾼다.",
+   "src": "Tencent TokenPlan base URL override"
+  }
+ ],
+ "TOOL_GATEWAY_DOMAIN": [
+  {
+   "ko": "공유 tool-gateway 의 도메인 뒷부분. Nous 구독자만 쓴다. 업체 호스트를 만든다(예: nousresearch.com -> firecrawl-gateway.nousresearch.com).",
+   "src": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com"
+  }
+ ],
+ "TOOL_GATEWAY_SCHEME": [
+  {
+   "ko": "공유 tool-gateway 의 URL 형식. Nous 구독자만 쓴다(기본값: `https`, 로컬 시험은 `http`).",
+   "src": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)"
+  }
+ ],
+ "TOOL_GATEWAY_URL": [
+  {
+   "ko": "같은 출처 업체와 미디어 올리기에 쓰는 공유 tool-gateway 의 정확한 출처 주소(선택).",
+   "src": "Exact shared tool-gateway origin for on-origin vendors and media uploads (optional)"
+  }
+ ],
+ "TOOL_GATEWAY_USER_TOKEN": [
+  {
+   "ko": "tool-gateway 요청에 쓰는 Nous 구독자 접근 토큰(선택, 없으면 Hermes 인증 저장소에서 읽는다).",
+   "src": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)"
+  }
+ ],
+ "TWILIO_ACCOUNT_SID": [
+  {
+   "ko": "Twilio 계정 SID.",
+   "src": "Twilio Account SID"
+  }
+ ],
+ "TWILIO_AUTH_TOKEN": [
+  {
+   "ko": "Twilio 인증 토큰.",
+   "src": "Twilio Auth Token"
+  }
+ ],
+ "TWILIO_PHONE_NUMBER": [
+  {
+   "ko": "Twilio 전화번호(SMS 를 보낼 수 있는 번호, E.164 형식).",
+   "src": "Twilio phone number (SMS-capable, E.164 format)"
+  }
+ ],
+ "UPSTAGE_API_KEY": [
+  {
+   "ko": "Solar LLM 모델에 쓰는 Upstage 의 API 키.",
+   "src": "Upstage API key for Solar LLM models"
+  }
+ ],
+ "UPSTAGE_BASE_URL": [
+  {
+   "ko": "Upstage 기본 URL 을 바꾼다(기본값: https://api.upstage.ai/v1).",
+   "src": "Upstage base URL override (default: https://api.upstage.ai/v1)"
+  }
+ ],
+ "VERTEX_CREDENTIALS_PATH": [
+  {
+   "ko": "Vertex AI(Gemini)용 Google Cloud 서비스 계정 JSON 경로. OAuth2 로 짧은 토큰을 받는다. 비우면 GOOGLE_APPLICATION_CREDENTIALS, 그다음 ADC 를 쓴다. 프로젝트·지역은 config.yaml 의 vertex: 에 넣는다.",
+   "src": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). Vertex uses OAuth2, not a static API key — this points at the credentials Hermes mints short-lived tokens from. Falls back to GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth application-default login). Set project/region under vertex: in config.yaml."
+  }
+ ],
+ "VOICE_TOOLS_OPENAI_KEY": [
+  {
+   "ko": "음성 받아쓰기(Whisper)와 OpenAI 음성 합성(TTS)에 쓰는 OpenAI 의 API 키.",
+   "src": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS"
+  }
+ ],
+ "WEBHOOK_ENABLED": [
+  {
+   "ko": "GitHub, GitLab 등에서 이벤트를 받는 웹훅 플랫폼 어댑터를 켠다.",
+   "src": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc."
+  }
+ ],
+ "WEBHOOK_PORT": [
+  {
+   "ko": "웹훅 HTTP 서버 포트(기본값: 8644).",
+   "src": "Port for the webhook HTTP server (default: 8644)."
+  }
+ ],
+ "WEBHOOK_SECRET": [
+  {
+   "ko": "웹훅 서명을 검사하는 전체 공통 HMAC 비밀값(config.yaml 에서 경로마다 바꿀 수 있다).",
+   "src": "Global HMAC secret for webhook signature validation (overridable per route in config.yaml)."
+  }
+ ],
+ "WECOM_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 WeCom 사용자 ID 를 쉼표로 구분해 넣는다.",
+   "src": "Comma-separated WeCom user IDs allowed to talk to the bot"
+  }
+ ],
+ "WECOM_BOT_ID": [
+  {
+   "ko": "WeCom Smart Robot 봇 ID.",
+   "src": "WeCom Smart Robot bot ID"
+  }
+ ],
+ "WECOM_CALLBACK_AGENT_ID": [
+  {
+   "ko": "WeCom 콜백 방식의 agent ID.",
+   "src": "WeCom callback-mode agent ID"
+  }
+ ],
+ "WECOM_CALLBACK_CORP_ID": [
+  {
+   "ko": "WeCom 콜백 방식의 corp ID(직접 만든 앱).",
+   "src": "WeCom callback-mode corp ID (self-built apps)"
+  }
+ ],
+ "WECOM_CALLBACK_CORP_SECRET": [
+  {
+   "ko": "WeCom 콜백 방식의 corp 비밀값.",
+   "src": "WeCom callback-mode corp secret"
+  }
+ ],
+ "WECOM_CALLBACK_ENCODING_AES_KEY": [
+  {
+   "ko": "메시지 암호화에 쓰는 WeCom 콜백 EncodingAESKey.",
+   "src": "WeCom callback EncodingAESKey for message crypto"
+  }
+ ],
+ "WECOM_CALLBACK_TOKEN": [
+  {
+   "ko": "WeCom 콜백 확인 토큰.",
+   "src": "WeCom callback verification token"
+  }
+ ],
+ "WECOM_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채팅 ID.",
+   "src": "Default chat ID for cron / notification delivery"
+  }
+ ],
+ "WECOM_SECRET": [
+  {
+   "ko": "WeCom Smart Robot 비밀값.",
+   "src": "WeCom Smart Robot secret"
+  }
+ ],
+ "WECOM_WEBSOCKET_URL": [
+  {
+   "ko": "WeCom Smart Robot 의 WebSocket 주소(URL).",
+   "src": "WeCom Smart Robot WebSocket URL"
+  }
+ ],
+ "WHATSAPP_ALLOWED_USERS": [
+  {
+   "ko": "봇과 대화할 수 있는 WhatsApp 사용자 ID 를 쉼표로 구분해 넣는다.",
+   "src": "Comma-separated WhatsApp user IDs allowed to talk to the bot"
+  }
+ ],
+ "WHATSAPP_ALLOW_ALL_USERS": [
+  {
+   "ko": "모든 WhatsApp 사용자가 봇을 부를 수 있게 한다(개발용).",
+   "src": "Allow any WhatsApp user to trigger the bot (dev only)"
+  }
+ ],
+ "WHATSAPP_ENABLED": [
+  {
+   "ko": "WhatsApp 어댑터를 켠다(Node.js 브리지가 실행 중이어야 한다).",
+   "src": "Enable the WhatsApp adapter (requires the Node.js bridge running)"
+  }
+ ],
+ "WHATSAPP_HOME_CHANNEL": [
+  {
+   "ko": "크론·알림을 보낼 기본 채팅 ID.",
+   "src": "Default chat ID for cron / notification delivery"
+  }
+ ],
+ "WHATSAPP_HOME_CHANNEL_NAME": [
+  {
+   "ko": "WhatsApp 기본 채널의 표시 이름.",
+   "src": "Display name for the WhatsApp home channel"
+  }
+ ],
+ "XAI_API_KEY": [
+  {
+   "ko": "xAI 의 API 키.",
+   "src": "xAI API key"
+  }
+ ],
+ "XAI_BASE_URL": [
+  {
+   "ko": "xAI 기본 URL 을 바꾼다.",
+   "src": "xAI base URL override"
+  }
+ ],
+ "XIAOMI_API_KEY": [
+  {
+   "ko": "Xiaomi MiMo 모델(mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)에 쓰는 API 키.",
+   "src": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)"
+  }
+ ],
+ "XIAOMI_BASE_URL": [
+  {
+   "ko": "Xiaomi MiMo 기본 URL 을 바꾼다(기본값: https://api.xiaomimimo.com/v1).",
+   "src": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)"
+  }
+ ],
+ "ZAI_API_KEY": [
+  {
+   "ko": "Z.AI 의 API 키(GLM_API_KEY 의 다른 이름).",
+   "src": "Z.AI API key (alias for GLM_API_KEY)"
+  }
+ ],
+ "Z_AI_API_KEY": [
+  {
+   "ko": "Z.AI 의 API 키(GLM_API_KEY 의 다른 이름).",
+   "src": "Z.AI API key (alias for GLM_API_KEY)"
+  }
+ ]
+}

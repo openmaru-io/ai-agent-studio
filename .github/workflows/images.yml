@@ -1,0 +1,94 @@
+# Copyright 2026 OPENMARU, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the AAS server and read sidecar images (linux/amd64, linux/arm64) for each public snapshot on main,
+# and pushes them to GHCR. deploy/compose uses ghcr.io/openmaru-io/cogentai-aas-{server,sidecar}:${AAS_VERSION:-latest}.
+# Tags: latest, snapshot-YYYYMMDD, sha-<short commit>.
+name: Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  image:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cogentai-aas-server
+            context: .
+          - name: cogentai-aas-sidecar
+            context: sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - id: info
+        name: Version information for the UI footer
+        run: |
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "commit_date=$(git log -1 --format=%cd --date=iso)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=snapshot-${{ steps.info.outputs.date }}
+            type=sha,prefix=sha-
+      # Build for this runner first and check the image before anything is pushed.
+      - name: Build for the check
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          tags: check/${{ matrix.name }}:ci
+          build-args: |
+            AAS_VERSION=snapshot-${{ steps.info.outputs.date }}
+            AAS_GIT_COMMIT=${{ github.sha }}
+            AAS_GIT_COMMIT_DATE=${{ steps.info.outputs.commit_date }}
+      - name: No key-like strings in the image files
+        run: |
+          set -euo pipefail
+          docker create --name scan "check/${{ matrix.name }}:ci" >/dev/null
+          mkdir -p image && docker export scan | tar -x -C image --exclude='usr/*' --exclude='lib/*' --exclude='var/*' --exclude='etc/*' --exclude='proc/*' --exclude='sys/*' --exclude='dev/*'
+          docker rm scan >/dev/null
+          pattern='sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+          if grep -rIlE "$pattern" image; then
+            echo "::error::Key-like strings found in the image files above."
+            exit 1
+          fi
+          echo "No key-like strings in $(find image -type f | wc -l) files."
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push (amd64, arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            AAS_VERSION=snapshot-${{ steps.info.outputs.date }}
+            AAS_GIT_COMMIT=${{ github.sha }}
+            AAS_GIT_COMMIT_DATE=${{ steps.info.outputs.commit_date }}

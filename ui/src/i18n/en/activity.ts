@@ -1,0 +1,43 @@
+/*
+ * Copyright 2026 OPENMARU, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+export default {
+  'activity.title': 'Usage',
+  'activity.range': 'Last {days} days',
+  'activity.sub': '{range} · Reads only aggregated values from session records',
+  'activity.sessionsInRange': 'Sessions, {range}',
+  'activity.messagesTools': 'Messages {messages} · Tools {tools}',
+  'activity.inputTokens': 'Input tokens',
+  'activity.outputN': 'Output {n}',
+  'activity.cronShareN': 'Scheduled job share {pct}',
+  'activity.idleProfiles': 'Idle profiles',
+  'activity.noSessionsInRange': 'No sessions, {range}',
+  'activity.byProfile': 'By profile',
+  'activity.noRecord': 'No record',
+  'activity.noActivity': 'No activity',
+  'activity.active': 'Active',
+  'activity.activityInRange': 'Activity, {range}',
+  'activity.sessions': 'Sessions',
+  'activity.messages': 'Messages',
+  'activity.toolCalls': 'Tool calls',
+  'activity.outputTokens': 'Output tokens',
+  'activity.lastActivity': 'Last activity',
+  'activity.none': 'None',
+  'activity.whereFrom': 'Session sources',
+  'activity.source': 'Source',
+  'activity.share': 'Share',
+  'activity.noSessions': 'No sessions',
+  'activity.seeNext': 'Related screens',
+  'activity.cronOf': 'View scheduled jobs of {name}',
+  'activity.channelsOf': 'View messenger connections of {name}',
+  'activity.chatWith': 'Open chat with {name}',
+  'activity.byModel': 'By model',
+  'activity.modelUnrecorded': '(no model recorded)',
+  'activity.modelSettings': 'View settings of this model',
+  'activity.bySource': 'By source',
+  'activity.profile': 'Profile',
+  'activity.grid.model': 'Model',
+  'activity.grid.status': 'Status',
+} as Record<string, string>;

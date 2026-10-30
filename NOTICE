@@ -1,0 +1,14 @@
+CogentAI AI Agent Studio
+Copyright (c) 2026. OPENMARU, Inc.
+https://www.openmaru.io/
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software and assets from third parties under their own
+licenses. See THIRD_PARTY_NOTICES.md for the list, the sources and the licenses.
+This includes Claw3D (MIT License, Copyright (c) 2026 Luke The Dev) in
+ui/src/features/office/scene3d/.
+
+The names "CogentAI", "CogentAI AI Agent Studio", "OPENMARU", "MSAP" and "AINP", and the
+logos and the mascot image in this repository, are not licensed under the
+Apache License. See TRADEMARKS.md.

@@ -1,0 +1,43 @@
+/*
+ * Copyright 2026 OPENMARU, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+export default {
+  'activity.title': '사용량',
+  'activity.range': '최근 {days}일',
+  'activity.sub': '{range} · 세션 기록에서 집계한 값만 읽습니다',
+  'activity.sessionsInRange': '{range} 세션',
+  'activity.messagesTools': '메시지 {messages} · 도구 {tools}',
+  'activity.inputTokens': '입력 토큰',
+  'activity.outputN': '출력 {n}',
+  'activity.cronShareN': '예약 작업 비율 {pct}',
+  'activity.idleProfiles': '쉬는 프로파일',
+  'activity.noSessionsInRange': '{range} 세션 없음',
+  'activity.byProfile': '프로파일별',
+  'activity.noRecord': '기록 없음',
+  'activity.noActivity': '활동 없음',
+  'activity.active': '활동 있음',
+  'activity.activityInRange': '{range} 활동',
+  'activity.sessions': '세션',
+  'activity.messages': '메시지',
+  'activity.toolCalls': '도구 호출',
+  'activity.outputTokens': '출력 토큰',
+  'activity.lastActivity': '마지막 활동',
+  'activity.none': '없음',
+  'activity.whereFrom': '세션 출처',
+  'activity.source': '출처',
+  'activity.share': '비율',
+  'activity.noSessions': '세션이 없습니다',
+  'activity.seeNext': '관련 화면',
+  'activity.cronOf': '{name} 예약 작업 보기',
+  'activity.channelsOf': '{name} 메신저 연결 보기',
+  'activity.chatWith': '{name} 대화 열기',
+  'activity.byModel': '모델별',
+  'activity.modelUnrecorded': '(모델 기록 없음)',
+  'activity.modelSettings': '이 모델 설정 보기',
+  'activity.bySource': '출처별',
+  'activity.profile': '프로파일',
+  'activity.grid.model': '모델',
+  'activity.grid.status': '상태',
+} as Record<string, string>;

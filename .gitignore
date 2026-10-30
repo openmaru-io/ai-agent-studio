@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+
+# React 빌드 산출물(ui/ 에서 npm run build)
+aas/static/
+ui/node_modules/
+
+# compose 시험 환경의 실제 설정(비밀값 포함)
+deploy/compose/.env
+# 그 사본(.env.bak-attach 처럼 고치기 전에 남긴 것)도 비밀값이 든다(2026-10-30)
+deploy/compose/.env.*
+!deploy/compose/.env.example
+
+.venv-pg/
+.venv/
+.gstack/
+
+# 저장소 루트에서 잘못 돌린 npm install, macOS 폴더 정보 파일
+/node_modules/
+.DS_Store

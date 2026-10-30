@@ -1,0 +1,23 @@
+# Hermes 설정의 첫 값(seed). compose 의 hermes-seed 가 데이터 볼륨에 config.yaml 이 없을 때만 복사한다.
+# 복사본이라 Hermes 가 설정 버전을 올리고(44 → 상류 v0.22.2 는 50) 대시보드의 MCP 추가 같은 쓰기도 그 파일에 한다.
+# 모델은 OpenAI 호환 주소 하나다(Ollama·OpenAI·LiteLLM 등). 값은 .env 에서 오고 이 파일에는 주소·키가 없다.
+#   HERMES_LLM_BASE_URL  기본 주소(/v1 포함)    HERMES_LLM_MODEL  모델 이름    HERMES_LLM_API_KEY  키(없으면 비움)
+# provider=custom 에서 api_key 는 여기에 적어야 한다(Hermes 는 OPENAI_API_KEY 를 openai.com 에만 보낸다).
+# 상류 Hermes 는 채팅·크론 차례에서 컨테이너 환경변수가 아니라 프로파일 .env 로 이 참조를 푼다. 그래서 hermes-seed 가
+# 기본 프로파일 .env 에도 세 값을 넣는다.
+_config_version: 44
+
+model:
+  provider: "custom"
+  default: "${HERMES_LLM_MODEL}"
+  base_url: "${HERMES_LLM_BASE_URL}"
+  api_key: "${HERMES_LLM_API_KEY}"
+  # provider=custom 은 모델 정보를 모른다. 비워 두면 작은 값을 가정해 답이 잘리거나 도구가 숨겨진다.
+  # 추론 모델은 사고 과정 토큰이 출력 상한을 같이 쓴다. 작은 로컬 모델이면 그 모델의 문맥 길이에 맞춰 줄인다.
+  max_tokens: 16384
+  context_length: 262144
+
+# Nous 익명 로그인 끄기. 이 값이 없으면(기본 true) Hermes 가 호스팅 커넥터를 처음 쓸 때 외부 포털에 익명 계정을 만든다.
+# 이미 있는 프로파일에는 AAS 서버가 한 번 넣는다.
+nous:
+  guest: false

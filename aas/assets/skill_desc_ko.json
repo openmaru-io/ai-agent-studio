@@ -1,0 +1,557 @@
+{
+ "01bef27918767d23": {
+  "ko": "ASCII 영상: 영상·오디오를 색이 있는 ASCII MP4·GIF 로 바꾼다.",
+  "name": "ascii-video",
+  "src": "ASCII video: convert video/audio to colored ASCII MP4/GIF."
+ },
+ "02393ec3413df3ca": {
+  "ko": "글을 사람이 쓴 것처럼 고친다: AI 가 쓴 티가 나는 표현을 빼고 사람의 말투를 살린다.",
+  "name": "humanizer",
+  "src": "Humanize text: strip AI-isms and add real voice."
+ },
+ "0261ee74e7e3fc1d": {
+  "ko": "Anthropic 의 공식 브랜드 색과 글꼴을 결과물에 적용한다. 브랜드 색·스타일 가이드·회사 디자인 기준이 필요할 때 쓴다.",
+  "name": "brand-guidelines",
+  "src": "Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand colors or style guidelines, visual formatting, or company design standards apply."
+ },
+ "0335167675af7418": {
+  "ko": "스킬 허브 시험용 에이전트 패키지. 성격(SOUL)과 스킬 하나를 가진 새 프로파일로 설치된다. 설치 경로 시험에만 쓴다.",
+  "name": "aac-trial-agent",
+  "src": "AAC marketplace trial agent package. Installs as a new profile with a SOUL and one bundled skill. Use only for install-path testing."
+ },
+ "047e59f971a9b7cc": {
+  "ko": "운영 수준의 접근성 있고 반응형인 화면을 만든다. 화면·페이지·컴포넌트·배치를 만들거나 고칠 때, WCAG 접근성 요구를 맞출 때, 상태를 관리할 때 쓴다.",
+  "name": "frontend-ui-engineering",
+  "src": "Builds production-quality, accessible, responsive user-facing UIs. Use when building or modifying interfaces and pages, creating components, implementing layouts, meeting WCAG accessibility requirements, managing state, or when the output needs to look and feel production-quality rather than AI-generated."
+ },
+ "059030f291d0893b": {
+  "ko": "스위스 타이포그래피와 군용 단말 미학을 섞은 거친 기계식 화면. 엄격한 격자, 극단적인 글자 크기 대비, 실용적인 색, 아날로그 열화 효과. 데이터가 많은 대시보드·포트폴리오·편집형 사이트용.",
+  "name": "industrial-brutalist-ui",
+  "src": "Raw mechanical interfaces fusing Swiss typographic print with military terminal aesthetics. Rigid grids, extreme type scale contrast, utilitarian color, analog degradation effects. For data-heavy dashboards, portfolios, or editorial sites that need to feel like declassified blueprints."
+ },
+ "05959f267d278040": {
+  "ko": "지원 중단과 이전을 관리한다. 옛 시스템·API·기능을 없앨 때, 사용자를 새 구현으로 옮길 때, 운영 DB 스키마를 중단 없이 바꿀 때 쓴다.",
+  "name": "deprecation-and-migration",
+  "src": "Manages deprecation and migration. Use when removing old systems, APIs, or features. Use when migrating users from one implementation to another. Use when migrating a database schema in production, such as renaming or dropping a column without downtime (expand/contract). Use when deciding whether to maintain or sunset existing code."
+ },
+ "09d75d725703a6f2": {
+  "ko": "가벼운 결정이 아니면 새 맥락에서 반대 입장으로 검토한 뒤에 확정한다. 가정을 하나하나 따지거나 계획의 숨은 실패를 찾을 때, 속도보다 정확성이 중요할 때 쓴다.",
+  "name": "doubt-driven-development",
+  "src": "Subjects every non-trivial decision to a fresh-context adversarial review before it stands. Use when you want every assumption cross-examined before proceeding, when stress-testing a plan for hidden failure modes, when correctness matters more than speed, when working in unfamiliar code, when stakes are high (production auth, security-sensitive logic, a high-stakes migration, irreversible operatio"
+ },
+ "0c1edb0872a064b2": {
+  "ko": "지정한 회사의 중요한 소식을 지켜보고 출처를 단 요약을 낸다.",
+  "name": "competitor-news-monitor",
+  "src": "Watch named companies for material news; cited digests."
+ },
+ "0ddd58025634174b": {
+  "ko": "Obsidian 보관소(vault)의 노트를 읽고 찾고 만들고 고친다.",
+  "name": "obsidian",
+  "src": "Read, search, create, and edit notes in the Obsidian vault."
+ },
+ "152e68248bd90ac5": {
+  "ko": "주간 정리: 약속, 멈춘 일, 다음 주 계획.",
+  "name": "weekly-review-planning",
+  "src": "Weekly reset: commitments, stalled work, next-week plan."
+ },
+ "1a45be2c41d39d8c": {
+  "ko": "memo CLI 로 Apple 메모를 관리한다: 만들기, 검색, 고치기.",
+  "name": "apple-notes",
+  "src": "Manage Apple Notes via memo CLI: create, search, edit."
+ },
+ "1b79adbc188cf275": {
+  "ko": "사용자가 해야 한다고 생각하는 것이 아니라 실제로 원하는 것을 끌어낸다. 의도를 약 95% 확신할 때까지 한 번에 한 질문씩 묻는다.",
+  "name": "interview-me",
+  "src": "Extracts what the user actually wants instead of what they think they should want. Achieves this through one-question-at-a-time interview until ~95% confidence about the underlying intent. Use when an ask is underspecified (\"build me X\" without \"for whom\" or \"why now\"), when the user explicitly invokes (\"interview me\", \"grill me\", \"are we sure?\", \"stress-test my thinking\"), or when you catch yours"
+ },
+ "1cd4e3d9b5e13422": {
+  "ko": "현재 세션에서 직접 구현 계획을 실행할 때 쓴다. 사용자가 바로 실행을 골랐거나 서브에이전트 도구가 없을 때.",
+  "name": "executing-plans",
+  "src": "Use when executing an implementation plan in the current session as the implementer yourself — your human partner chose inline execution, or no subagent tool is available"
+ },
+ "1e7e9a75d3b6d884": {
+  "ko": "Clawdbot 과 설치된 스킬을 하루 한 번 자동으로 업데이트한다. 예약 작업으로 돌며 업데이트를 확인해 적용하고, 바뀐 것을 요약해 알린다.",
+  "name": "auto-updater",
+  "src": "Automatically update Clawdbot and all installed skills once daily. Runs via cron, checks for updates, applies them, and messages the user with a summary of what changed."
+ },
+ "1ec6b65b27da4645": {
+  "ko": "Karpathy 의 LLM Wiki: 서로 연결된 마크다운 지식 베이스를 만들고 질의한다.",
+  "name": "llm-wiki",
+  "src": "Karpathy's LLM Wiki: build/query interlinked markdown KB."
+ },
+ "20022d169c0fe353": {
+  "ko": "안정적인 API·인터페이스 설계를 안내한다. API, 모듈 경계, 공개 인터페이스, REST·GraphQL 엔드포인트, 모듈 사이 타입 계약을 정할 때 쓴다.",
+  "name": "api-and-interface-design",
+  "src": "Guides stable API and interface design. Use when designing APIs, module boundaries, or any public interface. Use when creating REST or GraphQL endpoints, defining type contracts between modules, or establishing boundaries between frontend and backend."
+ },
+ "20f1118b0c6b3ee4": {
+  "ko": "p5.js 로 시드 기반 무작위와 상호작용 매개변수를 써서 알고리즘 예술을 만든다. 코드 예술·생성 예술·흐름장(flow field)·파티클 시스템을 요청할 때 쓴다.",
+  "name": "algorithmic-art",
+  "src": "Creating algorithmic art using p5.js with seeded randomness and interactive parameter exploration. Use this when users request creating art using code, generative art, algorithmic art, flow fields, or particle systems. Create original algorithmic art rather than copying existing artists' work to avoid copyright violations."
+ },
+ "212e39d4a11e1466": {
+  "ko": "Teams 회의 요약, 작업 다시 실행, Graph 구독.",
+  "name": "teams-meeting-pipeline",
+  "src": "Teams meeting summaries, job replay, Graph subscriptions."
+ },
+ "21e47603920a376f": {
+  "ko": "칸반 인계를 검토하고 확인된 결과를 다음 단계로 보낸다.",
+  "name": "sdlc-review",
+  "src": "Review Kanban handoffs and route verified outcomes."
+ },
+ "2224d143d34fd998": {
+  "ko": "Excel .xlsx 통합 문서와 CSV 를 만들고 읽고 고친다.",
+  "name": "xlsx",
+  "src": "Create, read, edit Excel .xlsx workbooks and CSVs."
+ },
+ "23c08a883ae97935": {
+  "ko": "YouTube 자막을 요약·스레드·블로그 글로 바꾼다.",
+  "name": "youtube-content",
+  "src": "YouTube transcripts to summaries, threads, blogs."
+ },
+ "23ea8b4522fca82f": {
+  "ko": "상태를 나누지 않고 순서에 매이지 않는 독립 작업이 두 개 이상일 때 쓴다.",
+  "name": "dispatching-parallel-agents",
+  "src": "Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies"
+ },
+ "280559c1fb793be2": {
+  "ko": "4단계 근본 원인 디버깅: 고치기 전에 버그를 먼저 이해한다.",
+  "name": "systematic-debugging",
+  "src": "4-phase root cause debugging: understand bugs before fixing."
+ },
+ "29c585a6db0b54c9": {
+  "ko": "Gmail·캘린더·드라이브·연락처·시트·문서를 다루는 Google Workspace CLI.",
+  "name": "gog",
+  "src": "Google Workspace CLI for Gmail, Calendar, Drive, Contacts, Sheets, and Docs."
+ },
+ "2b117401df546401": {
+  "ko": "한 번 쓰는 HTML 결과물을 디자인한다(랜딩 페이지, 발표 자료, 시제품).",
+  "name": "claude-design",
+  "src": "Design one-off HTML artifacts (landing, deck, prototype)."
+ },
+ "2f6aecc3ce7f37d0": {
+  "ko": "xurl CLI 로 X(Twitter)를 쓴다: 게시물 검색, 게시, DM, 미디어.",
+  "name": "xurl",
+  "src": "X/Twitter via xurl CLI: raw post search, posting, DM, media."
+ },
+ "313a56a0deea4131": {
+  "ko": "CDP 로 Hermes 데스크톱 앱의 실제 DOM·CSS 를 읽는다.",
+  "name": "inspecting-hermes-desktop-dom",
+  "src": "Read the live Hermes desktop DOM/CSS over CDP."
+ },
+ "323f6aee10ce0b43": {
+  "ko": "여러 단계 작업의 명세나 요구사항이 있을 때 코드를 건드리기 전에 쓴다.",
+  "name": "writing-plans",
+  "src": "Use when you have a spec or requirements for a multi-step task, before touching code"
+ },
+ "340b8cbbba91a77f": {
+  "ko": "체계적인 근본 원인 디버깅을 안내한다. 테스트가 실패하거나 빌드가 깨지거나 어제 되던 것이 안 되거나 예상과 다르게 동작할 때 쓴다.",
+  "name": "debugging-and-error-recovery",
+  "src": "Guides systematic root-cause debugging. Use when tests fail, builds break, something that worked yesterday broke, behavior doesn't match expectations, or you encounter any unexpected error. Use when you need to figure out what broke and why — a systematic approach to finding and fixing the root cause rather than guessing."
+ },
+ "36e349dddf778ee5": {
+  "ko": "실제 디자인 시스템 54개(Stripe, Linear, Vercel 등)를 HTML·CSS 로 제공한다.",
+  "name": "popular-web-designs",
+  "src": "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS."
+ },
+ "3884ce28b34f6b1a": {
+  "ko": "p5.js 스케치: 생성 예술, 셰이더, 상호작용, 3D.",
+  "name": "p5js",
+  "src": "p5.js sketches: gen art, shaders, interactive, 3D."
+ },
+ "3bf71b2c62984ff2": {
+  "ko": "nano-pdf CLI 로 자연어 지시에 따라 PDF 를 고친다.",
+  "name": "nano-pdf",
+  "src": "Edit PDFs with natural-language instructions using the nano-pdf CLI."
+ },
+ "3f91c38d8bef495e": {
+  "ko": "회의록을 출처가 달린 결정·담당자·티켓으로 바꾼다.",
+  "name": "meeting-action-items",
+  "src": "Turn meeting notes into cited decisions, owners, tickets."
+ },
+ "424de02266f97398": {
+  "ko": "코드 리뷰 의견을 받고 제안을 반영하기 전에 쓴다. 특히 의견이 불분명하거나 기술적으로 의심스러울 때 쓴다. 보여 주기식으로 동의하거나 그대로 반영하지 않고, 기술적으로 확인한 뒤 반영하게 한다.",
+  "name": "receiving-code-review",
+  "src": "Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation"
+ },
+ "426b475a9bf39f0f": {
+  "ko": "구현을 마치고 테스트가 모두 통과해 작업을 어떻게 합칠지 정해야 할 때 쓴다.",
+  "name": "finishing-a-development-branch",
+  "src": "Use when implementation is complete, all tests pass, and you need to decide how to integrate the work"
+ },
+ "45d8e605bdaf948d": {
+  "ko": "curl 로 Airtable REST API 를 쓴다. 레코드 만들기·읽기·고치기·지우기, 거르기, 있으면 고치고 없으면 넣기.",
+  "name": "airtable",
+  "src": "Airtable REST API via curl. Records CRUD, filters, upserts."
+ },
+ "4a634e5809f18cea": {
+  "ko": "Playwright 로 로컬 웹앱을 조작하고 테스트하는 도구. 화면 기능 확인, 화면 동작 디버깅, 브라우저 스크린샷, 브라우저 로그 보기를 지원한다.",
+  "name": "webapp-testing",
+  "src": "Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs."
+ },
+ "4ab0c7d374f2a3cb": {
+  "ko": "데스크톱을 백그라운드 조작부터 하고, 필요할 때만 앞 화면 조작으로 넘어간다.",
+  "name": "computer-use",
+  "src": "Drive the desktop background-first; escalate on signal."
+ },
+ "4fb171e1d0a438c4": {
+  "ko": "변경을 작고 확인할 수 있는 단위로 나눠 낸다. 파일 두 개 이상을 건드리는 변경, 계획의 다음 작업, 기능 플래그로 나눠 배포할 때, 한꺼번에 많은 코드를 쓰려 할 때 쓴다.",
+  "name": "incremental-implementation",
+  "src": "Delivers changes incrementally in thin, verifiable slices. Use when implementing any feature or change that touches more than one file, or when picking up the next task from a plan. Use when rolling a change out behind a feature flag, when you're about to write a large amount of code at once, or when a task feels too big to land in one step."
+ },
+ "55d7bc113fc1cad1": {
+  "ko": "새 스킬을 만들거나 기존 스킬을 고치거나 배포 전에 스킬이 동작하는지 확인할 때 쓴다.",
+  "name": "writing-skills",
+  "src": "Use when creating new skills, editing existing skills, or verifying skills work before deployment"
+ },
+ "5c33cc8c392a3c39": {
+  "ko": "Notion API 와 ntn CLI: 페이지, 데이터베이스, 마크다운, Workers.",
+  "name": "notion",
+  "src": "Notion API + ntn CLI: pages, databases, markdown, Workers."
+ },
+ "5f6f5a05dd95765d": {
+  "ko": "고급 UX/UI 와 GSAP 모션 설계. 배치 변화를 위한 Python 무작위, 엄격한 AIDA 페이지 구조, 넓은 편집형 타이포그래피, 빈틈없는 벤토 그리드, GSAP ScrollTrigger 를 강제한다.",
+  "name": "gpt-taste",
+  "src": "Elite UX/UI & Advanced GSAP Motion Engineer. Enforces Python-driven true randomization for layout variance, strict AIDA page structure, wide editorial typography (bans 6-line wraps), gapless bento grids, strict GSAP ScrollTriggers (pinning, stacking, scrubbing), inline micro-images, and massive section spacing."
+ },
+ "623c99502309cba8": {
+  "ko": "저장소 안의 SKILL.md 파일을 쓴다: 머리말과 구조.",
+  "name": "hermes-agent-skill-authoring",
+  "src": "Author in-repo SKILL.md files: frontmatter and structure."
+ },
+ "665c664160ee87f4": {
+  "ko": "결과물(슬라이드, 문서, 보고서, HTML 랜딩 페이지 등)에 테마를 입히는 도구. 색·글꼴 테마 10가지가 있고 새 테마를 바로 만들 수도 있다.",
+  "name": "theme-factory",
+  "src": "Toolkit for styling artifacts with a theme. These artifacts can be slides, docs, reportings, HTML landing pages, etc. There are 10 pre-set themes with colors/fonts that you can apply to any artifact that has been creating, or can generate a new theme on-the-fly."
+ },
+ "6b48207fca22d65e": {
+  "ko": "Box 의 클라우드 파일·공유·검색·메타데이터를 관리한다.",
+  "name": "box",
+  "src": "Box manages cloud files, sharing, search, and metadata."
+ },
+ "6c6bd7639074ef1c": {
+  "ko": "웹앱을 탐색하며 품질을 점검한다: 버그와 증거를 찾고 보고서를 쓴다.",
+  "name": "dogfood",
+  "src": "Exploratory QA of web apps: find bugs, evidence, reports."
+ },
+ "6c919076a72150db": {
+  "ko": "커밋 전 리뷰: 보안 검사, 품질 기준 검사, 자동 고침.",
+  "name": "requesting-code-review",
+  "src": "Pre-commit review: security scan, quality gates, auto-fix."
+ },
+ "6ff49533f0d5dc57": {
+  "ko": "OpenAI Codex CLI 에 코딩을 맡긴다(기능 개발, PR).",
+  "name": "codex",
+  "src": "Delegate coding to OpenAI Codex CLI (features, PRs)."
+ },
+ "71a6753299b0f3c9": {
+  "ko": "페이지를 가져오지 못할 때 쓴다: 403·429, 유료 구독 제한, WAF, 봇 차단.",
+  "name": "blocked-page-recovery",
+  "src": "Use when a fetch fails: 403/429, paywall, WAF, bot wall."
+ },
+ "71cd05970dc34456": {
+  "ko": "python-pptx 로 .pptx 발표 자료를 만들고 읽고 고친다.",
+  "name": "powerpoint",
+  "src": "Create, read, edit .pptx decks with python-pptx."
+ },
+ "71d05eae3d3ffc90": {
+  "ko": "문서에서 의무·마감·할 일을 출처와 함께 뽑는다.",
+  "name": "document-to-action-items",
+  "src": "Extract cited obligations, deadlines, tasks from documents."
+ },
+ "784a3884e0a47cae": {
+  "ko": "현재 세션에서 독립 작업이 있는 구현 계획을 실행할 때 쓴다.",
+  "name": "subagent-driven-development",
+  "src": "Use when executing implementation plans with independent tasks in the current session"
+ },
+ "7dfd6147a12739a7": {
+  "ko": "상품·항공권·매물 가격을 지켜보다가 목표 가격이 되면 알린다.",
+  "name": "product-price-monitor",
+  "src": "Watch product, flight, or listing prices; alert on target."
+ },
+ "83d18dd3a8e6078e": {
+  "ko": "git 작업 방식을 정리한다. 코드를 바꿀 때, 커밋·브랜치·충돌 해결, 어지러운 작업본을 깔끔한 커밋으로 나눌 때, PR 을 열거나 리뷰할 때, 원격에 올릴 때 쓴다.",
+  "name": "git-workflow-and-versioning",
+  "src": "Structures git workflow practices. Use when making any code change. Use when committing, branching, resolving conflicts, splitting uncommitted work in a messy working tree into clean atomic commits, opening or reviewing a pull request (PR), pushing to a remote, or when you need to organize work across multiple parallel streams. Use when cutting a release, choosing a semantic version bump, tagging,"
+ },
+ "89d0725ac4b32c78": {
+  "ko": "현재 작업본과 분리해야 하는 기능 작업을 시작할 때나 구현 계획을 실행하기 전에 쓴다. 기본 도구나 git worktree 로 분리된 작업 공간을 만든다.",
+  "name": "using-git-worktrees",
+  "src": "Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback"
+ },
+ "8a77c454ef89f20b": {
+  "ko": "사용자가 그대로 따를 수 있는 중요한 답이나 초안(조언, 계획, 제안서, 이메일, 추정, 데이터 해석, 사실 주장)을 낸 뒤에 부른다.",
+  "name": "discernment-nudge",
+  "src": "After you give a substantive answer or draft that the user may act on — advice or recommendations, drafted artifacts such as goals, plans, pitches, proposals, or emails, estimates or projections, analysis or interpretation of data, factual claims they may rely on, or a multi-step argument — invoke this skill BEFORE finalizing your reply and then, if it applies, append 2-3 short follow-up questions"
+ },
+ "8c537043ae919e98": {
+  "ko": "macOS 의 FindMy.app 으로 Apple 기기·AirTag 위치를 찾는다.",
+  "name": "findmy",
+  "src": "Track Apple devices/AirTags via FindMy.app on macOS."
+ },
+ "8e22fec99316b046": {
+  "ko": "Slack 에 맞춘 움직이는 GIF 를 만드는 지식과 도구. 제약, 검사 도구, 애니메이션 개념을 준다.",
+  "name": "slack-gif-creator",
+  "src": "Knowledge and utilities for creating animated GIFs optimized for Slack. Provides constraints, validation tools, and animation concepts. Use when users request animated GIFs for Slack like \"make me a GIF of X doing Y for Slack.\""
+ },
+ "90321f0b9de2a991": {
+  "ko": "프로파일 이름을 넣은 한 줄 인사로 답한다. aac-trial-agent 에 들어 있는 시험용 스킬.",
+  "name": "aac-trial-greet",
+  "src": "Reply with a one-line greeting that names the profile. Trial skill bundled with aac-trial-agent."
+ },
+ "928dcc8ab5ac9325": {
+  "ko": "답과 문서를 확인할 수 있는 출처에 근거해 인용을 단다.",
+  "name": "grounded-citations",
+  "src": "Ground answers and documents in cited, verifiable sources."
+ },
+ "94afb1637294ee85": {
+  "ko": "PDF 파일: 만들기, 읽기, 합치기, 양식 채우기, OCR, 글 고치기.",
+  "name": "pdf",
+  "src": "PDF files: create, read, merge, fill, OCR, edit text."
+ },
+ "957966507c835f4a": {
+  "ko": "Codex 용 웹사이트 이미지→코드 스킬. 디자인 이미지를 먼저 만들어 자세히 분석한 뒤 그 이미지와 최대한 같게 웹사이트를 구현한다.",
+  "name": "image-to-code",
+  "src": "Elite website image-to-code skill for Codex. For visually important web tasks, it must first generate the design image(s) itself, deeply analyze them, then implement the website to match them as closely as possible. In Codex, it must prefer large, readable, section-specific images instead of tiny compressed boards, generate fresh standalone images for sections or detail views instead of cropping o"
+ },
+ "96442f8a8e15bb1c": {
+  "ko": "새로운 것을 만들기 전에 반드시 쓴다: 기능 만들기, 컴포넌트 구성, 기능 추가, 동작 변경, 소프트웨어 밖의 계획(발표, 사업, 리모델링)까지.",
+  "name": "brainstorming",
+  "src": "You MUST use this before any creative work - creating features, building components, adding functionality, modifying behavior, or planning anything new, in software or out of it (a talk, a business, a renovation)."
+ },
+ "987cfb2adf982d5d": {
+  "ko": "결정과 문서를 기록한다. 아키텍처 결정(ADR)이나 설계 이유를 남길 때, 공개 API 를 바꾸거나 기능을 내보낼 때, 다음 사람이 알아야 할 맥락을 적을 때 쓴다.",
+  "name": "documentation-and-adrs",
+  "src": "Records decisions and documentation. Use when you need to document an architecture decision (ADR) or the reasoning behind a design choice, when changing public APIs, shipping features, or when you need to record context that future engineers and agents will need to understand the codebase."
+ },
+ "9aff3250ee22f744": {
+  "ko": "gh CLI 로 GitHub 를 쓴다: PR, 이슈, 리뷰, 저장소, 인증.",
+  "name": "github",
+  "src": "GitHub via gh CLI: PRs, issues, reviews, repos, auth."
+ },
+ "9b3971a6e4047c12": {
+  "ko": "TDD: RED-GREEN-REFACTOR 를 지키고 코드보다 테스트를 먼저 쓴다.",
+  "name": "test-driven-development",
+  "src": "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+ },
+ "9c4a260ee3541a0a": {
+  "ko": "배운 것·오류·고친 것을 모아 관리한다. 명령이 실패했을 때, 사용자가 가정을 바로잡았을 때, 기능이 없거나 지식이 낡았을 때, 더 나은 방법을 찾았을 때 쓴다.",
+  "name": "self-improving-agent",
+  "src": "Captures and maintains learnings, errors, and corrections. Use when a command fails, the user corrects an assumption, a capability is missing, knowledge is outdated, or a better approach is found. Review relevant saved guidance before major tasks, reuse, and promotion; revalidate it according to what could change and how quickly."
+ },
+ "9db03c3f017d3ddf": {
+  "ko": "만들기 전에 아이디어가 맞는지 확인하는 일회성 실험.",
+  "name": "spike",
+  "src": "Throwaway experiments to validate an idea before build."
+ },
+ "9dba6235b3d8a78b": {
+  "ko": "CI/CD 파이프라인 설정을 자동화한다. 빌드·배포 파이프라인을 만들거나 고칠 때, 품질 기준 검사·CI 테스트 실행·배포 전략을 정할 때 쓴다.",
+  "name": "ci-cd-and-automation",
+  "src": "Automates CI/CD pipeline setup. Use when setting up or modifying build and deployment pipelines. Use when you need to automate quality gates, configure test runners in CI, or establish deployment strategies."
+ },
+ "9ec5dad450c80a95": {
+  "ko": "브랜드 가이드 보드, 로고 체계, 아이덴티티 발표 자료, 브랜드 세계관 발표 자료를 만드는 고급 브랜드 키트 이미지 생성 스킬.",
+  "name": "brandkit",
+  "src": "Premium brand-kit image generation skill for creating high-end brand-guidelines boards, logo systems, identity decks, and visual-world presentations. Trained for minimalist, cinematic, editorial, dark-tech, luxury, cultural, security, gaming, developer-tool, and consumer-app brand systems. Optimized for intentional logo concepting, refined composition, sparse typography, strong symbolic meaning, p"
+ },
+ "a0eb41dfae944ba5": {
+  "ko": "OpenCode CLI 에 코딩을 맡긴다(기능 개발, PR 리뷰).",
+  "name": "opencode",
+  "src": "Delegate coding to OpenCode CLI (features, PR review)."
+ },
+ "a1912f3621c06099": {
+  "ko": "CLI 로 오디오의 스펙트로그램·특징(mel, chroma, MFCC)을 본다.",
+  "name": "songsee",
+  "src": "Audio spectrograms/features (mel, chroma, MFCC) via CLI."
+ },
+ "a542e3de69a586c2": {
+  "ko": "Python 을 디버깅한다: pdb 대화형 실행과 debugpy 원격(DAP).",
+  "name": "python-debugpy",
+  "src": "Debug Python: pdb REPL + debugpy remote (DAP)."
+ },
+ "a8bc94af69eeba5a": {
+  "ko": "에이전트 4개가 동시에 최근 코드 변경을 정리한다.",
+  "name": "simplify-code",
+  "src": "Parallel 4-agent cleanup of recent code changes."
+ },
+ "aa96093a16423335": {
+  "ko": "읽기 쉽게 코드를 단순하게 만든다. 동작을 바꾸지 않고 리팩터링할 때, 읽고 고치기 어려워진 코드를 정리할 때 쓴다.",
+  "name": "code-simplification",
+  "src": "Simplifies code for clarity. Use when refactoring code for clarity without changing behavior. Use when code works but is harder to read, maintain, or extend than it should be. Use when reviewing code that has accumulated unnecessary complexity."
+ },
+ "aaa33656a4398e4a": {
+  "ko": "구조화된 에이전트 기억과 조합할 수 있는 스킬을 위한 타입 있는 지식 그래프. 개체(사람, 프로젝트, 할 일, 일정, 문서)를 만들고 찾고 잇거나 스킬 사이에 상태를 나눌 때 쓴다.",
+  "name": "ontology",
+  "src": "Typed knowledge graph for structured agent memory and composable skills. Use when creating/querying entities (Person, Project, Task, Event, Document), linking related objects, enforcing constraints, planning multi-step actions as graph transformations, or when skills need to share state. Trigger on \"remember\", \"what do I know about\", \"link X to Y\", \"show dependencies\", entity CRUD, or cross-skill"
+ },
+ "ad58dda2834e5306": {
+  "ko": "회사가 쓰는 형식으로 사내 소통 글을 쓰는 자료 모음. 상태 보고, 경영진 보고, 사내 소식지, FAQ, 장애 보고 등을 쓸 때 쓴다.",
+  "name": "internal-comms",
+  "src": "A set of resources to help me write all kinds of internal communications, using the formats that my company likes to use. Claude should use this skill whenever asked to write some sort of internal communications (status reports, leadership updates, 3P updates, company newsletters, FAQs, incident reports, project updates, etc.)."
+ },
+ "b0e95f0cdc24d3d0": {
+  "ko": "pygount 로 코드베이스를 살핀다: 코드 줄 수, 언어, 비율.",
+  "name": "codebase-inspection",
+  "src": "Inspect codebases w/ pygount: LOC, languages, ratios."
+ },
+ "b100b9e34204258c": {
+  "ko": "Manim CE 애니메이션: 3Blue1Brown 같은 수학·알고리즘 영상을 만든다.",
+  "name": "manim-video",
+  "src": "Manim CE animations: 3Blue1Brown math/algo videos."
+ },
+ "b2448667782e1d45": {
+  "ko": "AI 에이전트에 맞춘 헤드리스 브라우저 자동화 CLI. 접근성 트리 스냅샷과 참조 기반 요소 선택을 쓴다.",
+  "name": "agent-browser",
+  "src": "Headless browser automation CLI optimized for AI agents with accessibility tree snapshots and ref-based element selection"
+ },
+ "b3aa9edd7adb96e1": {
+  "ko": "Hermes Agent 를 쓰고, 설정하고, 테마를 바꾸고, 확장하고, 여러 개를 함께 돌린다.",
+  "name": "hermes-agent",
+  "src": "Use, configure, theme, extend, and orchestrate Hermes Agent."
+ },
+ "b61bbcf251b1934f": {
+  "ko": "새 화면을 만들거나 기존 화면을 바꿀 때 개성 있고 의도된 시각 디자인을 안내한다. 미적 방향, 글꼴, 틀에 박힌 기본값처럼 보이지 않는 선택을 돕는다.",
+  "name": "frontend-design",
+  "src": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults."
+ },
+ "b90b70ceb4de7c7f": {
+  "ko": "작사·작곡 기법과 Suno AI 음악 프롬프트.",
+  "name": "songwriting-and-ai-music",
+  "src": "Songwriting craft and Suno AI music prompts."
+ },
+ "b9673d847e612bf6": {
+  "ko": "remindctl 로 Apple 미리 알림을 쓴다: 추가, 목록, 완료.",
+  "name": "apple-reminders",
+  "src": "Apple Reminders via remindctl: add, list, complete."
+ },
+ "c04715fa8029c3a5": {
+  "ko": "인포그래픽: 배치 21가지 × 스타일 21가지(信息图, 可视化).",
+  "name": "baoyu-infographic",
+  "src": "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
+ },
+ "c12db75d9b94ff44": {
+  "ko": "디자인 철학에 따라 .png·.pdf 시각 작품을 만든다. 포스터·작품·정적 디자인을 요청할 때 쓰고, 기존 작가의 작품을 베끼지 않는다.",
+  "name": "canvas-design",
+  "src": "Create beautiful visual art in .png and .pdf documents using design philosophy. You should use this skill when the user asks to create a poster, piece of art, design, or other static piece. Create original visual designs, never copying existing artists' work to avoid copyright violations."
+ },
+ "c3d09c7e84a02ed6": {
+  "ko": "확산·수렴 사고로 막연한 아이디어를 분명하고 실행할 수 있는 개념으로 다듬는다. 아이디어가 아직 흐릿할 때, 계획 전에 가정을 시험할 때 쓴다.",
+  "name": "idea-refine",
+  "src": "Refines raw ideas into sharp, actionable concepts through structured divergent and convergent thinking. Use when an idea is still vague, when you need to stress-test assumptions before committing to a plan, or when you want to expand options before converging on one. Triggers on \"ideate\", \"refine this idea\", or \"stress-test my plan\"."
+ },
+ "c7765d548efe53b1": {
+  "ko": "좋은 스킬을 만드는 안내. 전문 지식·작업 흐름·도구 연동으로 Claude 의 능력을 넓히는 새 스킬을 만들거나 기존 스킬을 고칠 때 쓴다.",
+  "name": "skill-creator",
+  "src": "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Claude's capabilities with specialized knowledge, workflows, or tool integrations."
+ },
+ "c7cc727307a41000": {
+  "ko": "Google 의 DESIGN.md 토큰 명세 파일을 쓰고 검사하고 내보낸다.",
+  "name": "design-md",
+  "src": "Author/validate/export Google's DESIGN.md token spec files."
+ },
+ "ce9026138f1b64dd": {
+  "ko": "작업이 끝났다·고쳤다·통과했다고 말하기 전에, 커밋이나 PR 전에 쓴다. 확인 명령을 돌려 결과를 본 뒤에만 성공을 말한다.",
+  "name": "verification-before-completion",
+  "src": "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always"
+ },
+ "cf9f9d38a7c35cd6": {
+  "ko": "고급 모바일 앱 화면 시안과 흐름을 만드는 이미지 생성 스킬. iOS·Android·크로스플랫폼용이며 깔끔한 위계와 읽기 쉬운 글, 화면 사이 일관성을 중시한다.",
+  "name": "imagegen-frontend-mobile",
+  "src": "Elite mobile app image-generation skill for creating premium, app-native screen concepts and flows. Designed for iOS, Android, and cross-platform mobile products. Prioritizes clean hierarchy, comfortably readable text, strong multi-screen consistency, controlled color palettes, non-generic creative direction, textured surfaces, image-led composition, tasteful custom iconography, and clean phone mo"
+ },
+ "cfa62911727a1699": {
+  "ko": "gws CLI 나 Python 으로 Gmail·캘린더·드라이브·문서·시트를 쓴다.",
+  "name": "google-workspace",
+  "src": "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
+ },
+ "d18e73b61557e833": {
+  "ko": "Word .docx 파일을 만들고 읽고 고치고, 템플릿으로 만들고 검토한다.",
+  "name": "docx",
+  "src": "Create, read, edit, template, and review Word .docx files."
+ },
+ "d259af1b8684907e": {
+  "ko": "macOS 의 imsg CLI 로 iMessage·SMS 를 보내고 받는다.",
+  "name": "imessage",
+  "src": "Send and receive iMessages/SMS via the imsg CLI on macOS."
+ },
+ "d88e3b9a57a40ce3": {
+  "ko": "curl 과 jq 로 Tenor 에서 GIF 를 찾고 받는다.",
+  "name": "gif-search",
+  "src": "Search/download GIFs from Tenor via curl + jq."
+ },
+ "dc852a0950744ee7": {
+  "ko": "Claude 나 Claude 제품 사용법을 묻는 질문에 답하기 전에 확인하는 스킬. Claude Academy(academy.claude.com)의 맞는 강좌·자습서·사례를 추천한다.",
+  "name": "academy-guide",
+  "src": "Stop and check this skill before finishing any reply to a question about how to use Claude or a Claude product — it recommends matching courses, tutorials, and use cases from Claude Academy (academy.claude.com), Anthropic's learning hub. Trigger on: \"how do I\", \"how can I\", \"getting started with\", \"what can Claude do\", \"teach me\", \"learn to use\"; questions about artifacts, projects, skills, plugin"
+ },
+ "e1b7102348194f5e": {
+  "ko": "프로젝트의 품질 기준을 문서로 적은 약속으로 정하고, 에이전트가 몰래 기준을 낮추지 못하게 한다. 기준을 묻고 CONSTRAINTS.md 에 적은 뒤 diff 에서 기준이 낮아지는지 지켜본다.",
+  "name": "constraint-driven-development",
+  "src": "Establishes a project's quality bar as a written contract and stops agents quietly lowering it. Interviews the user on which dimensions matter, supplies sane default thresholds when they have no number in mind, records everything in CONSTRAINTS.md, and watches the diff for a weakened bar — new @ts-ignore or eslint-disable suppressions, skipped or deleted tests, assertions stripped out, unimplement"
+ },
+ "e1e71fa0590d7bdf": {
+  "ko": "여러 측면에서 코드를 리뷰한다. 변경을 합치기 전에, 자신·다른 에이전트·사람이 쓴 코드를 리뷰할 때, diff 나 PR 리뷰를 요청받았을 때 쓴다.",
+  "name": "code-review-and-quality",
+  "src": "Conducts multi-axis code review. Use before merging any change. Use when reviewing code written by yourself, another agent, or a human. Use when you need to assess code quality across multiple dimensions before it enters the main branch. Use when asked to review a diff or a pull request, even when the diff is pasted inline."
+ },
+ "e23017eef49a061e": {
+  "ko": "스킬 허브 시험용 패키지. 들어 있는 스크립트로 인사를 출력한다. 설치 경로 시험에만 쓴다.",
+  "name": "aac-trial-hello",
+  "src": "AAC marketplace trial package. Prints a greeting with a bundled script. Use only for install-path testing."
+ },
+ "e545101dc66c96dc": {
+  "ko": "OpenStreetMap·OSRM 으로 주소 좌표 변환, 관심 장소, 경로, 시간대를 찾는다.",
+  "name": "maps",
+  "src": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM."
+ },
+ "e650c95680a72964": {
+  "ko": "에이전트의 맥락 설정을 다듬는다. 새 세션을 시작할 때, 결과 품질이 떨어질 때, 작업을 바꿀 때, 프로젝트의 규칙 파일과 맥락을 정할 때 쓴다.",
+  "name": "context-engineering",
+  "src": "Optimizes agent context setup. Use when starting a new session, when agent output quality degrades, when switching between tasks, or when you need to configure rules files and context for a project."
+ },
+ "edbeb28767e83ff1": {
+  "ko": "Himalaya CLI: 터미널에서 IMAP·SMTP 이메일을 쓴다.",
+  "name": "himalaya",
+  "src": "Himalaya CLI: IMAP/SMTP email from terminal."
+ },
+ "ee42d484d839b1f7": {
+  "ko": "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다.",
+  "name": "aas-help",
+  "src": "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
+ },
+ "f4c4fe1968f1f73e": {
+  "ko": "구매·가입 전환을 고려한 고급 웹사이트 디자인 참고 이미지를 만든다. 섹션마다 가로 이미지를 하나씩 따로 만든다(섹션 8개면 이미지 8장).",
+  "name": "imagegen-frontend-web",
+  "src": "Elite frontend image-direction skill for generating premium, conversion-aware website design references. CRITICAL OUTPUT RULE — generate ONE separate horizontal image FOR EVERY section. A landing page with 8 sections produces 8 images. Never compress multiple sections into one image. Enforces composition variety (not always left-text / right-image), background-image freedom, varied CTAs, varied he"
+ },
+ "f69aaefb664fe865": {
+  "ko": "--inspect 와 Chrome DevTools Protocol CLI 로 Node.js 를 디버깅한다.",
+  "name": "node-inspect-debugger",
+  "src": "Debug Node.js via --inspect + Chrome DevTools Protocol CLI."
+ },
+ "fbc134464254dfd6": {
+  "ko": "키워드·저자·분야·ID 로 arXiv 논문을 찾는다.",
+  "name": "arxiv",
+  "src": "Search arXiv papers by keyword, author, category, or ID."
+ },
+ "fc04c51179731c64": {
+  "ko": "받은편지함을 정리한다: 스레드 우선순위를 매기고 답장 초안을 안전하게 쓴다.",
+  "name": "email-inbox-triage",
+  "src": "Triage an inbox: prioritize threads, draft replies safely."
+ },
+ "fcd68d954d8522f8": {
+  "ko": "대화를 시작할 때 쓴다. 스킬을 찾아 쓰는 법을 정하고, 확인 질문을 포함해 어떤 답보다 먼저 스킬을 부르게 한다.",
+  "name": "using-superpowers",
+  "src": "Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions"
+ },
+ "fe6c8cbd55cd7b14": {
+  "ko": "Claude Code CLI 에 코딩을 맡긴다(기능 개발, PR).",
+  "name": "claude-code",
+  "src": "Delegate coding to Claude Code CLI (features, PRs)."
+ },
+ "ff6e0489babcc755": {
+  "ko": "어두운 테마의 SVG 아키텍처·클라우드·인프라 다이어그램을 HTML 로 만든다.",
+  "name": "architecture-diagram",
+  "src": "Dark-themed SVG architecture/cloud/infra diagrams as HTML."
+ }
+}

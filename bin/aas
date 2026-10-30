@@ -1,0 +1,5 @@
+#!/bin/sh
+# AAS v0 실행기. 파이썬은 $PYTHON(3.12), 없으면 yjops venv, 그것도 없으면 python3.
+PY="${PYTHON:-$HOME/Projects/_venv/yjops/bin/python}"
+[ -x "$PY" ] || PY=python3
+cd "$(dirname "$0")/.." && exec "$PY" -m aas "$@"

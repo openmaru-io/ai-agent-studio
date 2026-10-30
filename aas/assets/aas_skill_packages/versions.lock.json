@@ -1,0 +1,26 @@
+{
+  "aas-help": {
+    "sha256": "c003aa318cd077d23deb76bc3b9bacf6643ef44b528add7cce3e9149a363da01",
+    "version": "1.0.4"
+  },
+  "business-card-ocr": {
+    "sha256": "11997f65c9bb7844bd9ed8581e3d04c41f15e6c57f2b2698e5287f762c331fdc",
+    "version": "1.1.0"
+  },
+  "doc-to-markdown": {
+    "sha256": "62ef815604d5f5ec33dc9b5fcbaff5f27b51f83828f77cc53e6a2ac84f99d405",
+    "version": "1.1.0"
+  },
+  "hwp-to-markdown": {
+    "sha256": "0557f90d913558932eb00e26d0820e94a2a8ea94567a71db1d3f16a7e48a92e6",
+    "version": "1.1.0"
+  },
+  "markdown-to-doc": {
+    "sha256": "026465b2a94bc1a998dc9e7c82f794b9cd9567ae9e7566e423e62703a8a4edff",
+    "version": "1.1.1"
+  },
+  "ocr-to-markdown": {
+    "sha256": "1179257fcba7099723cd769e4e262f1973a7fbf879ffca747779cf96aa1ca57f",
+    "version": "1.1.0"
+  }
+}

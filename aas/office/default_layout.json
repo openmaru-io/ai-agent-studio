@@ -1,0 +1,3652 @@
+{
+ "preset": "kr-21",
+ "items": [
+  {
+   "type": "glass_wall",
+   "x": 0,
+   "y": 240,
+   "w": 180,
+   "h": 8,
+   "_uid": "kr_0"
+  },
+  {
+   "type": "glass_wall",
+   "x": 245,
+   "y": 240,
+   "w": 195,
+   "h": 8,
+   "_uid": "kr_1"
+  },
+  {
+   "type": "door",
+   "x": 180,
+   "y": 240,
+   "w": 65,
+   "h": 8,
+   "glass": true,
+   "_uid": "kr_2"
+  },
+  {
+   "type": "room",
+   "x": 8,
+   "y": 0,
+   "w": 432,
+   "h": 240,
+   "kind": "team",
+   "label": "팀 회의실 1",
+   "zone": 1,
+   "_uid": "kr_3"
+  },
+  {
+   "type": "table_rect",
+   "x": 92.5,
+   "y": 92,
+   "w": 240,
+   "h": 56,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_4"
+  },
+  {
+   "type": "chair",
+   "x": 100.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_5"
+  },
+  {
+   "type": "chair",
+   "x": 100.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_6"
+  },
+  {
+   "type": "chair",
+   "x": 150.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_7"
+  },
+  {
+   "type": "chair",
+   "x": 150.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_8"
+  },
+  {
+   "type": "chair",
+   "x": 200.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_9"
+  },
+  {
+   "type": "chair",
+   "x": 200.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_10"
+  },
+  {
+   "type": "chair",
+   "x": 250.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_11"
+  },
+  {
+   "type": "chair",
+   "x": 250.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_12"
+  },
+  {
+   "type": "chair",
+   "x": 300.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_13"
+  },
+  {
+   "type": "chair",
+   "x": 300.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_14"
+  },
+  {
+   "type": "tv_meeting",
+   "x": -72,
+   "y": 117,
+   "w": 150,
+   "h": 6,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_15"
+  },
+  {
+   "type": "glass_wall",
+   "x": 440,
+   "y": 240,
+   "w": 190,
+   "h": 8,
+   "_uid": "kr_16"
+  },
+  {
+   "type": "glass_wall",
+   "x": 695,
+   "y": 240,
+   "w": 185,
+   "h": 8,
+   "_uid": "kr_17"
+  },
+  {
+   "type": "door",
+   "x": 630,
+   "y": 240,
+   "w": 65,
+   "h": 8,
+   "glass": true,
+   "_uid": "kr_18"
+  },
+  {
+   "type": "wall",
+   "x": 440,
+   "y": 0,
+   "w": 8,
+   "h": 240,
+   "_uid": "kr_19"
+  },
+  {
+   "type": "room",
+   "x": 448,
+   "y": 0,
+   "w": 432,
+   "h": 240,
+   "kind": "team",
+   "label": "팀 회의실 2",
+   "zone": 2,
+   "_uid": "kr_20"
+  },
+  {
+   "type": "table_rect",
+   "x": 542.5,
+   "y": 92,
+   "w": 240,
+   "h": 56,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_21"
+  },
+  {
+   "type": "chair",
+   "x": 550.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_22"
+  },
+  {
+   "type": "chair",
+   "x": 550.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_23"
+  },
+  {
+   "type": "chair",
+   "x": 600.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_24"
+  },
+  {
+   "type": "chair",
+   "x": 600.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_25"
+  },
+  {
+   "type": "chair",
+   "x": 650.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_26"
+  },
+  {
+   "type": "chair",
+   "x": 650.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_27"
+  },
+  {
+   "type": "chair",
+   "x": 700.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_28"
+  },
+  {
+   "type": "chair",
+   "x": 700.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_29"
+  },
+  {
+   "type": "chair",
+   "x": 750.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_30"
+  },
+  {
+   "type": "chair",
+   "x": 750.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_31"
+  },
+  {
+   "type": "tv_meeting",
+   "x": 376,
+   "y": 117,
+   "w": 150,
+   "h": 6,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_32"
+  },
+  {
+   "type": "glass_wall",
+   "x": 880,
+   "y": 240,
+   "w": 200,
+   "h": 8,
+   "_uid": "kr_33"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1145,
+   "y": 240,
+   "w": 175,
+   "h": 8,
+   "_uid": "kr_34"
+  },
+  {
+   "type": "door",
+   "x": 1080,
+   "y": 240,
+   "w": 65,
+   "h": 8,
+   "glass": true,
+   "_uid": "kr_35"
+  },
+  {
+   "type": "wall",
+   "x": 880,
+   "y": 0,
+   "w": 8,
+   "h": 240,
+   "_uid": "kr_36"
+  },
+  {
+   "type": "room",
+   "x": 888,
+   "y": 0,
+   "w": 432,
+   "h": 240,
+   "kind": "team",
+   "label": "팀 회의실 3",
+   "zone": 3,
+   "_uid": "kr_37"
+  },
+  {
+   "type": "table_rect",
+   "x": 992.5,
+   "y": 92,
+   "w": 240,
+   "h": 56,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_38"
+  },
+  {
+   "type": "chair",
+   "x": 1000.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_39"
+  },
+  {
+   "type": "chair",
+   "x": 1000.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_40"
+  },
+  {
+   "type": "chair",
+   "x": 1050.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_41"
+  },
+  {
+   "type": "chair",
+   "x": 1050.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_42"
+  },
+  {
+   "type": "chair",
+   "x": 1100.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_43"
+  },
+  {
+   "type": "chair",
+   "x": 1100.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_44"
+  },
+  {
+   "type": "chair",
+   "x": 1150.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_45"
+  },
+  {
+   "type": "chair",
+   "x": 1150.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_46"
+  },
+  {
+   "type": "chair",
+   "x": 1200.5,
+   "y": 54,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_47"
+  },
+  {
+   "type": "chair",
+   "x": 1200.5,
+   "y": 162,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_48"
+  },
+  {
+   "type": "tv_meeting",
+   "x": 816,
+   "y": 117,
+   "w": 150,
+   "h": 6,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_49"
+  },
+  {
+   "type": "wall",
+   "x": 1320,
+   "y": 0,
+   "w": 8,
+   "h": 240,
+   "_uid": "kr_50"
+  },
+  {
+   "type": "tv_status",
+   "x": 1379,
+   "y": 0,
+   "w": 90,
+   "h": 8,
+   "facing": 0,
+   "fit": true,
+   "elevation": 0.12,
+   "_uid": "kr_51"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 0,
+   "w": 8,
+   "h": 80,
+   "_uid": "kr_52"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 145,
+   "w": 8,
+   "h": 95,
+   "_uid": "kr_53"
+  },
+  {
+   "type": "door",
+   "x": 1491.5,
+   "y": 108.5,
+   "w": 65,
+   "h": 8,
+   "facing": 90,
+   "glass": true,
+   "_uid": "kr_54"
+  },
+  {
+   "type": "wall",
+   "x": 1528,
+   "y": 240,
+   "w": 272,
+   "h": 8,
+   "_uid": "kr_55"
+  },
+  {
+   "type": "room",
+   "x": 1528,
+   "y": 0,
+   "w": 272,
+   "h": 240,
+   "kind": "tft",
+   "label": "TFT 회의실 1",
+   "_uid": "kr_56"
+  },
+  {
+   "type": "table_rect",
+   "x": 1592.5,
+   "y": 93,
+   "w": 140,
+   "h": 64,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_57"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 55,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_58"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 171,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_59"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 55,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_60"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 171,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_61"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 55,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_62"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 171,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_63"
+  },
+  {
+   "type": "tv_meeting",
+   "x": 1722,
+   "y": 122,
+   "w": 150,
+   "h": 6,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_64"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 240,
+   "w": 8,
+   "h": 90,
+   "_uid": "kr_65"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 395,
+   "w": 8,
+   "h": 85,
+   "_uid": "kr_66"
+  },
+  {
+   "type": "door",
+   "x": 1491.5,
+   "y": 358.5,
+   "w": 65,
+   "h": 8,
+   "facing": 90,
+   "glass": true,
+   "_uid": "kr_67"
+  },
+  {
+   "type": "wall",
+   "x": 1528,
+   "y": 480,
+   "w": 272,
+   "h": 8,
+   "_uid": "kr_68"
+  },
+  {
+   "type": "room",
+   "x": 1528,
+   "y": 248,
+   "w": 272,
+   "h": 232,
+   "kind": "tft",
+   "label": "TFT 회의실 2",
+   "_uid": "kr_69"
+  },
+  {
+   "type": "table_rect",
+   "x": 1592.5,
+   "y": 333,
+   "w": 140,
+   "h": 64,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_70"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 295,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_71"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 411,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_72"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 295,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_73"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 411,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_74"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 295,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_75"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 411,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_76"
+  },
+  {
+   "type": "tv_meeting",
+   "x": 1722,
+   "y": 362,
+   "w": 150,
+   "h": 6,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_77"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 480,
+   "w": 8,
+   "h": 100,
+   "_uid": "kr_78"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 645,
+   "w": 8,
+   "h": 75,
+   "_uid": "kr_79"
+  },
+  {
+   "type": "door",
+   "x": 1491.5,
+   "y": 608.5,
+   "w": 65,
+   "h": 8,
+   "facing": 90,
+   "glass": true,
+   "_uid": "kr_80"
+  },
+  {
+   "type": "wall",
+   "x": 1528,
+   "y": 720,
+   "w": 272,
+   "h": 8,
+   "_uid": "kr_81"
+  },
+  {
+   "type": "room",
+   "x": 1528,
+   "y": 488,
+   "w": 272,
+   "h": 232,
+   "kind": "tft",
+   "label": "TFT 회의실 3",
+   "_uid": "kr_82"
+  },
+  {
+   "type": "table_rect",
+   "x": 1592.5,
+   "y": 573,
+   "w": 140,
+   "h": 64,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_83"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 535,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_84"
+  },
+  {
+   "type": "chair",
+   "x": 1600.5,
+   "y": 651,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_85"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 535,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_86"
+  },
+  {
+   "type": "chair",
+   "x": 1650.5,
+   "y": 651,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_87"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 535,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_88"
+  },
+  {
+   "type": "chair",
+   "x": 1700.5,
+   "y": 651,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_89"
+  },
+  {
+   "type": "tv_meeting",
+   "x": 1722,
+   "y": 602,
+   "w": 150,
+   "h": 6,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_90"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 202,
+   "y": 405,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 1,
+   "lead": true,
+   "_uid": "kr_91"
+  },
+  {
+   "type": "computer",
+   "x": 217,
+   "y": 430,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_92"
+  },
+  {
+   "type": "keyboard",
+   "x": 223,
+   "y": 410,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_93"
+  },
+  {
+   "type": "mouse",
+   "x": 215,
+   "y": 410,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_94"
+  },
+  {
+   "type": "chair",
+   "x": 218,
+   "y": 377,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_95"
+  },
+  {
+   "type": "partition",
+   "x": 187,
+   "y": 445,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_96"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_97"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_98"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 471,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_99"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 487,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_100"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_101"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_102"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_103"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 479,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_104"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 463,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_105"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_106"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_107"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_108"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 527,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_109"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 543,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_110"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_111"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_112"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_113"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 535,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_114"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 519,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_115"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_116"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_117"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_118"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 583,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_119"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 599,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_120"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_121"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 1,
+   "_uid": "kr_122"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_123"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 591,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_124"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 575,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_125"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_126"
+  },
+  {
+   "type": "partition",
+   "x": 227,
+   "y": 451,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_127"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 672,
+   "y": 405,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 2,
+   "lead": true,
+   "_uid": "kr_128"
+  },
+  {
+   "type": "computer",
+   "x": 687,
+   "y": 430,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_129"
+  },
+  {
+   "type": "keyboard",
+   "x": 693,
+   "y": 410,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_130"
+  },
+  {
+   "type": "mouse",
+   "x": 685,
+   "y": 410,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_131"
+  },
+  {
+   "type": "chair",
+   "x": 688,
+   "y": 377,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_132"
+  },
+  {
+   "type": "partition",
+   "x": 657,
+   "y": 445,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_133"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_134"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_135"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 471,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_136"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 487,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_137"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_138"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_139"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_140"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 479,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_141"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 463,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_142"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_143"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_144"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_145"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 527,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_146"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 543,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_147"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_148"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_149"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_150"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 535,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_151"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 519,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_152"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_153"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_154"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_155"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 583,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_156"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 599,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_157"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_158"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 2,
+   "_uid": "kr_159"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_160"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 591,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_161"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 575,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_162"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_163"
+  },
+  {
+   "type": "partition",
+   "x": 697,
+   "y": 451,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_164"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1142,
+   "y": 405,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 3,
+   "lead": true,
+   "_uid": "kr_165"
+  },
+  {
+   "type": "computer",
+   "x": 1157,
+   "y": 430,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_166"
+  },
+  {
+   "type": "keyboard",
+   "x": 1163,
+   "y": 410,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_167"
+  },
+  {
+   "type": "mouse",
+   "x": 1155,
+   "y": 410,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_168"
+  },
+  {
+   "type": "chair",
+   "x": 1158,
+   "y": 377,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_169"
+  },
+  {
+   "type": "partition",
+   "x": 1127,
+   "y": 445,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_170"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_171"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_172"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 471,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_173"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 487,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_174"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_175"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 459,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_176"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 473,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_177"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 479,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_178"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 463,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_179"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 467,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_180"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_181"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_182"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 527,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_183"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 543,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_184"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_185"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 515,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_186"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 529,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_187"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 535,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_188"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 519,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_189"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 523,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_190"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_191"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_192"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 583,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_193"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 599,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_194"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_195"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 571,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 3,
+   "_uid": "kr_196"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 585,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_197"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 591,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_198"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 575,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_199"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 579,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_200"
+  },
+  {
+   "type": "partition",
+   "x": 1167,
+   "y": 451,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_201"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 202,
+   "y": 765,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 4,
+   "lead": true,
+   "_uid": "kr_202"
+  },
+  {
+   "type": "computer",
+   "x": 217,
+   "y": 790,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_203"
+  },
+  {
+   "type": "keyboard",
+   "x": 223,
+   "y": 770,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_204"
+  },
+  {
+   "type": "mouse",
+   "x": 215,
+   "y": 770,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_205"
+  },
+  {
+   "type": "chair",
+   "x": 218,
+   "y": 737,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_206"
+  },
+  {
+   "type": "partition",
+   "x": 187,
+   "y": 805,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_207"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_208"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_209"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 831,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_210"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 847,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_211"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_212"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_213"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_214"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 839,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_215"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 823,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_216"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_217"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_218"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_219"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 887,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_220"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 903,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_221"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_222"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_223"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_224"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 895,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_225"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 879,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_226"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_227"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 179,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_228"
+  },
+  {
+   "type": "computer",
+   "x": 205,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_229"
+  },
+  {
+   "type": "keyboard",
+   "x": 185,
+   "y": 943,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_230"
+  },
+  {
+   "type": "mouse",
+   "x": 193,
+   "y": 959,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_231"
+  },
+  {
+   "type": "chair",
+   "x": 159,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_232"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 225,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 4,
+   "_uid": "kr_233"
+  },
+  {
+   "type": "computer",
+   "x": 229,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_234"
+  },
+  {
+   "type": "keyboard",
+   "x": 253,
+   "y": 951,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_235"
+  },
+  {
+   "type": "mouse",
+   "x": 261,
+   "y": 935,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_236"
+  },
+  {
+   "type": "chair",
+   "x": 277,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_237"
+  },
+  {
+   "type": "partition",
+   "x": 227,
+   "y": 811,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_238"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 672,
+   "y": 765,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 5,
+   "lead": true,
+   "_uid": "kr_239"
+  },
+  {
+   "type": "computer",
+   "x": 687,
+   "y": 790,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_240"
+  },
+  {
+   "type": "keyboard",
+   "x": 693,
+   "y": 770,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_241"
+  },
+  {
+   "type": "mouse",
+   "x": 685,
+   "y": 770,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_242"
+  },
+  {
+   "type": "chair",
+   "x": 688,
+   "y": 737,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_243"
+  },
+  {
+   "type": "partition",
+   "x": 657,
+   "y": 805,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_244"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_245"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_246"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 831,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_247"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 847,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_248"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_249"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_250"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_251"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 839,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_252"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 823,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_253"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_254"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_255"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_256"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 887,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_257"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 903,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_258"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_259"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_260"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_261"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 895,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_262"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 879,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_263"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_264"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 649,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_265"
+  },
+  {
+   "type": "computer",
+   "x": 675,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_266"
+  },
+  {
+   "type": "keyboard",
+   "x": 655,
+   "y": 943,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_267"
+  },
+  {
+   "type": "mouse",
+   "x": 663,
+   "y": 959,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_268"
+  },
+  {
+   "type": "chair",
+   "x": 629,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_269"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 695,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 5,
+   "_uid": "kr_270"
+  },
+  {
+   "type": "computer",
+   "x": 699,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_271"
+  },
+  {
+   "type": "keyboard",
+   "x": 723,
+   "y": 951,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_272"
+  },
+  {
+   "type": "mouse",
+   "x": 731,
+   "y": 935,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_273"
+  },
+  {
+   "type": "chair",
+   "x": 747,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_274"
+  },
+  {
+   "type": "partition",
+   "x": 697,
+   "y": 811,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_275"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1142,
+   "y": 765,
+   "w": 56,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "zone": 6,
+   "lead": true,
+   "_uid": "kr_276"
+  },
+  {
+   "type": "computer",
+   "x": 1157,
+   "y": 790,
+   "w": 26,
+   "h": 12,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_277"
+  },
+  {
+   "type": "keyboard",
+   "x": 1163,
+   "y": 770,
+   "w": 22,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_278"
+  },
+  {
+   "type": "mouse",
+   "x": 1155,
+   "y": 770,
+   "w": 6,
+   "h": 8,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_279"
+  },
+  {
+   "type": "chair",
+   "x": 1158,
+   "y": 737,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_280"
+  },
+  {
+   "type": "partition",
+   "x": 1127,
+   "y": 805,
+   "w": 86,
+   "h": 6,
+   "_uid": "kr_281"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_282"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_283"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 831,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_284"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 847,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_285"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_286"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 819,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_287"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 833,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_288"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 839,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_289"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 823,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_290"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 827,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_291"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_292"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_293"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 887,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_294"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 903,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_295"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_296"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 875,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_297"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 889,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_298"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 895,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_299"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 879,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_300"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 883,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_301"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1119,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 270,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_302"
+  },
+  {
+   "type": "computer",
+   "x": 1145,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_303"
+  },
+  {
+   "type": "keyboard",
+   "x": 1125,
+   "y": 943,
+   "w": 22,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_304"
+  },
+  {
+   "type": "mouse",
+   "x": 1133,
+   "y": 959,
+   "w": 6,
+   "h": 8,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_305"
+  },
+  {
+   "type": "chair",
+   "x": 1099,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_306"
+  },
+  {
+   "type": "desk_cubicle",
+   "x": 1165,
+   "y": 931,
+   "w": 56,
+   "h": 40,
+   "facing": 90,
+   "fit": true,
+   "zone": 6,
+   "_uid": "kr_307"
+  },
+  {
+   "type": "computer",
+   "x": 1169,
+   "y": 945,
+   "w": 26,
+   "h": 12,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_308"
+  },
+  {
+   "type": "keyboard",
+   "x": 1193,
+   "y": 951,
+   "w": 22,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_309"
+  },
+  {
+   "type": "mouse",
+   "x": 1201,
+   "y": 935,
+   "w": 6,
+   "h": 8,
+   "facing": 90,
+   "fit": true,
+   "_uid": "kr_310"
+  },
+  {
+   "type": "chair",
+   "x": 1217,
+   "y": 939,
+   "w": 24,
+   "h": 24,
+   "facing": 270,
+   "fit": true,
+   "_uid": "kr_311"
+  },
+  {
+   "type": "partition",
+   "x": 1167,
+   "y": 811,
+   "w": 6,
+   "h": 168,
+   "_uid": "kr_312"
+  },
+  {
+   "type": "phone_booth",
+   "x": 3.4,
+   "y": 1004.6,
+   "_uid": "kr_313"
+  },
+  {
+   "type": "kanban_board",
+   "x": -62,
+   "y": 877,
+   "w": 130,
+   "h": 6,
+   "facing": 90,
+   "fit": true,
+   "wall": true,
+   "_uid": "kr_314"
+  },
+  {
+   "type": "rug",
+   "x": 440,
+   "y": 939,
+   "w": 140,
+   "h": 82,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_315"
+  },
+  {
+   "type": "couch",
+   "x": 444,
+   "y": 1048.6,
+   "w": 66,
+   "h": 28,
+   "fit": true,
+   "_uid": "kr_316"
+  },
+  {
+   "type": "couch",
+   "x": 510,
+   "y": 1048.6,
+   "w": 66,
+   "h": 28,
+   "fit": true,
+   "_uid": "kr_317"
+  },
+  {
+   "type": "table_rect",
+   "x": 482,
+   "y": 946,
+   "w": 56,
+   "h": 30,
+   "fit": true,
+   "_uid": "kr_318"
+  },
+  {
+   "type": "lamp",
+   "x": 414,
+   "y": 1046,
+   "_uid": "kr_319"
+  },
+  {
+   "type": "coat_rack",
+   "x": 576,
+   "y": 1056,
+   "_uid": "kr_320"
+  },
+  {
+   "type": "plant",
+   "x": 702,
+   "y": 1048,
+   "_uid": "kr_321"
+  },
+  {
+   "type": "door",
+   "x": 860,
+   "y": 1072,
+   "w": 100,
+   "h": 8,
+   "_uid": "kr_322"
+  },
+  {
+   "type": "locker",
+   "x": 1476,
+   "y": 1060,
+   "w": 44,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_323"
+  },
+  {
+   "type": "locker",
+   "x": 1432,
+   "y": 1060,
+   "w": 44,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_324"
+  },
+  {
+   "type": "locker",
+   "x": 1388,
+   "y": 1060,
+   "w": 44,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_325"
+  },
+  {
+   "type": "file_cabinet",
+   "x": 1330,
+   "y": 1060,
+   "w": 58,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_326"
+  },
+  {
+   "type": "file_cabinet",
+   "x": 1272,
+   "y": 1060,
+   "w": 58,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_327"
+  },
+  {
+   "type": "printer",
+   "x": 1228,
+   "y": 1046,
+   "w": 44,
+   "h": 34,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_328"
+  },
+  {
+   "type": "notice_board",
+   "x": 740,
+   "y": 1074,
+   "w": 60,
+   "h": 6,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_329"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 720,
+   "w": 8,
+   "h": 60,
+   "_uid": "kr_330"
+  },
+  {
+   "type": "glass_wall",
+   "x": 1520,
+   "y": 845,
+   "w": 8,
+   "h": 235,
+   "_uid": "kr_331"
+  },
+  {
+   "type": "door",
+   "x": 1491.5,
+   "y": 808.5,
+   "w": 65,
+   "h": 8,
+   "facing": 90,
+   "glass": true,
+   "_uid": "kr_332"
+  },
+  {
+   "type": "cabinet",
+   "x": 1530,
+   "y": 1040,
+   "w": 140,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_333"
+  },
+  {
+   "type": "coffee_machine",
+   "x": 1536,
+   "y": 1049,
+   "w": 28,
+   "h": 28,
+   "facing": 180,
+   "fit": true,
+   "elevation": 0.504,
+   "_uid": "kr_334"
+  },
+  {
+   "type": "microwave",
+   "x": 1620,
+   "y": 1060,
+   "w": 30,
+   "h": 20,
+   "facing": 180,
+   "fit": true,
+   "elevation": 0.08400000000000002,
+   "_uid": "kr_335"
+  },
+  {
+   "type": "sink",
+   "x": 1670,
+   "y": 1040,
+   "w": 40,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_336"
+  },
+  {
+   "type": "water_cooler",
+   "x": 1732,
+   "y": 1058,
+   "w": 24,
+   "h": 22,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_337"
+  },
+  {
+   "type": "fridge",
+   "x": 1756,
+   "y": 1040,
+   "w": 44,
+   "h": 40,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_338"
+  },
+  {
+   "type": "table_rect",
+   "x": 1620.5,
+   "y": 865.5,
+   "w": 84,
+   "h": 44,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_339"
+  },
+  {
+   "type": "chair",
+   "x": 1625.5,
+   "y": 827.5,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_340"
+  },
+  {
+   "type": "chair",
+   "x": 1625.5,
+   "y": 923.5,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_341"
+  },
+  {
+   "type": "chair",
+   "x": 1675.5,
+   "y": 827.5,
+   "w": 24,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_342"
+  },
+  {
+   "type": "chair",
+   "x": 1675.5,
+   "y": 923.5,
+   "w": 24,
+   "h": 24,
+   "facing": 180,
+   "fit": true,
+   "_uid": "kr_343"
+  },
+  {
+   "type": "plant",
+   "x": 428,
+   "y": 254,
+   "_uid": "kr_344"
+  },
+  {
+   "type": "plant",
+   "x": 868,
+   "y": 254,
+   "_uid": "kr_345"
+  },
+  {
+   "type": "plant",
+   "x": 1300,
+   "y": 254,
+   "_uid": "kr_346"
+  },
+  {
+   "type": "plant",
+   "x": 12,
+   "y": 254,
+   "_uid": "kr_347"
+  },
+  {
+   "type": "plant",
+   "x": 12,
+   "y": 520,
+   "_uid": "kr_348"
+  },
+  {
+   "type": "plant",
+   "x": 12,
+   "y": 720,
+   "_uid": "kr_349"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 205,
+   "_uid": "kr_350"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 445,
+   "_uid": "kr_351"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 685,
+   "_uid": "kr_352"
+  },
+  {
+   "type": "plant",
+   "x": 1005,
+   "y": 1050,
+   "_uid": "kr_353"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 905,
+   "_uid": "kr_354"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 955,
+   "_uid": "kr_355"
+  },
+  {
+   "type": "plant",
+   "x": 1488,
+   "y": 1005,
+   "_uid": "kr_356"
+  },
+  {
+   "type": "plant",
+   "x": 228,
+   "y": 1048,
+   "_uid": "kr_357"
+  },
+  {
+   "type": "plant",
+   "x": 453,
+   "y": 446,
+   "_uid": "kr_358"
+  },
+  {
+   "type": "plant",
+   "x": 453,
+   "y": 546,
+   "_uid": "kr_359"
+  },
+  {
+   "type": "plant",
+   "x": 453,
+   "y": 806,
+   "_uid": "kr_360"
+  },
+  {
+   "type": "plant",
+   "x": 453,
+   "y": 906,
+   "_uid": "kr_361"
+  },
+  {
+   "type": "plant",
+   "x": 923,
+   "y": 446,
+   "_uid": "kr_362"
+  },
+  {
+   "type": "plant",
+   "x": 923,
+   "y": 546,
+   "_uid": "kr_363"
+  },
+  {
+   "type": "plant",
+   "x": 923,
+   "y": 806,
+   "_uid": "kr_364"
+  },
+  {
+   "type": "plant",
+   "x": 923,
+   "y": 906,
+   "_uid": "kr_365"
+  },
+  {
+   "type": "plant_palm",
+   "x": 3,
+   "y": 432,
+   "w": 44,
+   "h": 44,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_366"
+  },
+  {
+   "type": "plant_palm",
+   "x": 3,
+   "y": 288,
+   "w": 44,
+   "h": 44,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_367"
+  },
+  {
+   "type": "plant_cactus",
+   "x": 319,
+   "y": 252,
+   "w": 22,
+   "h": 20,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_368"
+  },
+  {
+   "type": "plant_cactus",
+   "x": 759,
+   "y": 252,
+   "w": 22,
+   "h": 20,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_369"
+  },
+  {
+   "type": "plant_cactus",
+   "x": 1199,
+   "y": 252,
+   "w": 22,
+   "h": 20,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_370"
+  },
+  {
+   "type": "plant_cactus_short",
+   "x": 778,
+   "y": 1052,
+   "w": 24,
+   "h": 20,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_371"
+  },
+  {
+   "type": "plant_cactus_short",
+   "x": 1078,
+   "y": 1052,
+   "w": 24,
+   "h": 20,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_372"
+  },
+  {
+   "type": "plant_tree",
+   "x": 3,
+   "y": 590,
+   "w": 20,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_373"
+  },
+  {
+   "type": "plant_tree",
+   "x": 3,
+   "y": 770,
+   "w": 20,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_374"
+  },
+  {
+   "type": "plant_tree",
+   "x": 3,
+   "y": 955,
+   "w": 20,
+   "h": 24,
+   "facing": 0,
+   "fit": true,
+   "_uid": "kr_375"
+  },
+  {
+   "type": "boundary",
+   "x": 0,
+   "y": 1076,
+   "w": 1800,
+   "h": 724,
+   "_uid": "kr_376"
+  }
+ ]
+}
