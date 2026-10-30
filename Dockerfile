@@ -1,7 +1,8 @@
 # AAS 제어면. Hermes 는 이 이미지에 들어 있지 않다 — 이미 돌고 있는 Hermes 에 연결한다.
 # 화면(React)은 이미지를 만들 때만 빌드한다. 실행 이미지에는 빌드된 정적 파일만 들어가므로 설치 현장에 npm 이 필요 없다.
 # 폐쇄망 빌드는 NODE_IMAGE·PYTHON_IMAGE 를 Harbor 미러로 바꿔 넘긴다.
-ARG NODE_IMAGE=node:20-bookworm-slim
+# Node 22: pdfjs-dist 6.3 이 Node 22.13 이상을 요구한다(2026-10-30, 스펙 2026-10-30-004). 실행 이미지에는 Node 가 없다
+ARG NODE_IMAGE=node:22-bookworm-slim
 ARG PYTHON_IMAGE=python:3.12-slim
 
 # 화면 빌드 결과는 아키텍처와 무관한 정적 파일이라 빌드하는 장비의 아키텍처로 한 번만 만든다. 대상마다 만들면 arm64 가 QEMU 흉내로 돌아 약 11분 걸렸다(amd64 는 1분)

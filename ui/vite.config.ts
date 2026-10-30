@@ -71,8 +71,8 @@ export default defineConfig({
           // 지연 로딩 도우미는 첫 화면 묶음에 둔다. 두지 않으면 monaco 묶음에 들어가 첫 화면이 monaco 를 받는다
           if (id.includes('vite/preload-helper')) return 'vendor-react';
           if (!id.includes('/node_modules/')) return undefined;
-          // pptx-preview 는 echarts 5 를 자기 node_modules 에 따로 둔다(…/pptx-preview/node_modules/echarts/). 이 경로에도 /node_modules/echarts/ 가
-          // 들어 있어 아래 vendor-echarts 규칙보다 먼저 가려야 앱의 echarts 6 과 섞이지 않는다(스펙 2026-10-20-005 §9)
+          // pptx-preview 는 vendor-pptx 로 따로 묶는다. 2026-10-30 부터 package.json overrides 로 앱과 같은 echarts 6 을 쓴다(그전에는 자기
+          // node_modules 에 echarts 5 를 두어 이 규칙이 vendor-echarts 보다 먼저 가려야 했다, 스펙 2026-10-20-005 §9·2026-10-30-004)
           if (id.includes('/node_modules/pptx-preview/')) return 'vendor-pptx';
           const pkg = (names: string[]) => names.some((n) => id.includes(`/node_modules/${n}/`));
           if (pkg(['react', 'react-dom', 'react-router-dom', 'react-router', 'scheduler'])) return 'vendor-react';

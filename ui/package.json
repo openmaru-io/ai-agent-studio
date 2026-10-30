@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.11.1"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@dicebear/core": "9.4.3",
