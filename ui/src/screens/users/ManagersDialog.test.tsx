@@ -37,7 +37,7 @@ const row = (o: Partial<DeptRow> = {}): DeptRow => ({
   ...o,
 });
 
-function setup(dept: DeptRow, onSubmit = vi.fn(async () => undefined), onClose = vi.fn()) {
+function setup(dept: DeptRow, onSubmit = vi.fn(async (): Promise<void> => undefined), onClose = vi.fn()) {
   render(<ManagersDialog dept={dept} users={USERS} onClose={onClose} onSubmit={onSubmit} />);
   return { onSubmit, onClose, user: userEvent.setup() };
 }

@@ -22,12 +22,12 @@
     "@tanstack/react-query": "^5.51.24",
     "dayjs": "1.11.23",
     "docx-preview": "0.4.1",
-    "echarts": "6.0.0",
+    "echarts": "6.1.0",
     "exceljs": "4.4.0",
     "highlight.js": "11.11.1",
     "lucide-react": "0.563.0",
     "material-react-table": "2.13.3",
-    "mermaid": "11.12.3",
+    "mermaid": "11.16.1",
     "monaco-editor": "0.52.2",
     "notistack": "^3.0.2",
     "pptx-preview": "1.0.7",
@@ -43,7 +43,9 @@
     "troika-three-text": "0.52.5"
   },
   "overrides": {
-    "typescript": "5.6.2"
+    "typescript": "5.6.2",
+    "echarts": "$echarts",
+    "uuid": "11.1.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.1.0",
@@ -70,7 +72,7 @@
     "prettier": "^2.7.1",
     "typescript": "5.6.2",
     "vite": "^6.3.5",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.12"
   },
   "scripts": {
     "dev": "vite",

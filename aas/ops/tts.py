@@ -40,7 +40,7 @@ _VERIFIER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+�
 _CODE_BLOCK_RE = re.compile(r"^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:^[ \t]*\1[ \t]*$|\Z)", re.MULTILINE)
 _CODE_INLINE_FENCE_RE = re.compile(r"```[\s\S]*?(?:```|\Z)")
 # 표: 구분 줄(|---|:--:|)이 있는 연속된 | 줄 묶음은 통째로 지운다(칸을 하나씩 읽으면 듣기 어렵다)
-_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*(?:\|\s*)?:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+(?:\|\s*)?$")   # \s*\|?\s* 를 묶어 되돌아가기를 없앴다(CodeQL #11)
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)")
 _URL_RE = re.compile(r"(?:https?|ftp)://\S+|www\.\S+")
@@ -52,15 +52,12 @@ _UBOLD_RE = re.compile(r"__(.+?)__", re.DOTALL)
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", re.DOTALL)
 _UITALIC_RE = re.compile(r"(?<![_\w])_(?!_)(.+?)(?<!_)_(?![_\w])", re.DOTALL)
 _STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
-_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+)$", re.MULTILINE)   # 끝의 # 와 공백은 _heading_text 가 지운다(정규식으로 하면 세제곱 시간, CodeQL #16)
 _QUOTE_RE = re.compile(r"^\s*>\s?", re.MULTILINE)
 _LIST_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?", re.MULTILINE)
 _HR_RE = re.compile(r"^\s*[-*_=]{3,}\s*$", re.MULTILINE)
-_PIPE_RE = re.compile(r"\s*\|\s*")
-_EMOJI_RE = re.compile(
-    "[\U0001F1E6-\U0001F1FF\U0001F300-\U0001F5FF\U0001F600-\U0001F64F\U0001F680-\U0001F6FF"
-    "\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF"
-    "\U0001FA00-\U0001FAFF☀-➿⭐⭕✅❌]+")
+_PIPE_RE = re.compile(r"(?<!\s)\s*\|\s*|\|\s*")   # 공백 묶음의 맨 앞에서만 시작한다(CodeQL #17)
+_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001F64F\U0001F680-\U0001FAFF\u2600-\u27BF\u2B50\u2B55]+")   # 이스케이프로 적어 문자 범위 경고를 없앴다(CodeQL #64~71, 맞는 글자는 같다)
 _VS_RE = re.compile("[︎️‍]")
 # 식별자처럼 빽빽한 낱말(파일 이름·해시·UUID·경로·판 번호)은 한 글자씩 읽혀 소리가 깨진 것처럼 들린다 — 지운다(Hermes #119207)
 _FILENAME_EXT_RE = re.compile(
@@ -143,8 +140,26 @@ def _smooth(text: str) -> str:
     for pattern, repl in ((r"[ \t]{2,}", " "), (r"\s+([,.;:!?])", r"\1"), (r"\.{4,}", "..."),
                           (r"([.!?])(?:\s*\.)+", r"\1"), (r"(?:,\s*){2,}", ", ")):
         text = re.sub(pattern, repl, text)
-    text = re.sub(r"([^0-9])(?:[:;]\s*)+$", r"\1.", text)
+    text = _close_trailing_colon(text)
     return text.strip(" ,;:")
+
+
+def _close_trailing_colon(t: str) -> str:
+    """끝의 쌍점·쌍반점 묶음을 마침표로 바꾼다(앞 글자가 숫자인 것은 건너뛴다). 정규식 ([^0-9])(?:[:;]\\s*)+$ 와 같은 결과를
+    한 번 훑어 낸다 — 정규식은 시작 위치마다 끝까지 훑어 제곱 시간이 들었다(CodeQL #12)."""
+    i = len(t)
+    while i and (t[i - 1] in ":;" or t[i - 1].isspace()):
+        i -= 1
+    for p in range(max(i, 1), len(t)):
+        if t[p] in ":;" and t[p - 1] not in "0123456789":
+            return t[:p] + "."
+    return t
+
+
+def _heading_text(rest: str) -> str:
+    """제목 줄 글에서 끝의 # 와 공백을 뗀다. 글이 # 뿐이면 첫 글자는 남긴다(예전 정규식 (.+?)[ \\t]*#*[ \\t]*$ 와 같다)."""
+    core = rest.rstrip(" \t").rstrip("#").rstrip(" \t")
+    return rest[:max(len(core), 1)].rstrip()
 
 
 def normalize(text: str) -> str:
@@ -165,7 +180,7 @@ def normalize(text: str) -> str:
     text = _INLINE_CODE_RE.sub(r"\1", text)
     for pattern in (_BOLD_RE, _UBOLD_RE, _ITALIC_RE, _UITALIC_RE, _STRIKE_RE):
         text = pattern.sub(r"\1", text)
-    text = _HEADING_RE.sub(lambda m: m.group(1).rstrip() + _HEAD, text)
+    text = _HEADING_RE.sub(lambda m: _heading_text(m.group(1)) + _HEAD, text)
     text = _QUOTE_RE.sub("", text)
     text = _LIST_RE.sub("", text)
     text = _HR_RE.sub("", text)

@@ -2071,5 +2071,20 @@ class SizeRouteTest(K8sBase):
         self.assertEqual((code, out.get("field")), (400, "cpu_request"))                       # 칸 오류는 field 로
 
 
+class EmailPatternTest(unittest.TestCase):
+    def test_긴_이메일_칸도_빨리_검사한다(self):
+        """2026-10-30 CodeQL #3~5·7·10: 본문 상한(256KiB)까지 넣은 이메일 칸 하나로 137초 걸렸다(관리자 경로)."""
+        import time
+        t0 = time.monotonic()
+        self.assertIsNone(agents.EMAIL.match("!@!." + "!." * 20_000 + "@"))     # 고치기 전 3.2초(4만 자), 본문 상한이면 137초
+        self.assertLess(time.monotonic() - t0, 1.0)
+
+    def test_고친_뒤에도_같은_주소를_받는다(self):
+        for ok in ("kim@corp.example", "a.b+c@x.co.kr", "x@y.z"):
+            self.assertTrue(agents.EMAIL.match(ok), ok)
+        for bad in ("kim", "kim@", "@x.y", "kim@corp", "a b@x.y", "a@b@c.d", "a@x.y "):
+            self.assertIsNone(agents.EMAIL.match(bad), bad)
+
+
 if __name__ == "__main__":
     unittest.main()

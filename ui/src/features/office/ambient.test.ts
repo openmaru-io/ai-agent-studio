@@ -163,7 +163,8 @@ describe('useAmbient 와 읽어 주기', () => {
     const audios: ReturnType<typeof fakeAudio>[] = [];
     vi.stubGlobal(
       'Audio',
-      vi.fn(() => {
+      // new Audio() 로 부르므로 일반 함수여야 한다(vitest 4 는 화살표 함수 대역을 new 로 부르면 오류)
+      vi.fn(function () {
         const a = fakeAudio();
         audios.push(a);
         return a;

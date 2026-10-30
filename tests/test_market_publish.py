@@ -78,6 +78,16 @@ class PublishTest(unittest.TestCase):
         with self.assertRaises(mk.MarketError):
             self.ask()
 
+    def test_a_skill_folder_that_is_itself_a_link_out_of_the_profile_is_refused(self):
+        """2026-10-30 CodeQL #32~35·46: 폴더 안 링크만 거절해, 폴더 자체가 프로파일 밖을 가리키는 링크면 밖의 파일을 묶었다(로컬 폴더 배치)."""
+        outside = Path(tempfile.mkdtemp(dir=TMP.name))
+        put(outside, {"SKILL.md": GOOD, "data.txt": "다른 사람의 파일\n"})
+        (self.root / "skills/local/evil").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(mk.MarketError) as cm:
+            self.ask(skill_path="skills/local/evil", name="evil")
+        self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(list(mp._dir().glob("*.zip")), [])
+
     def test_name_version_and_description_rules(self):
         for bad in ("Weekly Report", "x", "-a"):
             with self.assertRaises(mk.MarketError):

@@ -20,7 +20,7 @@ from ..hermes import readers
 from ..common.i18n import tr
 from .pods import Pod
 
-EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL = re.compile(r"^[^@\s]+@(?=[^@\s]*$)[^@\s]+\.[^@\s]+$")   # 도메인 칸을 먼저 한 번 훑어 확인한다(되돌아가기로 제곱 시간, CodeQL #3~5·7·10)
 NAME_PREFIX = "aas-agent-"                                  # 사용자 Hermes(HermesAgent·StatefulSet·파드) 이름의 앞부분
 DELETED_SUB = "aas:deleted-owner"                           # 주인을 지운 Hermes 의 ownerSub(CRD 필수 칸이라 비울 수 없다). 누구의 sub 와도 같지 않다(lifecycle.orphan)
 

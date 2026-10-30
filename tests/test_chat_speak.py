@@ -55,6 +55,33 @@ class FakeLiteLLM:
 
 
 class NormalizeTest(unittest.TestCase):
+    def test_긴_공격_문자열도_빨리_끝난다(self):
+        """2026-10-30 CodeQL #11·12·16·17: 정규식 되돌아가기로 2만 자(TEXT_MAX) 한 번에 서버가 수 초~수 분 멈췄다
+        (제목 줄은 4,000자에 63초). 정규식은 GIL 을 잡고 있어 그동안 다른 요청도 멈춘다."""
+        import time
+        n = tts.TEXT_MAX - 10
+        cases = {
+            "제목 끝 공백": "# x" + "\t" * n + "y",
+            "끝의 쌍점": "/" + ":" * n,
+            "끝의 쌍점·공백": "/" + "\t:" * (n // 2),
+            "표 구분 줄": "\t" * n + "a",
+            "세로 막대": "\t" * n,
+        }
+        for name, text in cases.items():
+            with self.subTest(name):
+                t0 = time.monotonic()
+                tts.plan(text)
+                self.assertLess(time.monotonic() - t0, 1.0)
+
+    def test_고친_정규식도_예전과_같은_글을_만든다(self):
+        # 기대값은 고치기 전 코드의 결과다(2026-10-30)
+        for text, want in (("## 제목 ##  \n본문", "제목, 본문."), ("# 제목 #", "제목."), ("#   제목   ###   \n다음", "제목, 다음."),
+                           ("| a | b |\n|---|:--:|\n| 1 | 2 |\n끝", "끝"), ("  |  ---  |  ---  |  ", "---, ---"),
+                           ("10:", "10"), ("목록:", "목록."), ("목록: ; :", "목록."), ("시간 10::", "시간 10:."),
+                           ("a | b", "a, b"), ("a|b | | c", "a, b, c")):
+            with self.subTest(text):
+                self.assertEqual(tts.normalize(text), want)
+
     def test_Markdown_기호와_URL_을_지우고_글은_남긴다(self):
         out = tts.normalize("## 요약\n\n**굵게** 쓴 _기울임_ 글과 ~~지운~~ 글. [문서](https://example.com/a?b=1) 참고, https://x.io/y 도 보세요.\n"
                             "> 인용입니다\n- 항목 하나\n1. 번호 항목\n---\n`make test` 를 돌립니다")

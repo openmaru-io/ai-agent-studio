@@ -153,6 +153,13 @@ def _agent_labels() -> dict[str, str]:
 office.agent_labels_provider = _agent_labels
 
 
+def _attachment(name: str) -> str:
+    """내려받기 Content-Disposition. filename 은 ASCII 로 바꾼 이름, filename* 은 UTF-8 원래 이름이다.
+    한글 이름은 헤더(Latin-1)에 넣지 못해 500 이 났고, 폴더 이름의 줄바꿈·따옴표가 헤더에 그대로 들어갔다(CodeQL #72)."""
+    plain = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "download"
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
 def _error_body(exc: Exception) -> dict:
     """오류 응답 본문. 문장(error)은 요청 언어로 나가고, reason 이 있으면 화면이 그것으로 종류를 가린다."""
     reason, field = getattr(exc, "reason", ""), getattr(exc, "field", "")
@@ -4794,6 +4801,12 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "AAS/0.3"
     principal: dict | None = None        # {"user": …, "pod": "<id>"}. 같은 프로세스 안 요청(legacy.dispatch)만 넣는다 — 헤더에서 읽지 않는다
 
+    def send_header(self, keyword, value):
+        """줄바꿈·NUL 이 든 헤더는 보내지 않는다. 응답을 줄 단위로 다시 나누므로(legacy._parse) 값 속 줄바꿈이 새 헤더가 됐다(CodeQL #72)."""
+        if any(c in f"{keyword}{value}" for c in "\r\n\0"):
+            return
+        super().send_header(keyword, value)
+
     def parse_request(self) -> bool:
         """요청마다 응답 문장의 언어를 고른 언어 쿠키, 없으면 Accept-Language 로 정한다(keep-alive 연결도 요청마다 다시 정한다)."""
         ok = super().parse_request()
@@ -5308,7 +5321,7 @@ class Handler(BaseHTTPRequestHandler):
                 except marketplace.MarketError as exc:
                     self._json(_error_body(exc), exc.code)
                 else:
-                    extra = {"Content-Disposition": f'attachment; filename="{name}.zip"'}
+                    extra = {"Content-Disposition": _attachment(f"{name}.zip")}
                     if excluded:
                         extra["X-AAS-Excluded"] = json.dumps(excluded, ensure_ascii=True)     # 헤더는 ASCII 로(화면이 JSON 으로 읽는다)
                     store.log_usage("skill_download", f"{(user or {}).get('email', 'local')} {query.get('profile', [''])[0]}/{name}", pod=pod.id)
@@ -5523,7 +5536,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not (not a.enabled or registry().is_admin(user)) or p_ is None:
                     self._json({"error": "not found"}, 404)
                 else:
-                    self._send(200, p_.read_bytes(), "application/zip", {"Content-Disposition": f'attachment; filename="{p_.stem}.zip"'})
+                    self._send(200, p_.read_bytes(), "application/zip", {"Content-Disposition": _attachment(f"{p_.stem}.zip")})
             elif path == "/api/market/archived":              # 큐레이터가 보관한 스킬(되살리기 후보). 설치 권한이 있는 사람만 본다
                 if not may_use_market(path, pod, user, a.enabled, registry().is_admin(user)):
                     self._json({"items": []})

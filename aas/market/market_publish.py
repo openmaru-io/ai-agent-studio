@@ -267,6 +267,8 @@ def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skil
     root = skill_keep.profile_root(home, profile)
     folder = root / rel
     try:
+        if skill_keep.escapes(root, folder):
+            raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"), 400)
         if not folder.is_dir() or not (folder / "SKILL.md").is_file():
             raise MarketError(tr("그 프로파일에 이 스킬 폴더가 없습니다", "That skill folder is not in the profile"), 404)
         skill_name = skill_keep.skill_name(folder)

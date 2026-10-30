@@ -31,6 +31,12 @@ def profile_root(home, profile: str):
     return home if profile in ("", "default") else home / "profiles" / profile
 
 
+def escapes(root, folder) -> bool:
+    """로컬 폴더(Path)가 링크를 따라 프로파일 밖을 가리키는가. 사이드카 경로는 사이드카가 링크를 따라가지 않아 늘 False 다.
+    폴더 안 링크는 collect 가 거절하지만 폴더 자체·중간 폴더가 링크면 밖의 파일을 읽었다(CodeQL #32~35·42·43·46)."""
+    return isinstance(folder, Path) and Path(root).resolve() not in Path(folder).resolve().parents
+
+
 def is_runtime(rel: Path) -> bool:
     return rel.name in RUNTIME_NAMES or rel.name.endswith(RUNTIME_SUFFIX) or any(p in RUNTIME_DIRS for p in rel.parts)
 

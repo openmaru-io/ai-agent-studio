@@ -86,6 +86,39 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual(names, ["SKILL.md"])                                    # 제외가 없으면 EXCLUDED.txt 도 없다
         self.assertNotIn("x-aas-excluded", headers)
 
+    def test_a_folder_name_with_line_breaks_does_not_add_response_headers(self):
+        """2026-10-30 CodeQL #72: 머리말에 name 이 없으면 폴더 이름이 Content-Disposition 에 그대로 들어가,
+        이름에 줄바꿈을 넣은 폴더로 응답에 Set-Cookie 같은 헤더를 끼워 넣을 수 있었다."""
+        bad = 'x\r\nSet-Cookie: aas_session=EVIL\r\nX-Evil: "1'
+        folder = self.home / "profiles" / "ma" / "skills" / "ops" / bad
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("# 머리말 없음\n", encoding="utf-8")
+        status, headers, _ = self.get(self.url(path=f"skills/ops/{bad}"))
+        self.assertEqual(status, 200)
+        self.assertNotIn("set-cookie", headers)
+        self.assertNotIn("x-evil", headers)
+        self.assertNotIn("\r", headers["content-disposition"])
+        self.assertNotIn("\n", headers["content-disposition"])
+
+    def test_a_skill_folder_that_is_itself_a_link_out_of_the_profile_is_refused(self):
+        """2026-10-30 CodeQL #42·43: 폴더 자체가 프로파일 밖을 가리키는 링크면 밖의 파일이 zip 으로 나갔다(로컬 폴더 배치)."""
+        outside = Path(TMP.name) / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text('---\nname: other\ndescription: "밖"\n---\n', encoding="utf-8")
+        (outside / "data.txt").write_text("다른 사람의 파일\n", encoding="utf-8")
+        (self.home / "profiles" / "ma" / "skills" / "ops" / "evil").symlink_to(outside, target_is_directory=True)
+        status, _, body = self.get(self.url(path="skills/ops/evil"))
+        self.assertEqual(status, 400)
+        self.assertNotIn("다른 사람의 파일".encode(), body)
+
+    def test_a_korean_skill_name_keeps_its_name_in_filename_star(self):
+        folder = self.home / "profiles" / "ma" / "skills" / "ops" / "kr"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text('---\nname: 주간보고\ndescription: "한글 이름"\n---\n', encoding="utf-8")
+        status, headers, _ = self.get(self.url(path="skills/ops/kr"))
+        self.assertEqual(status, 200)
+        self.assertIn("filename*=UTF-8''%EC%A3%BC%EA%B0%84%EB%B3%B4%EA%B3%A0.zip", headers["content-disposition"])
+
     def test_files_with_secrets_are_left_out_and_named_in_the_header_and_in_excluded_txt(self):
         status, headers, body = self.get(self.url())
         self.assertEqual(status, 200)

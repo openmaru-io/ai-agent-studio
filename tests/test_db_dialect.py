@@ -127,5 +127,17 @@ class DialectTest(unittest.TestCase):
         self.assertGreater(b, a)
 
 
+class TriggerPatternTest(unittest.TestCase):
+    def test_따옴표가_많은_트리거_문장도_빨리_끝난다(self):
+        """2026-10-30 CodeQL #1·2: '' 를 둘로도 하나로도 읽을 수 있어 26개만으로 9초 걸렸다(코드 상수만 들어와 오탐이지만 고친다)."""
+        import time
+        head = "CREATE OR REPLACE TRIGGER t AFTER INSERT ON x FOR EACH ROW EXECUTE FUNCTION f("
+        t0 = time.monotonic()
+        self.assertIsNone(db._DDL_TRIGGER.match(head + "''" * 30))
+        self.assertLess(time.monotonic() - t0, 1.0)
+        m = db._DDL_TRIGGER.match(head + "'a', 'it''s'" + ")")
+        self.assertEqual(m.group(9), "'a', 'it''s'")
+
+
 if __name__ == "__main__":
     unittest.main()
