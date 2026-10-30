@@ -22,6 +22,9 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     maxWorkers: workers.endsWith('%') ? workers : Number(workers),
+    // GitHub Actions(CI=true) 러너는 이 컴퓨터보다 3~4배 느려, 여기서 1~1.7초인 상호작용 시험이 5초 기본 제한을 넘었다
+    // (2026-10-30 공개 레포 둘째 CI, 실행마다 다른 시험). 결함이 아니라 러너 속도라 CI 에서만 늘린다. 요소 기다림은 setup.ts
+    testTimeout: process.env.CI ? 20000 : 5000,
   },
   resolve: { alias: { '@': '/src' } },
 });

@@ -136,9 +136,11 @@ class TreeTest(unittest.TestCase):
                 b = fn(remote.RemotePath(bundled, ""))
                 strip = lambda v: json.loads(json.dumps(v, default=str).replace(self.url, ""))   # noqa: E731
                 a, b = strip(a), strip(b)
-                # 수집 시각은 초 단위라 두 번 부르는 사이에 초가 넘어가면 다르다(CI 에서 실패한 적이 있다)
+                # 수집 시각은 초 단위라 두 번 부르는 사이에 초가 넘어가면 다르다(CI 에서 실패한 적이 있다).
+                # skill_graph.build 는 built_at 이다(2026-10-30 GitHub Actions 에서 실패)
                 if isinstance(a, dict) and isinstance(b, dict):
-                    a.pop("collected_at", None); b.pop("collected_at", None)
+                    for key in ("collected_at", "built_at"):
+                        a.pop(key, None); b.pop(key, None)
                 self.assertEqual(a, b)
                 self.assertTrue({"/v1/tree", "/v1/changes"} & set(bundled.calls), bundled.calls)   # 묶음(처음) 또는 바뀐 것만(1.5)
                 self.assertLess(len(bundled.calls), len(plain.calls) / 2, (len(bundled.calls), len(plain.calls)))

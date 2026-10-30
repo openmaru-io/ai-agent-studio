@@ -7,11 +7,14 @@ import '@testing-library/jest-dom';
 
 import type { EmotionCache } from '@emotion/cache';
 import { __unsafe_useEmotionCache as useEmotionCache } from '@emotion/react';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, configure, render } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, vi } from 'vitest';
 
 import { closeViewer } from '@/components/files/viewerStore';
+
+// GitHub Actions(CI=true) 러너가 느려 findBy* 가 기본 1초 안에 요소를 못 찾았다(2026-10-30, vitest.config.ts 의 testTimeout 과 같은 이유)
+if (process.env.CI) configure({ asyncUtilTimeout: 5000 });
 
 // MUI 가 쓰는 Emotion 의 기본 캐시는 모듈 하나라, 시험이 끝나도 넣은 <style> 이 document.head 에 남는다(cleanup 은 body 만 치운다).
 // 쌓이면 jsdom 의 getComputedStyle 이 스타일시트 수만큼 느려져 getByRole·findByRole 을 쓰는 뒤 시험이 시간 초과·요소 못 찾음으로 실패했다
