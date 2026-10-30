@@ -81,7 +81,7 @@ _DDL_INDEX = re.compile(r"\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+
 _DDL_FUNCTION = re.compile(r"\s*CREATE\s+OR\s+REPLACE\s+FUNCTION\s+(\w+)\s*\(\s*\)\s+RETURNS\s+(\w+)\s+LANGUAGE\s+(\w+)\s+AS\s+\$\$(.*)\$\$\s*$", re.I | re.S)
 _DDL_TRIGGER = re.compile(r"\s*CREATE\s+OR\s+REPLACE\s+TRIGGER\s+(\w+)\s+(BEFORE|AFTER)\s+(\w+(?:\s+OR\s+\w+)*)\s+ON\s+(\w+)\s+"
                           r"(?:REFERENCING\s+(NEW|OLD)\s+TABLE\s+AS\s+(\w+)\s+)?FOR\s+EACH\s+(ROW|STATEMENT)\s+"
-                          r"EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+(\w+)\s*\(((?:\s*'(?:[^']|'')*'(?!')\s*,?)*)\)\s*$", re.I | re.S)   # (?!') 로 '' 를 한 가지로만 읽는다(CodeQL #1·2)
+                          r"EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+(\w+)\s*\(\s*((?:'(?:[^']|'')*'(?!')\s*(?:,\s*)?)*)\)\s*$", re.I | re.S)   # '' 와 문자열 사이 공백을 한 가지로만 읽는다(CodeQL #1·2·76·77)
 _TRIGGER_EVENTS = {"INSERT": 4, "DELETE": 8, "UPDATE": 16, "TRUNCATE": 32}   # pg_trigger.tgtype 비트(1: ROW, 2: BEFORE)
 # CREATE OR REPLACE FUNCTION 은 문장에 없는 속성을 기본값으로 되돌린다 — 기본값이 아니면 실행해 되돌린다(D4)
 _FUNCTION_DEFAULTS = ("v", False, False, None, 100.0, False, False, "u", "f")

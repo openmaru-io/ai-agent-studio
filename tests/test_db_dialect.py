@@ -134,6 +134,7 @@ class TriggerPatternTest(unittest.TestCase):
         head = "CREATE OR REPLACE TRIGGER t AFTER INSERT ON x FOR EACH ROW EXECUTE FUNCTION f("
         t0 = time.monotonic()
         self.assertIsNone(db._DDL_TRIGGER.match(head + "''" * 30))
+        self.assertIsNone(db._DDL_TRIGGER.match(head + "'''" + "\t'" * 60))   # 공백을 앞뒤 \s* 가 나눠 먹는 꼴(CodeQL #77, 30개에 0.006초, 4개마다 4배)
         self.assertLess(time.monotonic() - t0, 1.0)
         m = db._DDL_TRIGGER.match(head + "'a', 'it''s'" + ")")
         self.assertEqual(m.group(9), "'a', 'it''s'")
