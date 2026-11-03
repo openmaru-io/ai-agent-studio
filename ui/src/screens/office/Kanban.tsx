@@ -14,6 +14,7 @@ import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import PreviewOutlinedIcon from '@mui/icons-material/PreviewOutlined';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
+import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import {
@@ -49,6 +50,7 @@ import { useOpenParam, useParamPatch, useRouteDrawerValue } from '@/components/u
 import { getLang, hasKey, localeOf, t } from '@/i18n';
 import { del, get, post } from '@/lib/api';
 import { useIsAdmin } from '@/lib/data';
+import { MONO_FONT } from '@/lib/monoFont';
 import { displayTimeZone } from '@/lib/prefs';
 import { gridTokens } from '@/lib/shellTokens';
 import { useFocusOnMount } from '@/lib/useFocusOnMount';
@@ -159,6 +161,33 @@ interface Attachment {
   uploaded_by?: string | null;
   created_at?: number | null;
 }
+/** 실행 하나의 「실행한 명령」(GET …/tasks/<id>/runs/<run>/commands, 스펙 2026-11-03-001 DD3·DD4·R14·R15).
+ *  서버가 명령을 가리고(«가림») 앞 200자로 자른다. state 는 서버가 정하고 화면은 문구만 고른다 */
+interface RunCommand {
+  command: string;
+  time?: number | null;
+  blocked?: boolean; // 도구 결과가 BLOCKED: 로 시작(외부 검토 M1)
+  truncated?: boolean;
+}
+interface RunCommandsReply {
+  state?: 'ok' | 'pending' | 'none' | 'lost' | 'running';
+  read_mode?: 'ro' | 'immutable';
+  commands?: RunCommand[];
+  more?: boolean; // 200개를 넘음(R14)
+}
+const RUN_STATE_KEY: Record<string, string> = {
+  pending: 'office.runCommandsPending',
+  none: 'office.runCommandsNone',
+  lost: 'office.runCommandsLost',
+  running: 'office.runCommandsRunning',
+};
+
+/** 사람도 자리도 아닌 시스템 작성자(DD10). 저장 값 → 아이콘·이름. 지금은 Hermes 의 보안 검사(무인 실행에서 막은 명령을 댓글로 남긴다) 하나 */
+const GUARD_AUTHOR = 'hermes-guard';
+const SYSTEM_AUTHORS: Record<string, { icon: typeof ShieldOutlinedIcon; label: string; aria: string }> = {
+  [GUARD_AUTHOR]: { icon: ShieldOutlinedIcon, label: 'office.systemAuthorGuard', aria: 'office.systemAuthorGuardAria' },
+};
+
 interface Detail {
   task: Card;
   comments: { id: number; author: string; body: string; created_at: number }[];
@@ -632,6 +661,120 @@ function Attachments({ slug, taskId, items, seats }: { slug: string; taskId: str
   );
 }
 
+/** 시스템 작성자 표시: 단색 아이콘 + 이름, 글자색 text.secondary(DD10). 앰버는 쓰지 않는다 — 막힌 사실은 맨 위 알림이 알린다(DD2) */
+function SystemAuthor({ author }: { author: string }) {
+  const sys = SYSTEM_AUTHORS[author];
+  const Icon = sys.icon;
+  return (
+    <Box component="span" role="img" aria-label={t(sys.aria)} sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, color: 'text.secondary' }}>
+      <Icon sx={{ fontSize: 16 }} aria-hidden />
+      <Typography variant="caption" component="span">
+        {t(sys.label)}
+      </Typography>
+    </Box>
+  );
+}
+
+/** 실행 기록 한 줄 아래의 「실행한 명령」(DD1·DD4·DD5·DD11). 펼칠 때 따로 읽는다 — 가장 최근 실행은 펼친 채 시작해 서랍을 열 때 읽는다 */
+function RunCommands({ slug, taskId, runId, initiallyOpen }: { slug: string; taskId: string; runId: number; initiallyOpen: boolean }) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const panelId = `kanban-run-commands-${runId}`;
+  const q = useQuery<RunCommandsReply>({
+    queryKey: ['kanban', 'run-commands', slug, taskId, runId],
+    queryFn: () =>
+      get<RunCommandsReply>(`${K}/tasks/${encodeURIComponent(taskId)}/runs/${runId}/commands?board=${encodeURIComponent(slug)}`),
+    enabled: open,
+  });
+  const cmds = q.data?.commands ?? [];
+  const stateKey = q.data?.state ? RUN_STATE_KEY[q.data.state] : undefined;
+  return (
+    <Box>
+      <DisclosureButton
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        controls={panelId}
+        // 개수는 읽은 뒤에만 안다(DD1)
+        label={q.data ? t('office.runCommandsCount', { count: cmds.length }) : t('office.runCommands')}
+        sx={{ minHeight: 44 }}
+      />
+      <Box id={panelId} sx={{ pl: 1 }}>
+        {open && (
+          <Stack spacing={0.5}>
+            {q.isPending && (
+              <Typography variant="caption" color="text.secondary" role="status">
+                {t('office.loading')}
+              </Typography>
+            )}
+            {q.error && (
+              <Stack direction="row" alignItems="center" spacing={1} role="status">
+                <Typography variant="caption" color="text.secondary">
+                  {t('office.runCommandsError', { error: q.error.message })}
+                </Typography>
+                <Button size="small" onClick={() => void q.refetch()}>
+                  {t('office.runCommandsRetry')}
+                </Button>
+              </Stack>
+            )}
+            {cmds.length > 0 && (
+              <Box
+                // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 키보드로도 긴 목록을 스크롤할 수 있어야 한다(DD5)
+                tabIndex={0}
+                sx={{ maxHeight: 240, overflowY: 'auto', borderRadius: 1, bgcolor: ink(0.04) }}
+              >
+                <Box component="ul" aria-label={t('office.runCommands')} sx={{ m: 0, p: 1, listStyle: 'none' }}>
+                  {cmds.map((c, i) => (
+                    <Box component="li" key={i} sx={{ py: 0.25, display: 'flex', gap: 1, alignItems: 'baseline' }}>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        {/* 서버가 가린 자리(«가림»)는 그대로 둔다. 줄을 자르지 않고 전부 보인다 */}
+                        <Box component="span" sx={{ fontFamily: MONO_FONT, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {c.command}
+                        </Box>
+                        {c.truncated && (
+                          <Typography variant="caption" component="span" color="text.secondary">
+                            {' '}
+                            {t('office.runCommandsTruncated')}
+                          </Typography>
+                        )}
+                      </Box>
+                      {c.blocked && (
+                        // 막힌 줄은 앰버 글자 태그만(DD2·DD11). 색만으로 알리지 않도록 글자로 쓴다
+                        <Typography variant="caption" component="span" sx={{ color: warnText, fontWeight: 600, flexShrink: 0 }}>
+                          {t('office.runCommandBlocked')}
+                        </Typography>
+                      )}
+                      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                        {stamp(c.time)}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
+            )}
+            {q.data?.more && (
+              <Typography variant="caption" color="text.secondary">
+                {t('office.runCommandsMore')}
+              </Typography>
+            )}
+            {stateKey && (
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Typography variant="caption" color="text.secondary">
+                  {t(stateKey)}
+                </Typography>
+                {/* immutable 로 읽었거나 끝난 지 얼마 안 된 실행 — 조금 뒤 다시 읽으면 보일 수 있다(DD3·R15) */}
+                {q.data?.state === 'pending' && (
+                  <Button size="small" onClick={() => void q.refetch()} disabled={q.isFetching}>
+                    {t('office.runCommandsReload')}
+                  </Button>
+                )}
+              </Stack>
+            )}
+          </Stack>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
 function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; seats: Seat[]; canAct: boolean }) {
   const confirm = useConfirm();
   const { closeDrawer } = useUi();
@@ -644,6 +787,7 @@ function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; sea
   const [comment, setComment] = useState('');
   const [to, setTo] = useState('');
   const [error, setError] = useState('');
+  const commentsRef = useRef<HTMLDivElement>(null);
   const d = q.data;
   if (!d) return q.error ? <Alert severity="error">{q.error.message}</Alert> : <Typography>{t('office.loading')}</Typography>;
   const task = d.task;
@@ -651,6 +795,12 @@ function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; sea
   const latestIdx = latestRunIndex(d.runs);
   const names = seatNames(seats);
   const reason = blockReason(task.status, d.runs[latestIdx]);
+  // 보안 검사가 막은 명령 수 = hermes-guard 댓글 수(DD2, 외부 검토 M1). 카드 상태와 상관없이 맨 위 알림에 보인다
+  const guardCount = d.comments.filter((c) => c.author === GUARD_AUTHOR).length;
+  const toComments = () => {
+    commentsRef.current?.scrollIntoView?.({ block: 'start' });
+    commentsRef.current?.focus();
+  };
   const base = `${K}/tasks/${encodeURIComponent(id)}`;
   const qs = `?board=${encodeURIComponent(slug)}`;
 
@@ -777,20 +927,35 @@ function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; sea
           [t('office.cardCreatedAt'), stamp(task.created_at)],
         ]}
       />
-      {reason && (
+      {(reason || guardCount > 0) && (
         // 서랍을 열 때 읽히는 안내라 role=status 다(오류가 아니라 사람이 풀 상태). 긴 글은 상자 안에서 스크롤한다
+        // 막힌 사유와 보안 검사가 막은 명령 수는 같은 알림 안에 둔다(DD2)
         <Alert severity="warning" role="status">
-          <AlertTitle>{t('office.blockedReason')}</AlertTitle>
-          {/* 에이전트가 쓴 글이라 마크다운·HTML 로 해석하지 않고 그대로 보인다 */}
-          <Typography
-            variant="body2"
-            component="div"
-            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 키보드로도 긴 글을 스크롤할 수 있어야 한다
-            tabIndex={0}
-            sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 180, overflowY: 'auto' }}
-          >
-            {reason.text}
-          </Typography>
+          {reason && (
+            <>
+              <AlertTitle>{t('office.blockedReason')}</AlertTitle>
+              {/* 에이전트가 쓴 글이라 마크다운·HTML 로 해석하지 않고 그대로 보인다 */}
+              <Typography
+                variant="body2"
+                component="div"
+                // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 키보드로도 긴 글을 스크롤할 수 있어야 한다
+                tabIndex={0}
+                sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 180, overflowY: 'auto' }}
+              >
+                {reason.text}
+              </Typography>
+            </>
+          )}
+          {guardCount > 0 && (
+            <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mt: reason ? 1 : 0 }}>
+              <Typography variant="body2" component="span">
+                {t('office.guardBlocked', { count: guardCount })}
+              </Typography>
+              <Link component="button" type="button" variant="body2" onClick={toComments}>
+                {t('office.guardBlockedLink')}
+              </Link>
+            </Stack>
+          )}
         </Alert>
       )}
       {d.attachments && d.attachments.length > 0 && <Attachments slug={slug} taskId={id} items={d.attachments} seats={seats} />}
@@ -820,13 +985,14 @@ function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; sea
           </Button>
         </Stack>
       )}
-      <Box>
+      {/* 맨 위 알림의 「댓글 보기」가 여기로 스크롤·포커스한다(DD2·DD11) */}
+      <Box ref={commentsRef} tabIndex={-1} sx={{ '&:focus': { outline: 'none' } }}>
         <Typography variant="subtitle2">{t('office.commentsHeading', { count: d.comments.length })}</Typography>
         {d.comments.map((c) => (
           <Box key={c.id} sx={{ py: 0.5 }}>
             {/* 작성자는 자리면 기본 정보 표의 담당처럼 칩, 아니면(aas·사람이 CLI 로 적은 이름) 글자 그대로. 본문은 카드 본문처럼 마크다운으로 그린다(HTML 은 실행하지 않는다) */}
             <Stack direction="row" alignItems="center" spacing={1} sx={{ color: 'text.secondary' }}>
-              <NameChip value={c.author} names={names} />
+              {SYSTEM_AUTHORS[c.author] ? <SystemAuthor author={c.author} /> : <NameChip value={c.author} names={names} />}
               <Typography variant="caption">{stamp(c.created_at)}</Typography>
             </Stack>
             {c.body ? <Markdown text={c.body} dense /> : null}
@@ -874,6 +1040,10 @@ function CardDetail({ slug, id, seats, canAct }: { slug: string; id: string; sea
                 <Typography variant="caption" color="error" component="div" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                   {r.error}
                 </Typography>
+              ) : null}
+              {/* 실행 번호가 있는 실행만 명령을 묻는다(번호가 실행과 대화의 짝, R13) */}
+              {r.id !== undefined && r.id !== null && Number.isInteger(Number(r.id)) ? (
+                <RunCommands slug={slug} taskId={id} runId={Number(r.id)} initiallyOpen={i === latestIdx} />
               ) : null}
             </Box>
           ))}

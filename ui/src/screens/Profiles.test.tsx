@@ -14,7 +14,7 @@ import { HistoryBack, mountScreen, postedTo, rowByName, stubApi } from '@/test/m
 import { listAgents, pickAgent } from '@/test/pickAgent';
 
 import { minutesBetween } from './cron/NewJob';
-import { Profiles } from './Profiles';
+import { Profiles, profilesRetryMs } from './Profiles';
 
 const ROW = (over = {}) => ({
   name: 'ma',
@@ -197,6 +197,35 @@ describe('Profiles 주 프로파일(스펙 2026-10-14-003)', () => {
     mount('/profiles');
     await screen.findByText('루트(숨김)').catch(() => null);
     expect(screen.queryByText('사용 금지')).toBeNull();
+  });
+});
+
+describe('Profiles 응답 없는 작업공간 다시 읽기(스펙 2026-11-02-003)', () => {
+  const g = (state: string) => ({ pod: 'p', state });
+  it('응답 없는(error) 묶음이 있으면 5초마다 다시 읽는다 — 서버 재기동 직후 첫 읽기가 10초를 넘겨도 저절로 정상 화면이 된다', () => {
+    expect(profilesRetryMs({ profiles: [], can_edit: true, groups: [g('ok'), g('error')] } as never)).toBe(5000);
+  });
+  it('모두 읽혔거나, 멈춘·뜨는 중인 것뿐이거나, 자료가 없으면 다시 읽지 않는다', () => {
+    expect(profilesRetryMs({ profiles: [], can_edit: true, groups: [g('ok'), g('stopped'), g('starting')] } as never)).toBe(false);
+    expect(profilesRetryMs({ profiles: [], can_edit: true } as never)).toBe(false);
+    expect(profilesRetryMs(undefined)).toBe(false);
+  });
+});
+
+describe('Profiles 관리자 요청 알림(스펙 2026-11-02-001)', () => {
+  const AREQ = { id: 'areq|1', kind: 'admin_request', alias: 'ma', text: '모델을 바꿔 주세요', requester: 'kim@example.com', requester_name: '김영주', req_kind: 'model_change', profile: 'ma', waiting_days: 2 };
+
+  it('처리 대기 요청이 있으면 목록 위에 건수와 [받은편지함 열기]를 보이고, 누르면 받은편지함 서랍에 그 요청이 있다', async () => {
+    mount('/profiles', DETAIL(), LIST(), { '/api/office/inbox': { items: [AREQ, { id: 'c1', kind: 'cron_done', alias: 'ma', text: '끝남' }] } });
+    expect(await screen.findByText('관리자에게 온 요청 1건이 처리를 기다리고 있습니다.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '받은편지함 열기' }));
+    expect(await screen.findByText(/모델을 바꿔 주세요/)).toBeInTheDocument();
+  });
+
+  it('처리 대기 요청이 없으면 알림이 없다', async () => {
+    mount('/profiles', DETAIL(), LIST(), { '/api/office/inbox': { items: [{ id: 'c1', kind: 'cron_done', alias: 'ma', text: '끝남' }] } });
+    await screen.findByRole('tablist');
+    expect(screen.queryByRole('button', { name: '받은편지함 열기' })).toBeNull();
   });
 });
 
@@ -1787,7 +1816,7 @@ describe('Profiles 상세: 작업 지침(AGENTS.md)', () => {
     expect(screen.getByRole('tab', { name: '작업지침(AGENTS)' })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByText('보고서를 쓴다')).toBeInTheDocument();
     expect(screen.getByText('profiles/ma/AGENTS.md')).toBeInTheDocument();
-    expect(screen.getByText(/새 대화와 위임한 작업부터 적용됩니다\. 예약 작업에는 적용되지 않습니다/)).toHaveAttribute('data-editor-hint');
+    expect(screen.getByText(/새 대화와, AI 에이전트가 하위 AI 에이전트에게 맡긴 작업부터 적용됩니다\. 예약 작업에는 적용되지 않습니다/)).toHaveAttribute('data-editor-hint');
     expect(screen.queryByText(/에서 쓰입니다/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /템플릿/ })).not.toBeInTheDocument();
   });

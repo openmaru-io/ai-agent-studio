@@ -294,5 +294,5 @@ export default {
   'market.hub.hiddenBy': '숨긴 사람',
   'market.hub.hiddenTs': '숨긴 시각',
   'market.hub.withdrawn': '허브에서 내려짐 — 설치한 스킬은 그대로',
-  'market.hub.builtin': 'AAS 기본 스킬은 레포에서 관리합니다',
+  'market.hub.builtin': 'AAS 기본 스킬은 AAS 서버가 관리합니다',
 } as Record<string, string>;

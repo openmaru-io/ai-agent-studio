@@ -57,10 +57,13 @@ import {
   type CaOs,
   caRegisterCommands,
   detectCaOs,
+  dismissReadNotice,
   envFromKeychainCommand,
   expiringSoon,
   keychainCommand,
   loginCommand,
+  needsReadNotice,
+  readNoticeDismissed,
   splitRows,
   TokenRow,
   TokensData,
@@ -408,6 +411,7 @@ export function Connections() {
   const [creating, setCreating] = useState(false);
   const [all, setAll] = useState(false);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [noticeClosed, setNoticeClosed] = useState(readNoticeDismissed);
 
   const err = q.error as ApiError | null;
   if (err?.reason === 'login_off')
@@ -479,6 +483,21 @@ export function Connections() {
           </Stack>
         )}
       </Section>
+
+      {/* 「읽기만」에서 보내기가 빠졌다는 안내 하나(스펙 2026-11-03-001 DD7·DD11). 행에는 표시를 더하지 않는다 */}
+      {!noticeClosed && needsReadNotice(d.tokens) && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          onClose={() => {
+            dismissReadNotice();
+            setNoticeClosed(true);
+          }}
+          closeText={t('conn.readNoticeDismiss')}
+        >
+          {t('conn.readNotice')}
+        </Alert>
+      )}
 
       <Section title={t('conn.oauthTitle')} count={oauth.filter((r) => r.state === 'active').length} indent>
         {oauth.length ? rows(oauth) : <Typography variant="body2" color="text.secondary">{t('conn.oauthEmpty')}</Typography>}

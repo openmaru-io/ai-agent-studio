@@ -24,6 +24,7 @@ services:
       AAS_CONFIG_DIR: /etc/aas
       AAS_SIDECAR_URL: http://aas-sidecar:17950
       AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상, 예 openssl rand -hex 24)}"
+      AAS_TREE_SKIP_DIRS_EXTRA: ${AAS_TREE_SKIP_DIRS_EXTRA:-}
       AAS_DASHBOARD_URL: ${AAS_DASHBOARD_URL:-}
       AAS_DASHBOARD_USER: ${AAS_DASHBOARD_USER:-}
       AAS_DASHBOARD_PASSWORD: ${AAS_DASHBOARD_PASSWORD:-}
@@ -70,6 +71,7 @@ services:
     user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
     environment:
       AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요}"
+      AAS_SIDECAR_MAX_ENTRIES: ${AAS_SIDECAR_MAX_ENTRIES:-}
     volumes:
       - "${HERMES_DATA_DIR:?HERMES_DATA_DIR 에 Hermes 데이터 폴더의 호스트 경로를 적으세요}:/opt/data:ro"
     healthcheck:

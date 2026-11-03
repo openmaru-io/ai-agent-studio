@@ -644,7 +644,7 @@ class KeycloakUsersTest(unittest.TestCase):
         self.assertEqual(code, 409, out)                                              # 자기 관리자 권한 빼기
         code, out = self.req("POST", "/api/users/update", self.kim, {"id": "kc-root", "role": "user"})
         self.assertEqual(code, 409, out)                                              # 설치 때 지정됨
-        self.assertIn("AAS_ADMINS", out["error"])
+        self.assertIn("운영자가 관리자로 정한", out["error"])
 
     def test_마지막_관리자는_사용_중지하거나_지우지_못한다(self):
         from aas.fleet import pods

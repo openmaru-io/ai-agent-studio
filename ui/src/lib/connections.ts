@@ -25,6 +25,8 @@ export interface TokenRow {
   ended: number | null;
   revoked_by?: string;
   revoke_reason?: string;
+  /** 반영일(서버의 chat:send 이전) 전에 만든 「읽기만」 — 예전에는 보낼 수 있었다(스펙 2026-11-03-001 DD7) */
+  read_send_removed?: boolean;
 }
 
 export interface TokensData {
@@ -42,6 +44,26 @@ const DAY = 86400;
 
 export const expiringSoon = (row: TokenRow, now: number): boolean =>
   row.state === 'active' && row.expires - now <= EXPIRING_DAYS * DAY;
+
+/** 「읽기만」에서 보내기가 빠졌다는 안내를 띄울지: 반영 전에 만든 살아 있는 「읽기만」 연결이 하나라도 있으면(DD7) */
+export const needsReadNotice = (rows: TokenRow[]): boolean => rows.some((r) => r.state === 'active' && r.bundle === 'read' && !!r.read_send_removed);
+
+/** 안내를 닫은 상태는 이 브라우저에만 둔다(DD7). 저장소를 못 쓰면(사생활 보호 창 등) 닫지 않은 것으로 보고, 닫기는 이번 화면에서만 */
+export const READ_NOTICE_KEY = 'aas-conn-read-notice-dismissed';
+export function readNoticeDismissed(): boolean {
+  try {
+    return localStorage.getItem(READ_NOTICE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+export function dismissReadNotice(): void {
+  try {
+    localStorage.setItem(READ_NOTICE_KEY, '1');
+  } catch {
+    /* 저장소를 못 쓰면 기억하지 않는다 */
+  }
+}
 
 /** 살아 있는 연결 수 — 상한(max)을 넘으면 만들기를 막는다 */
 export const activeCount = (rows: TokenRow[]): number => rows.filter((r) => r.state === 'active').length;

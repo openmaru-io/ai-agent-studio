@@ -14,6 +14,8 @@ export default {
   'agents.reasonIdle': 'Suspended after a long idle period',
   'agents.reasonKeycloak': 'Suspended after removal from the OIDC group',
   'agents.reasonAdmin': 'Suspended by an admin',
+  'agents.reasonDisabled': 'Stopped because the user was deactivated',
+  'agents.reasonDeleted': 'Stopped because the user account was deleted',
   'agents.createStarted': 'Started creating AI Agent Workspace {name}. You can use it once it is ready',
   'agents.nameOptional': 'Name (optional)',
   'agents.namePlaceholder': 'Example: Marketing helper',

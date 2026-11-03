@@ -38,6 +38,42 @@ TREE_TTL = 60.0             # 폴더 전체 묶음(tree)을 쓰는 시간. 여�
 #   홈 안에서 AAS 가 읽는 것(자산 목록의 home/.local·home/.venvs)은 건너뛴 폴더라 사이드카에 따로 묻는다
 # mcp-tokens: MCP OAuth 토큰(리프레시 토큰 포함). 내용이 AAS 로 오지 않게 들어가지 않는다 — 있는지는 따로 묻는 목록(이름·크기·시각)으로 본다(스펙 2026-10-16-010 12절 D29)
 TREE_SKIP_DIRS = ["logs", "sessions", "cache", ".cache", "home", "node_modules", "__pycache__", ".git", "terminal-sessions", "workspace", "mcp-tokens"]
+# 언어별 의존성·캐시 폴더 중 그 도구만 쓰는 이름(스펙 2026-11-03-003 §3-3 「기본에 더함」). 가상 환경·site-packages 가 데이터 폴더에
+# 8만 개 넘게 쌓여 묶음이 상한에서 늘 잘렸다(GitHub #1). vendor·target·build 처럼 스킬이 자기 파일에도 쓰는 이름은 넣지 않는다 —
+# 필요하면 AAS_TREE_SKIP_DIRS_EXTRA 로 더한다(D8). 묶음(R2)과 찾기용 재귀 목록(R5)이 같은 목록을 쓴다
+DEPENDENCY_DIRS = [
+    ".npm", ".pnpm-store", ".yarn", "bower_components", ".next", ".nuxt", ".turbo", ".parcel-cache",          # Node.js
+    "site-packages", "dist-packages", ".venv", "venv", ".venvs", "lazy-packages",                           # Python
+    ".tox", ".nox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".ipynb_checkpoints",
+    ".gradle", ".m2", ".cargo", ".rustup", ".bundle", ".dart_tool", ".pub-cache", ".stack-work", "dist-newstyle",
+    "renv", ".terraform",
+]
+# 찾기·집계용 재귀 목록(스킬 찾기·스킬 그래프·스킬 파일 목록·사용처 집계)이 들어가지 않는 이름. 묶음에서 건너뛴 폴더 중
+# 보안(mcp-tokens)이나 다른 뜻(home·workspace·sessions·terminal-sessions)이 있는 것은 빼고, 따로 묻기로 읽는다(D11)
+_SEARCH_BASE = [".git", "cache", ".cache", "logs", "__pycache__", "node_modules"]
+TRUNCATED_MEMO = 600.0      # 잘린 묶음을 실패로 기억하는 시간(초). 항목 수는 몇 분 안에 줄지 않는다(D6). 일반 실패 기억(fail_memo)과 따로 둔다
+
+
+def _extra_skip_dirs(environ) -> list[str]:
+    """AAS_TREE_SKIP_DIRS_EXTRA(쉼표로 나눔). 폴더 이름만 받는다 — 빈 값·`/`·`.`·`..` 는 버린다. 기본 목록은 줄일 수 없다(R2)."""
+    names = (n.strip() for n in str(environ.get("AAS_TREE_SKIP_DIRS_EXTRA") or "").split(","))
+    return [n for n in names if n and "/" not in n and n not in (".", "..")]
+
+
+def _unique(names) -> list[str]:
+    return list(dict.fromkeys(names))
+
+
+def tree_skip_dirs(environ=None) -> list[str]:
+    """묶음(tree·changes)에서 안을 보지 않는 폴더 이름: 기본 + 의존성 이름 + 환경변수로 더한 이름."""
+    import os
+    return _unique(TREE_SKIP_DIRS + DEPENDENCY_DIRS + _extra_skip_dirs(os.environ if environ is None else environ))
+
+
+def search_skip_dirs(environ=None) -> frozenset[str]:
+    """찾기·집계용 재귀 목록이 건너뛰는 이름(D11). 환경변수로 더한 이름도 의존성 폴더로 보고 함께 건너뛴다."""
+    import os
+    return frozenset(_SEARCH_BASE + DEPENDENCY_DIRS + _extra_skip_dirs(os.environ if environ is None else environ))
 # 게이트웨이가 수시로 고쳐 쓰는 상태 파일 두 개는 내용을 묶음에 넣지 않는다 — 읽을 때마다 사이드카에서 새로 받는다.
 # 묶음(60초)의 내용으로 답하면 MCP 로그인 뒤 게이트웨이가 붙은 것을 60초 늦게 보고, 로그인 직후의 유예가 끝나 「확인 전」이 된다
 # (OKE 2026-10-17, 스펙 2026-10-16-010 14-15). 둘 다 작은 파일이라 왕복 한 번이다.
@@ -143,14 +179,18 @@ class _Tree:
             return self.entries[rel]
         return {"exists": False} if self.covers(rel) else None
 
-    def descendants(self, rel: str, recursive: bool) -> list[str] | None:
-        """rel 아래 항목들. 안을 보지 않은 폴더가 걸리면 None(사이드카에 묻는다)."""
+    def descendants(self, rel: str, recursive: bool, skip: frozenset = frozenset()) -> list[str] | None:
+        """rel 아래 항목들. 안을 보지 않은 폴더가 걸리면 None(사이드카에 묻는다).
+        skip 이름의 항목(폴더면 그 안까지)은 결과에서 빼므로, 안을 보지 않은 폴더여도 사이드카에 묻지 않는다(스펙 2026-11-03-003 D11).
+        로컬 `search_rglob` 과 같은 규칙이다: 경로 조각 하나라도 skip 에 있으면 뺀다."""
         if rel in self.partial or not self.covers(rel) or rel not in self.children:
             return None
         out, stack = [], [rel]
         while stack:
             cur = stack.pop()
             for child in self.children.get(cur, []):
+                if skip and posixpath.basename(child) in skip:
+                    continue
                 out.append(child)
                 if recursive and self.entries[child]["type"] == "dir":
                     if child in self.partial:
@@ -239,6 +279,11 @@ class RemoteBackend:
         self._down_at = 0.0
         self._trial = False
         self._tree_failed_at = 0.0                          # 마지막 tree 실패 시각 — 그 뒤 fail_memo 초 동안은 묶음 없이 하나씩 묻는다(R13)
+        # 묶음이 사이드카 항목 상한에서 잘린 시각. 잘린 목록은 쓸 수 없고 다시 받아도 잘리므로 TRUNCATED_MEMO 동안 받지 않는다.
+        # 기억하지 않으면 연달아 읽을 때마다 4 MB 를 다시 받았다(GitHub #1: 5분에 /v1/tree 512번, 스펙 2026-11-03-003 R3·D6)
+        self._tree_truncated_at = 0.0
+        self._truncated_warned = False
+        self._cut_warned = False
         self._has_changes: bool | None = None               # 옛 사이드카(1.4 까지)에는 changes 가 없다(R10)
         self._conns: "weakref.WeakSet" = weakref.WeakSet()  # 스레드마다 연 연결 — 묶음을 버릴 때 함께 닫는다(외부 검토 OV10)
 
@@ -381,14 +426,20 @@ class RemoteBackend:
         if self._tree_failed_at and time.monotonic() - self._tree_failed_at < self.fail_memo:
             # 방금 tree 가 실패했다. 줄 선 스레드가 저마다 다시 받으면 기다림이 N × 10초가 된다(스펙 2026-10-24-002 R13)
             return False
+        if self._truncated_recently():
+            return False
         with self._tree_lock:
             if self._tree_failed_at and time.monotonic() - self._tree_failed_at < self.fail_memo:
                 return False                                  # 잠금을 기다리는 동안 앞 스레드가 실패했다
+            if self._truncated_recently():
+                return False
             tree = self._tree
             if tree is not None and time.monotonic() - tree.taken < max_age:
                 return True
             base = tree or self._last_tree
             merged = self._changes_since(base)
+            if self._truncated_recently():
+                return False                                  # 변경분이 잘렸다(R7) — 목록 전체도 잘리므로 받지 않는다
             if merged is not None:
                 self._has_tree = True
                 self._tree = self._build_tree(merged, base)
@@ -404,16 +455,41 @@ class RemoteBackend:
                 self._tree_failed_at = time.monotonic()
                 return False                              # 묶음을 못 받아도 수집은 하나씩 묻는 길로 이어 간다
             if listing.get("truncated"):
+                self._mark_truncated(listing.get("entry_count") or len(listing.get("entries") or ()))
                 return False
+            if listing.get("cut"):
+                self._warn_cut(len(listing.get("entries") or ()))
             self._has_tree = True
             self._tree = self._build_tree(listing, base)
             self._last_tree = None                        # 견주기가 끝났다 — 에이전트마다 묶음 하나만 둔다
             self._tree_failed_at = 0.0
+            self._tree_truncated_at = 0.0
             return True
+
+    def _truncated_recently(self) -> bool:
+        return bool(self._tree_truncated_at) and time.monotonic() - self._tree_truncated_at < TRUNCATED_MEMO
+
+    def _mark_truncated(self, count: int) -> None:
+        """묶음이 사이드카 항목 상한에서 잘렸다. TRUNCATED_MEMO 동안 다시 받지 않고, 원인과 고칠 길을 에이전트마다 한 번 남긴다."""
+        self._tree_truncated_at = time.monotonic()
+        if not self._truncated_warned:
+            self._truncated_warned = True
+            print(f"사이드카 묶음이 항목 상한에서 잘렸습니다({self.label}, 받은 항목 {count}개). "   # i18n-ignore: 로그
+                  f"{TRUNCATED_MEMO:.0f}초 동안 묶음 없이 파일마다 묻습니다. 사이드카의 AAS_SIDECAR_MAX_ENTRIES 를 올리거나 "
+                  f"서버의 AAS_TREE_SKIP_DIRS_EXTRA 로 큰 폴더를 건너뛰세요", flush=True)
+
+    def _warn_cut(self, count: int) -> None:
+        """사이드카가 상한에서 폴더 몇 개를 끊고 나머지를 보냈다(후속 F1, 2026-11-03 판부터). 묶음은 그대로 쓰고, 끊긴 폴더 안만
+        파일마다 묻는다 — 잘림 기억(TRUNCATED_MEMO)은 두지 않는다. 원인과 고칠 길을 에이전트마다 한 번 남긴다."""
+        if not self._cut_warned:
+            self._cut_warned = True
+            print(f"사이드카가 항목 상한에서 폴더 일부를 끊었습니다({self.label}, 받은 항목 {count}개). "   # i18n-ignore: 로그
+                  f"끊긴 폴더 안은 파일마다 묻습니다. 사이드카의 AAS_SIDECAR_MAX_ENTRIES 를 올리거나 "
+                  f"서버의 AAS_TREE_SKIP_DIRS_EXTRA 로 큰 폴더를 건너뛰세요", flush=True)
 
     def _listing_body(self) -> dict:
         # "" 는 모든 파일 — 목록만. hashes·cursor 는 사이드카 1.5 부터(파일 해시·변경 커서, R7·R10). 옛 사이드카는 모르는 키를 무시한다
-        return {"path": "", "skip_dirs": TREE_SKIP_DIRS, "no_content": [""], "max_file": TREE_MAX_FILE,
+        return {"path": "", "skip_dirs": tree_skip_dirs(), "no_content": [""], "max_file": TREE_MAX_FILE,
                 "hashes": TREE_NO_CONTENT, "cursor": True}
 
     def _changes_since(self, base: "_Tree | None") -> dict | None:
@@ -421,7 +497,7 @@ class RemoteBackend:
         부른 쪽이 목록 전체를 받는다."""
         if base is None or not base.cursor or self._has_changes is False:
             return None
-        body = {"since": base.cursor, "path": "", "skip_dirs": TREE_SKIP_DIRS, "max_file": TREE_MAX_FILE, "hashes": TREE_NO_CONTENT,
+        body = {"since": base.cursor, "path": "", "skip_dirs": tree_skip_dirs(), "max_file": TREE_MAX_FILE, "hashes": TREE_NO_CONTENT,
                 "fresh": base.memo_stale}                     # AAS 가 고친 직후 — 사이드카의 2초 재사용 없이 다시 훑게
         try:
             out = self._call("POST", "/v1/changes", body, timeout=TREE_TIMEOUT)
@@ -431,6 +507,10 @@ class RemoteBackend:
         except (OSError, ValueError, KeyError):
             return None
         self._has_changes = True
+        if out.get("truncated"):
+            # 폴더가 커서 뒤 상한을 넘었다(truncated 를 아는 사이드카, 2026-11-03 판부터). 잘린 나머지를 「없어짐」으로 맞추면 있는 파일을 없다고 답한다(R7·D12)
+            self._mark_truncated(len(base.entries))
+            return None
         if out.get("reset"):
             return None
         entries = {p: {"path": p, **e} for p, e in base.entries.items()}
@@ -489,11 +569,16 @@ class RemoteBackend:
         tree = self._tree
         if tree is not None and time.monotonic() - tree.taken < TREE_TTL:
             return tree.server_fp
+        if self._truncated_recently():
+            return None                                       # 잘린 묶음을 기억하는 동안 4 MB 목록을 다시 받지 않는다(R3)
         try:
             listing = self._call("POST", "/v1/tree", self._listing_body(), timeout=TREE_TIMEOUT)
         except (OSError, ValueError, KeyError):
             return None
-        if listing.get("truncated") or "entries" not in listing:
+        if listing.get("truncated"):
+            self._mark_truncated(listing.get("entry_count") or len(listing.get("entries") or ()))
+            return None
+        if "entries" not in listing:
             return None
         return server_fingerprint(listing["entries"], listing.get("partial", []))
 
@@ -579,25 +664,32 @@ class RemoteBackend:
             out = [o if o is not None else next(got) for o in out]
         return out  # type: ignore[return-value]
 
-    def list(self, rel: str, pattern: str) -> list[dict]:
+    def list(self, rel: str, pattern: str, skip: frozenset = frozenset()) -> list[dict]:
+        """skip: 결과에서 빼고 들어가지 않을 폴더 이름(찾기·집계용, 스펙 2026-11-03-003 D11). 묶음이 있으면 그 이름의 폴더는
+        안을 보지 않았어도 사이드카에 묻지 않는다. 사이드카에 물을 때는 skip_dirs 를 싣고, 그 키를 모르는 옛 사이드카가 무시해도 같게 받은 결과를 거른다."""
         tree = self._fresh_tree()
         pat = [p for p in pattern.split("/") if p] if pattern else []
         # 끝이 ** 인 패턴은 파이썬 판마다 뜻이 달라(3.13 부터 파일도 낸다) 사이드카에 그대로 묻는다
         if tree is not None and pat and pat[-1] != "**" and not pattern.startswith("/") and ".." not in pat:
-            found = tree.descendants(rel, recursive=len(pat) > 1 or "**" in pat)
+            found = tree.descendants(rel, recursive=len(pat) > 1 or "**" in pat, skip=skip)
             if found is not None:
                 if rel and rel not in tree.entries:
                     raise FileNotFoundError(rel)
                 base = len(rel) + 1 if rel else 0
                 hits = sorted(p for p in found if _match(p[base:].split("/"), pat))
                 return [{"path": p, **{k: tree.entries[p][k] for k in ("type", "size", "mtime", "mode")}} for p in hits]
-        out = self._call("POST", "/v1/list", {"path": rel, "pattern": pattern})
+        body = {"path": rel, "pattern": pattern, **({"skip_dirs": sorted(skip)} if skip else {})}
+        out = self._call("POST", "/v1/list", body)
+        entries = out["entries"]
+        if skip:
+            base = len(rel) + 1 if rel else 0
+            entries = [e for e in entries if not skip.intersection(e["path"][base:].split("/"))]
         now = time.monotonic()
         with self._lock:                              # 목록이 준 종류·크기를 stat 캐시에 넣어 is_file() 왕복을 없앤다
-            for e in out["entries"]:
+            for e in entries:
                 self._stats[e["path"]] = (now, {"exists": True, "type": e["type"], "size": e["size"], "mtime": e["mtime"],
                                                 "mode": e.get("mode", 0)})
-        return out["entries"]
+        return entries
 
     # ---- 대화 파일(사이드카 1.4.0, OMAI-1153) ---------------------------------------------------
     def has_file_ops(self) -> bool:
@@ -809,22 +901,32 @@ class RemotePath:
     def read_text(self, encoding: str = "utf-8", errors: str = "strict") -> str:
         return self.read_bytes().decode(encoding, errors)
 
-    def _list(self, pattern: str) -> list["RemotePath"]:
+    def _list(self, pattern: str, skip: frozenset = frozenset()) -> list["RemotePath"]:
         if self._outside:
             raise PermissionError(tr("root 밖입니다", "Outside the root"))
-        return [RemotePath(self._b, e["path"]) for e in self._b.list(self._rel, pattern)]
+        return [RemotePath(self._b, e["path"]) for e in self._b.list(self._rel, pattern, skip)]
 
     def iterdir(self):
         return iter(self._list("*"))
 
-    def glob(self, pattern: str):
+    def glob(self, pattern: str, skip: frozenset = frozenset()):
         try:
-            return iter(self._list(pattern))
+            return iter(self._list(pattern, skip))
         except FileNotFoundError:
             return iter(())                            # pathlib 처럼 없는 폴더의 glob 은 빈 결과
 
-    def rglob(self, pattern: str):
-        return self.glob("**/" + pattern)
+    def rglob(self, pattern: str, skip: frozenset = frozenset()):
+        return self.glob("**/" + pattern, skip)
+
+
+def search_rglob(path, pattern: str, skip: frozenset | None = None):
+    """찾기·집계용 재귀 목록: `path.rglob(pattern)` 에서 skip 이름의 폴더(기본 `search_skip_dirs()`)와 그 안을 뺀다.
+    로컬 Path 와 RemotePath 가 같은 결과를 낸다(스펙 2026-11-03-003 D11·D9). 원격이면 그 폴더 안을 사이드카에 묻지 않는다.
+    모든 파일이 필요한 호출(라이브러리 목록·Hermes 와 같은 해시)은 이것을 쓰지 않는다."""
+    skip = search_skip_dirs() if skip is None else frozenset(skip)
+    if isinstance(path, RemotePath):
+        return list(path.rglob(pattern, skip))
+    return [p for p in path.rglob(pattern) if not skip.intersection(p.relative_to(path).parts)]
 
 
 def read_texts(paths: list[RemotePath], batch: int = 200, strict: bool = False) -> list[str]:

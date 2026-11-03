@@ -338,11 +338,14 @@ describe('카드의 담당은 에이전트 이름으로 보인다(스펙 2026-10
   });
 });
 
+const NO_COMMANDS = { run_id: 1, state: 'none', read_mode: 'ro', commands: [], more: false };
+
 describe('카드 서랍의 막힘 사유(OMAI-1172)', () => {
   const run = (over: object = {}) => ({ id: 1, profile: 'sa', status: 'blocked', outcome: 'blocked', started_at: 1791965600, summary: null, error: null, ...over });
   const open = async (status: 'blocked' | 'review' | 'triage', runs: object[]) => {
     mount(board([], { [status]: [card('b1', status)] }), (url) =>
-      url.includes('/tasks/b1') ? { task: card('b1', status), comments: [], runs } : {}
+      // 최근 실행의 「실행한 명령」은 서랍을 열 때 따로 읽는다(스펙 2026-11-03-001 DD1) — 빈 목록으로 답한다
+      url.includes('/commands') ? NO_COMMANDS : url.includes('/tasks/b1') ? { task: card('b1', status), comments: [], runs } : {}
     );
     if (status === 'triage') await userEvent.click(await screen.findByRole('button', { name: /접은 칸 3개 보기/ })); // 분류 대기 칸은 기본으로 접혀 있다
     await userEvent.click(await screen.findByText('카드 b1'));
@@ -534,5 +537,164 @@ describe('막힘 사유 규칙 함수(OMAI-1172 R2·R4·R5·R6)', () => {
     expect(blockReason('blocked', { summary: 'S' })).toBeNull(); // outcome 을 주지 않으면 요약을 사유로 쓰지 않는다
     expect(blockReason('blocked', { outcome: 'blocked' })).toBeNull();
     expect(blockReason('blocked', { outcome: 'blocked', summary: 'S', error: 'E' })).toEqual({ text: 'S', field: 'summary' });
+  });
+});
+
+describe('카드 실행의 「실행한 명령」(스펙 2026-11-03-001 DD1~DD5·DD11·R14·R15)', () => {
+  const run = (id: number, over: object = {}) => ({ id, profile: 'sa', status: 'done', outcome: 'completed', started_at: 1791965600 + id * 100, ended_at: 1791965650 + id * 100, ...over });
+  const cmd = (command: string, over: object = {}) => ({ command, time: 1791965700, blocked: false, truncated: false, ...over });
+  const ok = (commands: object[], over: object = {}) => ({ state: 'ok', read_mode: 'ro', commands, more: false, ...over });
+  type Reply = object | Response | ((n: number) => object | Response);
+  const open = async (runs: object[], replies: Record<number, Reply>, over: { comments?: object[]; status?: string } = {}) => {
+    const status = over.status ?? 'done';
+    const fn = mount(board([], { [status]: [card('c1', status)] }), (url) => {
+      const m = /\/runs\/(\d+)\/commands/.exec(url);
+      if (m) {
+        const n = Number(m[1]);
+        const r = replies[n] ?? NO_COMMANDS;
+        return typeof r === 'function' ? r(fn.mock.calls.filter((c) => String(c[0]).includes(`/runs/${n}/commands`)).length) : r;
+      }
+      return url.includes('/tasks/c1') ? { task: card('c1', status), comments: over.comments ?? [], runs } : {};
+    });
+    await userEvent.click(await screen.findByText('카드 c1'));
+    return { dlg: await screen.findByRole('dialog', { name: '카드 c1' }), fn };
+  };
+  const fetched = (fn: ReturnType<typeof stubApi>, n: number) => fn.mock.calls.filter((c) => String(c[0]).includes(`/runs/${n}/commands`)).length;
+
+  it('DD1·DD4: 가장 최근 실행만 펼쳐 서랍을 열 때 읽고, 앞선 실행은 접힌 채 펼칠 때 따로 읽는다', async () => {
+    const { dlg, fn } = await open([run(1), run(2)], { 2: ok([cmd('ls ./build'), cmd('cat a.txt')]), 1: ok([cmd('pwd')]) });
+    const latest = await within(dlg).findByRole('button', { name: '실행한 명령 (2)' });
+    expect(latest).toHaveAttribute('aria-expanded', 'true');
+    const older = within(dlg).getByRole('button', { name: '실행한 명령' });
+    expect(older).toHaveAttribute('aria-expanded', 'false');
+    expect(fetched(fn, 1)).toBe(0);
+    expect(fn.mock.calls.some((c) => String(c[0]).startsWith('/api/office/kanban/tasks/c1/runs/2/commands?board=b1'))).toBe(true);
+    await userEvent.click(older);
+    expect(await within(dlg).findByRole('button', { name: '실행한 명령 (1)' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(dlg).getByText('pwd')).toBeInTheDocument();
+    expect(fetched(fn, 1)).toBe(1);
+  });
+
+  it('DD4·DD11: 실패하면 칸 안 오류 줄(role=status)과 「다시 시도」, 누르면 다시 읽는다', async () => {
+    const { dlg } = await open([run(1)], {
+      1: (n: number) => (n <= 1 ? new Response(JSON.stringify({ error: 'hermes_unavailable', detail: '사이드카 안 닿음' }), { status: 503 }) : ok([cmd('ls')])),
+    });
+    const line = await within(dlg).findByText(/실행한 명령을 불러오지 못했습니다/);
+    expect(line.closest('[role="status"]')).not.toBeNull();
+    await userEvent.click(within(dlg).getByRole('button', { name: '다시 시도' }));
+    expect(await within(dlg).findByText('ls')).toBeInTheDocument();
+  });
+
+  it('DD11: 불러오는 중 줄은 칸 안 한 줄이고 role=status 다', async () => {
+    mount(board([], { done: [card('c1', 'done')] }), (url) => (url.includes('/tasks/c1') ? { task: card('c1', 'done'), comments: [], runs: [run(1)] } : {}));
+    const real = globalThis.fetch;
+    vi.stubGlobal('fetch', (u: string, i?: RequestInit) => (String(u).includes('/commands') ? new Promise(() => {}) : real(u, i))); // 답이 오지 않는 읽기
+    await userEvent.click(await screen.findByText('카드 c1'));
+    const dlg = await screen.findByRole('dialog', { name: '카드 c1' });
+    const line = await within(dlg).findByText('불러오는 중…');
+    expect(line.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it.each([
+    ['none', '이 실행은 터미널 명령을 쓰지 않았습니다'],
+    ['lost', '실행 기록을 찾지 못했습니다(로그가 지워졌거나 없음)'],
+    ['running', '실행 중입니다'],
+    ['pending', '아직 대화 기록에 반영되지 않았을 수 있습니다'],
+  ])('DD3·R15: 상태 %s 는 원인 문구를 보이고, pending 만 「다시 읽기」로 다시 묻는다', async (state, text) => {
+    const { dlg, fn } = await open([run(1)], { 1: { state, read_mode: state === 'pending' ? 'immutable' : 'ro', commands: [], more: false } });
+    expect(await within(dlg).findByText(text)).toBeInTheDocument();
+    const reload = within(dlg).queryByRole('button', { name: '다시 읽기' });
+    if (state !== 'pending') return void expect(reload).toBeNull();
+    const before = fetched(fn, 1);
+    await userEvent.click(reload!);
+    await waitFor(() => expect(fetched(fn, 1)).toBe(before + 1));
+  });
+
+  it('DD3: 영어 문구도 상태마다 있다', async () => {
+    setLang('en');
+    try {
+      const { dlg } = await open([run(1)], { 1: { state: 'lost', read_mode: 'ro', commands: [], more: false } });
+      expect(await within(dlg).findByText('The run history was not found (the log was deleted or is missing)')).toBeInTheDocument();
+    } finally {
+      setLang('ko');
+    }
+  });
+
+  it('DD5·R14·DD11: 고정폭 12px 로 줄바꿈해 다 보이고, 잘린 명령은 「… (잘림)」, 막힌 줄은 앰버 「막힘」 글자 태그, 200개를 넘으면 안내', async () => {
+    const long = 'curl -H «가림» ' + 'x'.repeat(185);
+    const { dlg } = await open([run(1)], {
+      1: ok([cmd(long, { truncated: true }), cmd('find ./build -delete', { blocked: true }), cmd('ls')], { more: true }),
+    });
+    const list = await within(dlg).findByRole('list', { name: '실행한 명령' });
+    expect(list.tagName).toBe('UL');
+    const box = list.parentElement!;
+    expect(box).toHaveAttribute('tabindex', '0');
+    expect(box).toHaveStyle({ maxHeight: '240px', overflowY: 'auto' });
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+    const text = within(items[0]).getByText(/curl -H «가림»/);
+    expect(text).toHaveStyle({ fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' });
+    expect(getComputedStyle(text).fontFamily).toContain('JetBrains Mono');
+    expect(items[0]).toHaveTextContent('… (잘림)');
+    expect(items[2]).not.toHaveTextContent('잘림');
+    const tag = within(items[1]).getByText('막힘');
+    expect(tag.closest('.MuiChip-root')).toBeNull();                 // 글자 태그(칩이 아님)
+    expect(within(items[2]).queryByText('막힘')).toBeNull();
+    expect(within(dlg).getByText('명령이 많아 처음 200개만 보입니다')).toBeInTheDocument();
+  });
+
+  it('DD11: 접기 단추는 펼치는 영역을 가리키고(aria-controls) 높이가 44px 이상이다', async () => {
+    const { dlg } = await open([run(1)], { 1: ok([cmd('ls')]) });
+    const btn = await within(dlg).findByRole('button', { name: '실행한 명령 (1)' });
+    const panel = document.getElementById(btn.getAttribute('aria-controls') ?? '');
+    expect(panel).not.toBeNull();
+    expect(within(panel!).getByRole('list', { name: '실행한 명령' })).toBeInTheDocument();
+    expect(btn).toHaveStyle({ minHeight: '44px' });
+    await userEvent.click(btn);
+    expect(btn).toHaveAttribute('aria-expanded', 'false');
+    expect(within(dlg).queryByRole('list', { name: '실행한 명령' })).toBeNull();
+  });
+});
+
+describe('보안 검사가 막은 명령(스펙 2026-11-03-001 DD2·DD10)', () => {
+  const guard = (id: number) => ({ id, author: 'hermes-guard', body: '보안 검사가 위험 명령을 막았습니다: find -delete\n\n```\nfind ./b -delete\n```', created_at: 1791965600 + id });
+  const open = async (status: string, comments: object[], runs: object[] = []) => {
+    mount(board([], { [status]: [card('g1', status)] }), (url) =>
+      url.includes('/commands') ? NO_COMMANDS : url.includes('/tasks/g1') ? { task: card('g1', status), comments, runs } : {}
+    );
+    await userEvent.click(await screen.findByText('카드 g1'));
+    return screen.findByRole('dialog', { name: '카드 g1' });
+  };
+
+  it('DD2: 완료 카드라도 보안 검사 댓글이 있으면 맨 위 앰버 알림(role=status)에 막은 명령 수, 누르면 댓글로 가서 포커스', async () => {
+    const dlg = await open('done', [guard(1), { id: 2, author: 'aas', body: '사람 메모', created_at: 1 }, guard(3)]);
+    const alert = (await within(dlg).findByText('보안 검사가 막은 명령 2개')).closest('[role="status"]') as HTMLElement;
+    expect(alert).toHaveClass('MuiAlert-standardWarning');
+    expect(within(alert).queryByText('막힌 사유')).toBeNull();
+    await userEvent.click(within(alert).getByRole('button', { name: '댓글 보기' }));
+    expect(within(dlg).getByText('댓글 3').parentElement).toHaveFocus();
+  });
+
+  it('DD2: 막힌 사유가 있으면 같은 알림 안에 둘 다', async () => {
+    const dlg = await open('blocked', [guard(1)], [{ id: 1, profile: 'sa', status: 'blocked', outcome: 'blocked', started_at: 1, summary: '명령이 막혀 멈춤' }]);
+    const alert = (await within(dlg).findByText('막힌 사유')).closest('[role="status"]') as HTMLElement;
+    expect(alert).toHaveTextContent('명령이 막혀 멈춤');
+    expect(alert).toHaveTextContent('보안 검사가 막은 명령 1개');
+    expect(dlg.querySelectorAll('.MuiAlert-root')).toHaveLength(1);
+  });
+
+  it('DD2: 보안 검사 댓글도 사유도 없으면 알림이 없다', async () => {
+    const dlg = await open('done', [{ id: 2, author: 'aas', body: '사람 메모', created_at: 1 }]);
+    await within(dlg).findByText('댓글 1');
+    expect(dlg.querySelector('.MuiAlert-root')).toBeNull();
+  });
+
+  it('DD10: 작성자 hermes-guard 는 방패 아이콘과 「보안 검사」, 접근 이름에 「자동 기록」, 칩·앰버가 아니다', async () => {
+    const dlg = await open('done', [guard(1)]);
+    const who = await within(dlg).findByLabelText(/자동 기록/);
+    expect(who).toHaveTextContent('보안 검사');
+    expect(who.querySelector('[data-testid="ShieldOutlinedIcon"]')).not.toBeNull();
+    expect(who.closest('.MuiChip-root')).toBeNull();
+    expect(within(dlg).queryByText('hermes-guard')).toBeNull();
   });
 });

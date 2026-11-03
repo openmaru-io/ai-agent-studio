@@ -19,6 +19,30 @@ const mount = (collapsed: boolean, onToggleCollapse?: () => void) =>
     </MemoryRouter>,
   );
 
+describe('Sidebar 배지 설명(스펙 2026-11-02-001)', () => {
+  it('배지에 설명(hint)이 있으면 그 문구를 접근 이름으로 쓴다 — 무엇의 건수인지 알 수 있게', () => {
+    const g = [
+      { id: 'agent', label: '내 AI 에이전트', badge: 1, tone: 'warn', hint: '처리 대기 1건', items: [{ id: 'profiles', label: '프로파일', badge: 1, tone: 'warn', hint: '처리 대기 1건' }, { id: 'agents', label: 'AI 에이전트 작업공간' }] },
+    ] as unknown as MenuGroup[];
+    render(
+      <MemoryRouter>
+        <Sidebar groups={g} currentView="profiles" currentGroup={'agent' as MenuGroup['id']} collapsed={false} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByLabelText('처리 대기 1건')).toHaveLength(2);
+  });
+
+  it('설명이 없으면 지금처럼 「N건」', () => {
+    const g = [{ id: 'automation', label: '자동화', badge: 3, tone: 'bad', items: [{ id: 'cron', label: '예약 작업', badge: 3, tone: 'bad' }, { id: 'channels', label: '채널' }] }] as unknown as MenuGroup[];
+    render(
+      <MemoryRouter>
+        <Sidebar groups={g} currentView="cron" currentGroup={'automation' as MenuGroup['id']} collapsed={false} />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByLabelText('3건')).toHaveLength(2);
+  });
+});
+
 describe('Sidebar 아래 줄(버전·메뉴 접기)', () => {
   it('펼친 메뉴에서는 버전 옆 「<」 단추가 메뉴를 접는다', () => {
     const toggle = vi.fn();

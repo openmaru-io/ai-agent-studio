@@ -33,6 +33,7 @@ from . import office
 from ..assets.files import mask_line
 from ..common import db
 from ..common.i18n import tr
+from ..hermes import hermes_reader as hr
 from ..hermes.hermes_api import HermesAPI, HermesError
 
 COLUMNS = ("triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done")
@@ -58,6 +59,19 @@ CREATE TABLE IF NOT EXISTS office_cron (alias TEXT NOT NULL, job_id TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS office_flags (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', ts TEXT NOT NULL DEFAULT '');
 """
 KEEP_EVENTS = 5000
+# 실행 하나의 「실행한 명령」(스펙 2026-11-03-001 R11·R13·R14·R15, DD3·DD12)
+COMMAND_LIMIT = 200                                     # 실행당 명령 수 상한(R14). 질의는 LIMIT 201 로 「더 있음」을 안다
+COMMAND_CHARS = 200                                     # 명령 하나의 앞 글자 수(가린 뒤에 자른다 — 자른 뒤 가리면 토큰 모양이 깨져 안 가려질 수 있다)
+PENDING_SECONDS = 600                                   # 끝난 지 10분 안이면 대화 기록이 아직 반영되지 않았을 수 있다(DD12, OPERATIONS.md 「이력 뒤처짐」과 같은 값)
+DEFAULT_SIDECAR_MAX_ROWS = 20_000                       # 사이드카 한 번의 sqlite 결과 상한(sidecar ops.DEFAULT_MAX_ROWS). LIMIT 201 은 이보다 작아야 한다(외부 검토 M3)
+TERMINAL_TOOL = "terminal"                              # Hermes tools/terminal_tool.py 의 도구 이름. 명령은 인자의 "command"
+BLOCKED_PREFIX = "BLOCKED:"                             # 막힌 명령의 거절 문구 앞머리(M1, Hermes tools/approval.py)
+BLOCKED_HEAD = 300                                      # 막힘 판정에 읽는 도구 결과 앞 글자 수
+# 터미널 도구는 거절을 JSON 으로 낸다(tools/terminal_tool.py _error_json: {"output": "", "exit_code": -1, "error": "BLOCKED: …", "status": "blocked"}).
+# 2026-11-03 OKE 카나리아에서 앞머리만 보던 판정이 이 모양을 놓쳤다. 출력에 BLOCKED: 가 섞인 것은 막힘이 아니므로 error 값의 앞머리를 본다
+_BLOCKED_JSON = re.compile(r'^\{\s*"output":\s*"",\s*"exit_code":\s*-1,\s*"error":\s*"BLOCKED:')
+_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MAX_RUN_SESSIONS = 50                                   # 실행 하나의 대화 수(압축으로 늘어난다). 질의 인자 수를 묶어 둔다
 ON_CARDS_CHANGED: list = []                             # 카드 표가 바뀐 뒤 부른다(서버가 토픽 office:cards·받은편지함을 다시 읽게 한다, 스펙 2026-10-17-004)
 DEFAULT_BOARD = "default"                                # 서버가 처음 한 번 만드는 보드(OMAI-1286)
 
@@ -105,6 +119,11 @@ def _db():
     conn = office.connect()
     conn.executescript(SCHEMA)
     return conn
+
+
+def _now_ts() -> float:
+    """지금 시각(초). 시험이 바꿔 넣는다."""
+    return time.time()
 
 
 def _mask_text(value):
@@ -458,6 +477,82 @@ class Auto:
             return {"exists": False, "size_bytes": 0, "content": "", "truncated": False}
         return {"exists": bool(d.get("exists")), "size_bytes": int(d.get("size_bytes") or 0), "content": str(d.get("content") or ""), "truncated": bool(d.get("truncated"))}
 
+    # ---- 실행한 명령(스펙 2026-11-03-001 R11·R13·R14·R15) ----------------------------
+    def pod_home(self, pod: str):
+        """설치본의 Hermes 데이터 폴더(로컬 Path 또는 사이드카 RemotePath)."""
+        for p in self.bridge.registry.pods:
+            if p.id == pod:
+                return p.hermes_home
+        raise Fail(503, "hermes_unavailable", tr("설치본을 찾지 못했습니다", "The installation was not found"))
+
+    @staticmethod
+    def kanban_db(home, slug: str):
+        """Hermes 보드의 칸반 DB(hermes_cli/kanban_db.py kanban_db_path): default 는 <루트>/kanban.db, 다른 보드는 <루트>/kanban/boards/<slug>/kanban.db.
+        칸반은 프로파일과 상관없이 루트에 하나다(kanban_home). AAS 보드 이름이 곧 Hermes 보드 이름이다(ensure_on_pod)."""
+        return home / "kanban.db" if slug == "default" else home / "kanban" / "boards" / slug / "kanban.db"
+
+    @staticmethod
+    def state_db(home, profile: str):
+        """프로파일의 대화 기록: default 는 루트, 나머지는 profiles/<이름>/state.db."""
+        return home / "state.db" if profile == "default" else home / "profiles" / profile / "state.db"
+
+    def run_commands(self, slug: str, task_id: str, run_id: int) -> dict:
+        """카드 실행 하나가 쓴 터미널 명령. 짝은 칸반 DB 의 aas_run_sessions(R13, Hermes 패치가 적는다), 명령은 담당 프로파일의 state.db.
+        state: running(실행이 안 끝남, M2) · ok(명령 있음) · pending(immutable 로 읽었거나 끝난 지 10분 안) · none(대화는 있는데 터미널 호출 없음) · lost(대화를 못 찾음).
+        none·lost 는 mode=ro 로 읽었을 때만 말한다(R15). 명령은 가리고 앞 200자, 실행당 200개(R14)."""
+        self.board_row(slug)
+        pod = self.pod_of(slug, task_id)
+        home = self.pod_home(pod)
+        kdb = self.kanban_db(home, slug)
+        (runs, links), mode_k = hr.query_batch_read_mode([
+            (kdb, "SELECT profile, started_at, ended_at FROM task_runs WHERE id=? AND task_id=?", (run_id, task_id)),
+            (kdb, "SELECT session_id FROM aas_run_sessions WHERE run_id=? ORDER BY created_at, session_id LIMIT ?", (run_id, MAX_RUN_SESSIONS))])
+        if isinstance(runs, hr.MissingDb) or (isinstance(runs, list) and not runs):
+            raise Fail(404, "run_not_found")                    # 다른 카드의 실행 번호도 여기서 거른다
+        if isinstance(runs, Exception):
+            raise Fail(503, "hermes_unavailable", str(runs)[:200])
+        if isinstance(links, Exception):
+            if "no such table" not in str(links):               # 표가 없는 옛 Hermes 이미지는 「짝 없음」과 같다
+                raise Fail(503, "hermes_unavailable", str(links)[:200])
+            links = []
+        run = runs[0]
+        sids = [str(r["session_id"]) for r in links if r["session_id"]]
+        profile = str(run["profile"] or "")
+        commands, more, seen, mode_s = [], False, False, "ro"
+        if sids and _PROFILE_NAME.match(profile):
+            sdb, marks = self.state_db(home, profile), ",".join("?" * len(sids))
+            (found, calls, blocked), mode_s = hr.query_batch_read_mode([
+                (sdb, f"SELECT id FROM sessions WHERE id IN ({marks})", tuple(sids)),
+                (sdb, f"SELECT id, timestamp, tool_calls FROM messages WHERE session_id IN ({marks}) AND role='assistant' "
+                      f"AND tool_calls LIKE ? ORDER BY id LIMIT ?", (*sids, f"%{TERMINAL_TOOL}%", COMMAND_LIMIT + 1)),
+                (sdb, f"SELECT tool_call_id, substr(content, 1, ?) AS head FROM messages WHERE session_id IN ({marks}) AND role='tool' "
+                      f"AND instr(substr(content, 1, ?), ?) > 0 LIMIT ?", (BLOCKED_HEAD, *sids, BLOCKED_HEAD, BLOCKED_PREFIX, 5000))])
+            if not isinstance(found, hr.MissingDb):              # 대화 기록 DB 가 없으면 세션도 없다(lost)
+                for res in (found, calls, blocked):
+                    if isinstance(res, Exception):
+                        raise Fail(503, "hermes_unavailable", str(res)[:200])
+                seen = bool(found)
+                blocked_ids = {str(r["tool_call_id"]) for r in blocked if r["tool_call_id"] and _blocked_result(r["head"])}
+                more = len(calls) > COMMAND_LIMIT
+                for row in calls[:COMMAND_LIMIT]:
+                    for cid, text in _terminal_calls(row["tool_calls"]):
+                        masked = _mask_text(text)
+                        commands.append({"command": masked[:COMMAND_CHARS], "truncated": len(masked) > COMMAND_CHARS,
+                                         "time": row["timestamp"], "blocked": bool(cid) and cid in blocked_ids})
+                if len(commands) > COMMAND_LIMIT:
+                    commands, more = commands[:COMMAND_LIMIT], True
+        read_mode = "immutable" if "immutable" in (mode_k, mode_s) else "ro"
+        ended = run["ended_at"]
+        if ended is None:
+            state = "running"
+        elif commands:
+            state = "ok"
+        elif read_mode == "immutable" or _now_ts() - float(ended) < PENDING_SECONDS:
+            state = "pending"
+        else:
+            state = "none" if seen else "lost"
+        return {"run_id": run_id, "state": state, "read_mode": read_mode, "commands": commands, "more": more}
+
     # ---- 카드를 맡긴 사람의 권한(방 구성원, 003 §8-1) ----------------------------
     def record_owner(self, slug: str, task_id: str, email: str) -> None:
         if email:
@@ -737,8 +832,45 @@ class Auto:
                 conn.execute("UPDATE office_cron SET last_exec=?, last_state=? WHERE alias=? AND job_id=?", (eid, state, row["alias"], row["job_id"]))
 
 
+def _blocked_result(head) -> bool:
+    """도구 결과 앞머리가 승인 검사의 거절인가. 거절 문구 그대로(BLOCKED: …)이거나 터미널 도구의 거절 JSON 이다."""
+    head = str(head or "")
+    return head.startswith(BLOCKED_PREFIX) or bool(_BLOCKED_JSON.match(head))
+
+
+def _terminal_calls(raw) -> list[tuple[str, str]]:
+    """assistant 메시지의 tool_calls(JSON) 에서 터미널 호출의 (호출 id, 명령). 감싼 호출(tool_call)도 푼다(ops/observed.py 와 같은 모양)."""
+    try:
+        calls = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    out = []
+    for call in calls if isinstance(calls, list) else []:
+        fn = (call or {}).get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name, args = fn.get("name"), fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = None
+        if name == "tool_call" and isinstance(args, dict) and isinstance(args.get("name"), str):
+            name, args = args["name"], args.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = None
+        if name == TERMINAL_TOOL and isinstance(args, dict) and isinstance(args.get("command"), str):
+            out.append((str(call.get("id") or ""), args["command"]))
+    return out
+
+
 KANBAN = "/api/office/kanban"
 CRON = re.compile(r"^/api/office/cron/([^/]+)(/.*)$")
+# 카드 경로. 서버의 접근 검사(server._office_route)도 이것으로 카드를 알아본다 — runs/<번호>/commands 도 같은 검사를 받는다(X2)
+TASK_PATH = re.compile(KANBAN + r"/tasks/([^/]+)(?:/([a-z-]+))?(?:/(\d+)/commands)?")
 
 
 def route(auto: Auto, method: str, path: str, query: dict, body: dict) -> tuple[int, dict]:
@@ -765,9 +897,13 @@ def route(auto: Auto, method: str, path: str, query: dict, body: dict) -> tuple[
         return 200, auto.dispatch(slug, one("max") or None)
     if path == f"{KANBAN}/tasks" and method == "POST":
         return 201, auto.create_task(slug, body)
-    m = re.fullmatch(KANBAN + r"/tasks/([^/]+)(?:/([a-z-]+))?", path)
+    m = TASK_PATH.fullmatch(path)
     if m:
-        tid, sub = m.group(1), m.group(2)
+        tid, sub, run = m.group(1), m.group(2), m.group(3)
+        if run is not None:
+            if sub == "runs" and method == "GET":
+                return 200, auto.run_commands(slug, tid, int(run))
+            raise Fail(404, "not_found")
         if not sub:
             if method == "GET":
                 return 200, auto.detail(slug, tid)

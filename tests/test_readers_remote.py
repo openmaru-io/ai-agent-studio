@@ -60,6 +60,25 @@ def add_libraries(home: Path) -> None:
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     script.chmod(0o755)
+    add_dependency_dirs(home)
+
+
+def add_dependency_dirs(home: Path) -> None:
+    """건너뛰는 의존성 폴더(스펙 2026-11-03-003 D9). `.hermes/.venv` 아래 라이브러리는 그대로 보여야 하고, 스킬 안 node_modules 의
+    파일은 스킬 파일·사용처에서 빠져야 한다. secrets 참조 찾기 길도 타게 한다."""
+    site = home / "profiles" / "alpha" / ".hermes" / ".venv" / "lib" / "python3.12" / "site-packages" / "six-1.16.0.dist-info"
+    site.mkdir(parents=True)
+    (site / "top_level.txt").write_text("six\n", encoding="utf-8")
+    (home / "secrets").mkdir(exist_ok=True)
+    (home / "secrets" / "deploy.json").write_text('{"token": "x"}', encoding="utf-8")
+    (home / "secrets" / "mail.json").write_text('{"token": "y"}', encoding="utf-8")
+    deps = home / "skills" / "ops" / "deps"
+    (deps / "node_modules" / "p").mkdir(parents=True)
+    (deps / "SKILL.md").write_text("---\nname: deps\ndescription: 의존성\n---\n본문\n", encoding="utf-8")
+    (deps / "node_modules" / "p" / "a.js").write_text("read('secrets/deploy.json')\n", encoding="utf-8")
+    mail = home / "skills" / "ops" / "mail"
+    mail.mkdir(parents=True)
+    (mail / "SKILL.md").write_text("---\nname: mail\ndescription: 메일\n---\nsecrets/mail.json 를 읽는다\n", encoding="utf-8")
 
 
 class RemoteBase(unittest.TestCase):
@@ -586,6 +605,12 @@ class DualRunTest(RemoteBase):
                 self.assertTrue(want["items"], fn.__name__)          # 비어 있는 결과끼리 같은 것이 아니다
         libs = inventory.libraries(self.local)
         self.assertEqual({e["kind"] for e in libs["envs"]}, {"Python", "Node.js"})
+        # 스펙 2026-11-03-003 D9: 건너뛰는 이름(.hermes/.venv) 아래 라이브러리도 원격에서 그대로 보이고, 스킬 안 node_modules 의
+        # 파일은 사용처가 아니다(로컬·원격 모두). secrets 참조 찾기도 같은 결과
+        self.assertIn("six", [i["name"] for i in inventory.libraries(self.remote)["items"]])
+        creds = {i["name"]: i for i in inventory.credentials(self.remote)["items"]}
+        self.assertTrue([u for u in creds["mail.json"]["used_by"] if "mail" in u])
+        self.assertFalse([u for u in creds["deploy.json"]["used_by"] if "deps" in u])
         self.assertIn(True, [t["executable"] for t in inventory.tools(self.remote)["items"]])   # st_mode 가 원격에서도 온다
 
     def test_flow_and_skill_graph(self):

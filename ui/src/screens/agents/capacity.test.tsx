@@ -102,7 +102,7 @@ describe('크기 입력과 저장(2B·3A·4B·5A)', () => {
     expect(thumb).toHaveAttribute('aria-valuetext', '4GiB');
     fireEvent.change(thumb, { target: { value: 3 } });
     expect(screen.getByRole('spinbutton', { name: '메모리 한도, GiB' })).toHaveValue(8);
-    const chip = within(screen.getByRole('group', { name: 'PVC 크기 빠른 값' })).getByRole('button', { name: '10GiB' });
+    const chip = within(screen.getByRole('group', { name: '디스크 크기 빠른 값' })).getByRole('button', { name: '10GiB' });
     await user.click(chip);
     expect(chip).toHaveAttribute('aria-pressed', 'true');
     await user.click(chip); // 다시 누르면 비운다

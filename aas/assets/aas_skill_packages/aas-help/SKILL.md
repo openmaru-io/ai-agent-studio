@@ -1,7 +1,7 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.4
+version: 1.0.6
 author: OPENMARU, Inc.
 ---
 
@@ -79,8 +79,8 @@ AI 에이전트는 내 일을 돕는 AI 비서입니다. 채팅 화면에서 질
 단계:
 
 1. 파일 이름을 눌러 열기 — 답 아래나 회의 대화에 나온 파일 이름을 누르면 뷰어가 열립니다. 채팅 화면 위쪽의 「파일」 단추 목록에서 파일 줄을 눌러도 열립니다. 뷰어 위쪽에는 파일 이름과 올린 곳(내 작업 폴더, 회의, 칸반)이 보입니다. 닫으려면 「닫기」를 누릅니다.
-2. 문서 넘기고 찾기 — PDF·Word 는 「이전 쪽」·「다음 쪽」으로 쪽을 넘기고 「확대」·「축소」로 크기를 바꿉니다. 「화면에 맞춤」과 「원래 크기」는 한 단추로 오갑니다. 「문서에서 찾기」에 낱말을 적으면 찾은 곳을 차례로 보여 줍니다. Excel 은 아래의 「시트」 탭으로 시트를 바꾸고, PowerPoint 는 슬라이드를 한 장씩 넘깁니다. 마크다운 파일은 「보기」와 「원문」으로 모양과 원본 글을 오가며 봅니다.
-3. 뷰어에서 바로 일 시키기 — 「AI 에게 묻기」를 누르면 이 파일에 대해 묻는 글이 입력칸에 채워집니다. 「받기」는 파일을 내 컴퓨터에 저장합니다. 「경로 복사」는 AI 에이전트가 보는 파일 위치를 복사하니, 다른 대화에서 이 파일을 말할 때 붙여 넣습니다. 회의 자료에서는 「방에 올리기」로 방 사람들과 함께 볼 수 있습니다. 「더 보기」의 「지우기」는 파일을 지웁니다.
+2. 문서 넘기고 찾기 — PDF·Word 는 「이전 쪽」·「다음 쪽」으로 쪽을 넘기고 「확대」·「축소」로 크기를 바꿉니다. 「화면에 맞춤」과 「원래 크기」는 한 단추로 오갑니다. PDF 는 「문서에서 찾기」에 낱말을 적으면 찾은 곳을 차례로 보여 줍니다. Excel 은 아래의 「시트」 탭으로 시트를 바꾸고, PowerPoint 는 슬라이드를 한 장씩 넘깁니다. 마크다운 파일은 「보기」와 「원문」으로 모양과 원본 글을 오가며 봅니다.
+3. 뷰어에서 바로 일 시키기 — 「AI에게 묻기」를 누르면 이 파일에 대해 묻는 글이 입력칸에 채워집니다. 「받기」는 파일을 내 컴퓨터에 저장합니다. 「경로 복사」는 AI 에이전트가 보는 파일 위치를 복사하니, 다른 대화에서 이 파일을 말할 때 붙여 넣습니다. 회의 자료에서는 「방에 올리기」로 방 사람들과 함께 볼 수 있습니다. 「더 보기」의 「지우기」는 파일을 지웁니다.
 4. 열리지 않을 때 — 암호가 걸린 PDF 는 비밀번호를 넣고 「열기」를 누르면 열립니다. 옛 형식(doc·xls·ppt)과 암호가 걸린 Office 문서는 미리 볼 수 없으니 「받기」로 저장해 엽니다. 너무 크거나 손상된 문서도 미리 볼 수 없습니다. Excel 은 앞 1,000줄·100열까지만 보입니다. 미리 보기는 원본과 모양이 조금 다를 수 있으니, 서식이 중요하면 내려받은 파일로 확인합니다.
 
 #### 말로 입력하고 답을 소리로 듣기
@@ -237,7 +237,7 @@ AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습
 
 1. 새 스킬 열기 — 「스킬 › 스킬 목록」 화면에서 「새 스킬」을 누르면 서랍이 열립니다. 서랍 위에서 「직접 쓰기」와 「zip 올리기」 가운데 고릅니다.
 2. 직접 쓰기 — 「이름」에 영문 소문자·숫자·- 로 적습니다(예: weekly-report). 「설명」에는 무슨 일을 하고 언제 쓰는지 적습니다. AI 에이전트가 이 설명을 보고 스킬을 고르고 앞 60자만 목록에 보이니, 핵심을 앞에 적습니다. 「누가 쓰나」에서 모든 프로파일이 쓸지 한 프로파일만 쓸지 고릅니다. 본문에는 「언제 쓰나」와 「절차」를 번호로 적고 「스킬 만들기」를 누릅니다. 본문 틀이 미리 들어 있으니 지우고 채웁니다.
-3. AI 에이전트에게 맡기기 — 무엇을 적을지 모르겠거나 프로그램(스크립트)이 필요한 스킬이면 「AI 에이전트에게 맡기기」를 누릅니다. AI 에이전트와의 대화가 열리고 스킬 제작 요청 틀이 채워집니다. 이름·하는 일·언제 쓰나·부르는 도구를 적어 보내면, AI 에이전트가 초안을 보여 주고 확인을 받은 뒤 만듭니다. 직접 쓰기로는 스크립트 파일을 만들 수 없습니다.
+3. AI 에이전트에게 맡기기 — 무엇을 적을지 모르겠거나 프로그램(스크립트)이 필요한 스킬이면 표 위 도구줄의 「AI 에이전트에게 맡기기」를 누릅니다(새 스킬 서랍 안이 아닙니다). AI 에이전트와의 대화가 열리고 스킬 제작 요청 틀이 채워집니다. 이름·하는 일·언제 쓰나·부르는 도구를 적어 보내면, AI 에이전트가 초안을 보여 주고 확인을 받은 뒤 만듭니다. 직접 쓰기로는 스크립트 파일을 만들 수 없습니다.
 4. 만들어 둔 zip 올리기 — 「zip 올리기」에서 SKILL.md 가 들어 있는 zip 파일을 끌어 놓거나 고릅니다. 512KiB 까지 올릴 수 있고, SKILL.md 한 장만 올려도 됩니다. 스킬 이름을 확인하고, 스크립트가 들어 있으면 부르는 외부 주소를 읽은 뒤 「스크립트를 확인했습니다」를 체크하고 「올리고 적용」을 누릅니다. 출처를 모르는 zip 은 올리지 않습니다.
 5. 만든 스킬 확인하고 고치기 — 만든 스킬은 「내 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.
 
@@ -423,7 +423,7 @@ When to use: Use it to check a report the AI Agent made before downloading, to f
 Steps:
 
 1. Click a file name to open it — Click a file name under an answer or in a meeting chat to open the viewer. You can also click a file row in the "Files" button at the top of the chat screen. The top of the viewer shows the file name and where it came from (your work folder, a meeting or a kanban). Click "Close" to leave.
-2. Page through and search — For PDF and Word, use the previous and next page buttons and "Zoom in" and "Zoom out". "Fit" and "Original size" switch with one button. Type a word in "Find in document" to step through matches. For Excel, change sheets with the "Sheets" tabs below. PowerPoint shows one slide at a time. For Markdown files, "View" and "Source" switch between the formatted page and the original text.
+2. Page through and search — For PDF and Word, use the previous and next page buttons and "Zoom in" and "Zoom out". "Fit" and "Original size" switch with one button. For PDF, type a word in "Find in document" to step through matches. For Excel, change sheets with the "Sheets" tabs below. PowerPoint shows one slide at a time. For Markdown files, "View" and "Source" switch between the formatted page and the original text.
 3. Act on the file from the viewer — "Ask AI" fills the message box with a question about this file. "Download" saves the file to your computer. "Copy path" copies the location the AI Agent sees, so you can paste it when you mention this file in another chat. In meeting materials, "Share to room" lets the room see the file. "Delete" under "More" removes the file.
 4. When a file will not open — For a password-protected PDF, type the password and click "Open". Old formats (doc, xls, ppt) and password-protected Office files cannot be previewed, so download them and open them in their own program. Files that are too large or damaged also cannot be previewed. Excel shows only the first 1,000 rows and 100 columns. The preview can differ a little from the original, so check the downloaded file when layout matters.
 
@@ -581,7 +581,7 @@ Steps:
 
 1. Open the new skill drawer — In "Skills › Skill list", click "New skill" to open the drawer. At the top choose between "Write it" and "Upload zip".
 2. Write it yourself — Type the name in lowercase letters, digits and - (for example weekly-report). In "Description", say what it does and when to use it. The AI Agent picks a skill by this description and only the first 60 characters show in its list, so put the key point first. Under "Who uses it", choose all profiles or one profile. In the body, number the "When to Use" and "Steps" parts, then click "Create skill". A body template is already filled in, so replace it.
-3. Hand it off to the AI Agent — If you do not know what to write, or the skill needs a program (script), click "Hand off to AI Agent". A chat opens with a skill request template filled in. Send it with the name, the job, when to use it and the tools to call, and the AI Agent shows a draft and creates it after you confirm. Writing it yourself cannot create script files.
+3. Hand it off to the AI Agent — If you do not know what to write, or the skill needs a program (script), click "Hand off to AI Agent" in the toolbar above the table (not inside the New skill drawer). A chat opens with a skill request template filled in. Send it with the name, the job, when to use it and the tools to call, and the AI Agent shows a draft and creates it after you confirm. Writing it yourself cannot create script files.
 4. Upload a ready-made zip — In "Upload zip", drop or pick a zip that contains SKILL.md. It can be up to 512KiB, and a single SKILL.md is fine. Check the skill name. If it contains scripts, read the outside addresses it calls, tick "I checked the scripts" and click "Upload and apply". Do not upload a zip from a source you do not know.
 5. Check and improve the skill — The new skill appears in the "My skills" tab and in the list when you type / in the chat message box. If it needs secret values, fill them from the skill drawer. Edit its content and manage versions in the skill flow screen. The AI Agent uses skills on its own, so try it once after creating it and fix the steps in the body if the result is not what you expected.
 

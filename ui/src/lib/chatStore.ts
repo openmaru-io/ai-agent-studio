@@ -46,6 +46,9 @@ export interface ChatStatus {
   connected?: boolean;
   /** 음성 인식이 설정된 설치인가(AAS_STT_MODEL). 거짓이면 마이크 단추를 숨긴다(스펙 2026-10-22-005 R2) */
   stt?: boolean;
+  /** 스트리밍 받아쓰기를 쓰는 설치인가(AAS_STT_STREAM_URL)와 그 최대 길이(초). OMAI-1554, 계약 stt-stream-protocol.md §5 */
+  stt_stream?: boolean;
+  stt_stream_max_seconds?: number;
   /** 답 「읽어 주기」가 설정된 설치인가(AAS_TTS_MODEL·AAS_TTS_VOICES). 거짓이면 [읽어 주기]를 그리지 않는다(스펙 2026-10-28-012 §3-8) */
   tts?: boolean;
   /** 고를 수 있는 목소리(id·이름·성별) */

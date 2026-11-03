@@ -316,6 +316,8 @@ The main settings for Docker Compose. Put them in `deploy/compose/.env`. The ful
 | `AAS_ALLOWED_HOSTS` | `localhost` and `127.0.0.1` with `AAS_PORT` | The host names that AI Agent Studio accepts |
 | `AAS_CHAT_TEMPLATE_KWARGS` | `on` | Set `off` if the LLM server rejects the `chat_template_kwargs` argument (for example, the OpenAI API) |
 | `AAS_TRUSTED_PROXY` | (empty) | The connections that AI Agent Studio trusts for `X-Forwarded-Proto` (`true` or CIDR ranges). Set it when an HTTPS reverse proxy is in front of AI Agent Studio |
+| `AAS_SIDECAR_MAX_ENTRIES` | `50000` | The maximum number of entries in one listing of the Hermes data folder (sidecar). Increase it if the server log shows that the sidecar listing was truncated |
+| `AAS_TREE_SKIP_DIRS_EXTRA` | (empty) | More folder names that the server does not read inside, separated by commas (for example `vendor,target,build`). Dependency folders such as `.venv`, `site-packages` and `node_modules` are always skipped. Do not add Hermes folder names such as `skills` or `profiles`. Use the same value on all servers |
 | `AAS_WS` | `on` | The web UI gets live updates through one WebSocket. Set `off` to use HTTP polling instead |
 | `AAS_VERSION`, `AAS_IMAGE`, `AAS_SIDECAR_IMAGE` | `latest`, GHCR images | The AI Agent Studio images. For an air-gapped network, use your own registry |
 | `HERMES_IMAGE` | `nousresearch/hermes-agent:v0.22.2` | The Hermes image |
@@ -419,6 +421,7 @@ docker compose down -v     # also removes the volumes: all accounts, profiles an
 | The model screen says that the key was rejected | Check `HERMES_LLM_API_KEY` in `.env`, then run `docker compose up -d` |
 | AI assist fails with an error about `chat_template_kwargs` | Set `AAS_CHAT_TEMPLATE_KWARGS=off` in `.env`, then run `docker compose up -d` |
 | AI Agent Studio cannot read Hermes (empty dashboard) | Check that the server and the sidecar have the same `AAS_SIDECAR_TOKEN`. With the attach file, check that `HERMES_UID` and `HERMES_GID` are the owner of the Hermes files |
+| The **Profiles** page is empty or slow and the server log says that the sidecar listing was truncated | The Hermes data folder has too many entries. Increase `AAS_SIDECAR_MAX_ENTRIES`, or add large folder names to `AAS_TREE_SKIP_DIRS_EXTRA`. Then run `docker compose up -d` |
 | The version at the bottom of the screen is `vN/A` | The images were built from source without version information. This has no effect on the features |
 
 ## Development
@@ -446,7 +449,7 @@ AI Agent Studio also runs on Kubernetes, with one Hermes for each user. AI Agent
 
 - Homepage: <https://www.openmaru.io>
 - Documentation: <https://docs.openmaru.io>
-- YouTube: <https://www.youtube.com/@kubernetes-tv>
+- YouTube: <https://www.youtube.com/@msaptv>
 
 ## Contributing and security
 

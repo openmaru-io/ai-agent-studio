@@ -397,6 +397,8 @@ export default {
   'profiles.cardActiveCronSub': 'Failed {n}',
   'profiles.cardIdle': 'Idle profiles',
   'profiles.cardIdleSub': 'No activity in 7 days',
+  'profiles.adminRequests': '{n} requests to admins are waiting.',
+  'profiles.adminRequestsOpen': 'Open inbox',
   'profiles.tabAll': 'All',
   'profiles.issuesEmpty': 'Nothing to check.',
   'profiles.newProfile': 'New profile',

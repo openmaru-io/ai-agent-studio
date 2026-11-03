@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import time
 
-from ..common import store
+from ..common import db, store
 from ..common.i18n import tr
 
 
@@ -37,16 +38,20 @@ CREATE TABLE IF NOT EXISTS oauth_refresh (
   family TEXT PRIMARY KEY, client_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prev_hash TEXT NOT NULL DEFAULT '',
   prev_until REAL NOT NULL DEFAULT 0, grace_blob TEXT NOT NULL DEFAULT '', access_expires REAL NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS token_notice_acks (item_id TEXT PRIMARY KEY, email TEXT NOT NULL, ts REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS personal_token_migrations (name TEXT PRIMARY KEY, ts REAL NOT NULL);
 """
 
 PAT_PREFIX = "aas_pat_"
-SCOPES = ("chat", "files:read", "files:write", "skills:write", "secrets:write", "approve", "commands",
+# chat 은 대화 읽기·1회용 내려받기, chat:send 는 에이전트에게 보내기(chat_start·chat_send·chat_interrupt).
+# 「읽기만」이 보내기까지 할 수 있어 chat:send 를 나눴다(스펙 2026-11-03-001 R1·R2, 2026-10-28-001 Q9 를 뒤집음)
+SCOPES = ("chat", "chat:send", "files:read", "files:write", "skills:write", "secrets:write", "approve", "commands",
           "profile:write", "cron", "mcp:write", "channels", "market")
 BUNDLES = {                                                   # 묶음(§3-1, Q9). 동의 화면·만들기 창은 묶음만 고른다
     "all": SCOPES,
-    "skill-dev": ("chat", "files:read", "files:write", "skills:write", "secrets:write", "approve"),
+    "skill-dev": ("chat", "chat:send", "files:read", "files:write", "skills:write", "secrets:write", "approve"),
     "read": ("chat", "files:read"),
 }
+CHAT_SEND_BUNDLES = ("all", "skill-dev")                      # 이전 때 chat:send 를 더하는 묶음(R2). 「읽기만」은 그대로
 EXPIRY_DAYS = (7, 30, 60, 90)                                 # 수동 토큰(Q5, 재검토 D2). 무기한 없음
 DEFAULT_DAYS = 30
 MAX_ACTIVE = 10                                               # 사람당 연결 수(Q6, 재검토 D3)
@@ -61,23 +66,59 @@ class TokenError(Exception):
         self.code, self.reason = code, reason
 
 
+_MIGRATED: set = set()
+CHAT_SEND_MIGRATION = "chat_send"
+
+
 def _conn():
     conn = store.connect()
     conn.executescript(SCHEMA)
+    key = (db.backend(), os.environ.get("AAS_DATA_DIR", ""), os.environ.get("AAS_DB_SCHEMA", ""))
+    if key not in _MIGRATED:
+        migrate_chat_send(conn)
+        _MIGRATED.add(key)
     return conn
+
+
+def migrate_chat_send(conn, now: float | None = None) -> int:
+    """옛 「전체」·「스킬 개발용」 행에 chat:send 를 더한다(스펙 2026-11-03-001 R2). 더한 행 수.
+    조건이 「chat:send 가 없는 행」이라 두 번 돌려도, 서버 두 대가 함께 돌려도 결과가 같다. 「읽기만」 행은 손대지 않는다.
+    처음 돈 시각을 personal_token_migrations 에 남긴다 — 그보다 먼저 만든 「읽기만」 연결에 연결 화면이 다시 연결 안내를 띄운다(DD7).
+    별도 트랜잭션으로 커밋한다 — 부른 쪽의 with 블록이 실패해 되돌려도 이전은 남는다(_MIGRATED 는 이미 「했음」이다)."""
+    now = time.time() if now is None else now
+    marks = ",".join("?" * len(CHAT_SEND_BUNDLES))
+    with conn:
+        n = conn.execute(f"UPDATE personal_tokens SET scopes = scopes || ' chat:send' WHERE bundle IN ({marks}) "
+                         "AND (' ' || scopes || ' ') NOT LIKE '% chat:send %'", CHAT_SEND_BUNDLES).rowcount
+        conn.execute("INSERT INTO personal_token_migrations (name, ts) VALUES (?,?) ON CONFLICT (name) DO NOTHING",
+                     (CHAT_SEND_MIGRATION, now))
+    if n:
+        store.log_usage("pat_migrate", f"chat:send rows={n}")
+    return n
+
+
+def chat_send_cutoff(conn=None) -> float:
+    """chat:send 이전이 처음 돈 시각(반영일). 이보다 먼저 만든 「읽기만」 연결은 예전에는 보낼 수 있던 것이다."""
+    if conn is None:
+        with _conn() as c:
+            return chat_send_cutoff(c)
+    r = conn.execute("SELECT ts FROM personal_token_migrations WHERE name=?", (CHAT_SEND_MIGRATION,)).fetchone()
+    return float(r["ts"]) if r is not None else 0.0
 
 
 def _hash(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _view(r, now: float) -> dict:
-    """화면에 보이는 한 줄. 원문·해시는 넣지 않는다."""
+def _view(r, now: float, cutoff: float = 0.0) -> dict:
+    """화면에 보이는 한 줄. 원문·해시는 넣지 않는다.
+    read_send_removed: 반영일(cutoff) 전에 만든 「읽기만」 — 예전에는 보낼 수 있었고 이제는 못 한다(DD7 안내)."""
     state = "revoked" if r["revoked"] else "expired" if r["expires"] < now else "active"
     return {"id": r["id"], "kind": r["kind"], "name": r["name"], "bundle": r["bundle"], "scopes": r["scopes"].split(),
             "prefix": r["prefix"], "created": r["created"], "expires": r["expires"], "last_used": r["last_used"] or None,
             "last_ip": r["last_ip"], "state": state, "ended": r["revoked"] or (r["expires"] if state == "expired" else None),
-            "revoked_by": r["revoked_by"], "revoke_reason": r["revoke_reason"]}
+            "revoked_by": r["revoked_by"], "revoke_reason": r["revoke_reason"],
+            "read_send_removed": r["bundle"] == "read" and float(r["created"]) < cutoff}
 
 
 def active_count(email: str, now: float | None = None) -> int:
@@ -118,7 +159,7 @@ def issue(user: dict, name: str, bundle: str, days: int, now: float | None = Non
                      (tid, "pat", tid, row["user_sub"], email, name, bundle, row["scopes"], row["token_hash"], row["prefix"],
                       now, row["expires"]))
     store.log_usage("pat_create", f"{email} {tid} bundle={bundle} days={days}")
-    return _view(row, now), raw
+    return _view(row, now, chat_send_cutoff()), raw
 
 
 ROTATE_GRACE = 3600.0                                         # 바꾼 뒤 옛 토큰을 쓸 수 있는 시간(Claude Code 설정을 바꿀 여유)
@@ -143,8 +184,9 @@ def rotate(row: dict, days: int = DEFAULT_DAYS, now: float | None = None) -> tup
         conn.execute("UPDATE personal_tokens SET expires=?, revoke_reason=? WHERE id=? AND expires>?",
                      (now + ROTATE_GRACE, "rotated", row["id"], now + ROTATE_GRACE))
         new = conn.execute("SELECT * FROM personal_tokens WHERE id=?", (tid,)).fetchone()
+        cutoff = chat_send_cutoff(conn)
     store.log_usage("pat_rotate", f"{row['user_email']} {row['id']} -> {tid} days={days}")
-    return _view(new, now), raw
+    return _view(new, now, cutoff), raw
 
 
 EXPIRING_DAYS = 7                                             # 메뉴 배지·만료 알림(디자인 D10)
@@ -206,9 +248,10 @@ def list_for(email: str, include_ended: bool = False, now: float | None = None) 
     now = time.time() if now is None else now
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM personal_tokens WHERE user_email=? ORDER BY created DESC", (email.lower(),)).fetchall()
+        cutoff = chat_send_cutoff(conn)
     out = []
     for r in rows:
-        v = _view(r, now)
+        v = _view(r, now, cutoff)
         if v["state"] == "active" or (include_ended and now - float(v["ended"] or 0) <= KEEP_ENDED):
             out.append(v)
     return out
@@ -219,9 +262,10 @@ def list_all(include_ended: bool = False, now: float | None = None) -> list[dict
     now = time.time() if now is None else now
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM personal_tokens ORDER BY created DESC").fetchall()
+        cutoff = chat_send_cutoff(conn)
     out = []
     for r in rows:
-        v = _view(r, now)
+        v = _view(r, now, cutoff)
         if v["state"] == "active" or (include_ended and now - float(v["ended"] or 0) <= KEEP_ENDED):
             out.append({**v, "email": r["user_email"]})
     return out

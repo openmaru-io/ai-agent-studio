@@ -188,7 +188,7 @@ def make_server(host: str, port: int, ops: Ops, token: str) -> ThreadingHTTPServ
             if op == "read":
                 return ops.read(body["paths"])
             if op == "list":
-                return ops.glob(body.get("path", ""), body.get("pattern", "*"))
+                return ops.glob(body.get("path", ""), body.get("pattern", "*"), skip_dirs=body.get("skip_dirs"))
             if op == "tree":
                 return ops.tree(body.get("path", ""), skip_dirs=body.get("skip_dirs"), no_content=body.get("no_content"),
                                 max_file=body.get("max_file", 262_144), max_total=body.get("max_total"),

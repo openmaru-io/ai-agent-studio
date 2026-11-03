@@ -48,6 +48,7 @@ x-sidecar: &sidecar
   user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
   environment:
     AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상)}"
+    AAS_SIDECAR_MAX_ENTRIES: ${AAS_SIDECAR_MAX_ENTRIES:-}
   healthcheck:
     test: ["CMD", "python", "-m", "aas_sidecar", "check"]
     interval: 10s
@@ -93,6 +94,7 @@ services:
       AAS_CONFIG_DIR: /etc/aas
       AAS_PODS_FILE: /etc/aas-pods/pods.json
       AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상)}"
+      AAS_TREE_SKIP_DIRS_EXTRA: ${AAS_TREE_SKIP_DIRS_EXTRA:-}
       HERMES_DASHBOARD_USER: ${HERMES_DASHBOARD_USER:-aas}
       HERMES_DASHBOARD_PASSWORD: ${HERMES_DASHBOARD_PASSWORD:?HERMES_DASHBOARD_PASSWORD 를 .env 에 정하세요}
       AAS_LITELLM_URL: ${AAS_LITELLM_URL:-http://host.docker.internal:14400}

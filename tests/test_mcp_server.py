@@ -268,6 +268,64 @@ class McpServerTest(unittest.TestCase):
         for spec in self.mcp.tools_for(set(self.mcp.tokens.SCOPES)):
             self.assertEqual(spec["inputSchema"]["type"], "object")
 
+    # 묶음별 도구 목록 계약(스펙 2026-11-03-001 R9). 「전체」·「스킬 개발용」은 바꾸기 전(2026-11-03)에 잡은 목록과 같아야 하고,
+    # 「읽기만」은 보내기 도구 3개(chat_start·chat_send·chat_interrupt)만 빠진 18개다
+    SKILL_DEV_TOOLS = {
+        "agents_list", "approval_respond", "chat_interrupt", "chat_read", "chat_send", "chat_start", "chat_wait", "clarify_answer",
+        "credential_clear", "credential_request", "credential_set", "credential_upload_command", "credentials_status", "cron_get",
+        "cron_list", "env_upload_command", "file_get", "file_put", "files_list", "market_list", "market_publish_status", "mcp_list",
+        "profile_get", "profile_text_versions", "secret_clear", "secret_request", "secret_set", "secrets_status", "skill_apply",
+        "skill_create", "skill_file_read", "skill_get", "skill_toggle", "skill_update", "skill_upload", "skills_list", "token_rotate"}
+    ALL_TOOLS = SKILL_DEV_TOOLS | {
+        "channel_list", "channel_save", "channel_test", "channel_token_upload_command", "command_run", "cron_create", "cron_delete",
+        "cron_run", "cron_update", "market_install", "market_publish", "market_remove", "mcp_add", "mcp_apply", "mcp_catalog",
+        "mcp_install", "mcp_login_link", "mcp_remove", "mcp_test", "mcp_toggle", "pairing_answer", "profile_create", "profile_delete",
+        "profile_rename", "profile_text_preview", "profile_text_revert", "profile_text_set", "toolset_set", "skill_delete"}
+    READ_TOOLS = {
+        "agents_list", "chat_read", "chat_wait", "credentials_status", "cron_get", "cron_list", "file_get", "files_list",
+        "market_list", "market_publish_status", "mcp_list", "profile_get", "profile_text_versions", "secrets_status",
+        "skill_file_read", "skill_get", "skills_list", "token_rotate"}
+    READ_ONLY_SEND = ('This connection is read-only ("Read only" bundle) and cannot send messages to agents. To send, reconnect with the '
+                      '"Skill development" or "Everything (my AI agents)" bundle in Settings › Claude Code connections.')
+
+    def test_묶음별_도구_목록_계약(self):
+        from aas.auth import tokens
+        self.assertEqual((len(self.ALL_TOOLS), len(self.SKILL_DEV_TOOLS), len(self.READ_TOOLS)), (66, 37, 18))
+        dev_view, dev_raw = tokens.issue({"email": ALICE, "sub": "s"}, "dev", "skill-dev", 30)
+        try:
+            for bundle, raw, want in (("all", self.all_raw, self.ALL_TOOLS), ("skill-dev", dev_raw, self.SKILL_DEV_TOOLS),
+                                      ("read", self.read_raw, self.READ_TOOLS)):
+                with self.subTest(bundle=bundle):
+                    r, out = self.post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, raw, self.session(raw))
+                    self.assertEqual({t["name"] for t in out["result"]["tools"]}, want)
+                    self.assertEqual({t["name"] for t in self.mcp.tools_for(set(tokens.BUNDLES[bundle]))}, want)
+        finally:
+            tokens.revoke(dev_view["id"], ALICE)
+
+    def test_읽기만_토큰은_보내지_못하고_안내를_받는다(self):
+        for name, args in (("chat_start", {"pod": "mcp-a"}), ("chat_send", {"pod": "mcp-a", "session_id": "x", "text": "hi"}),
+                           ("chat_interrupt", {"pod": "mcp-a", "session_id": "x"})):
+            with self.subTest(tool=name):
+                err, out = self.call(name, args, self.read_raw)
+                self.assertEqual((err, out["error"], out["message"]), (True, "forbidden", self.READ_ONLY_SEND))
+        err, out = self.call("approval_respond", {"pod": "mcp-a", "session_id": "x", "choice": "once"}, self.read_raw)
+        self.assertEqual(out["message"], "this connection does not have the `approve` scope")   # 다른 범위의 문구는 그대로
+        self.assertFalse(any(c[0] == "send" for c in self.hubs["mcp-a"].calls if len(c) > 2 and c[2] == "hi"))
+
+    def test_읽기만_토큰도_지난_대화를_읽는다(self):
+        """chat_read 는 안에서 chat_start(resume)를 함수로 부른다 — 범위 검사는 바깥 도구(chat)만 본다."""
+        hub = self.hubs["mcp-a"]
+        orig = hub.resume
+
+        def resume(profile, stored):
+            out = orig(profile, stored)
+            hub.push(out["session_id"], "aas.history", {"messages": [{"role": "assistant", "text": "old answer", "timestamp": 2}]})
+            return out
+        with mock.patch.object(hub, "resume", resume):
+            err, out = self.call("chat_read", {"pod": "mcp-a", "profile": "main", "stored_id": "20261103_r1", "last": 1}, self.read_raw)
+        self.assertFalse(err, out)
+        self.assertEqual(out["messages"][-1]["text"], "old answer")
+
     # ---- 대화 ------------------------------------------------------------------------------------
     def test_에이전트_목록은_내_것만(self):
         err, out = self.call("agents_list")

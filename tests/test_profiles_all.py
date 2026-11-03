@@ -140,6 +140,25 @@ class AllTest(unittest.TestCase):
         self.assertEqual(third["groups"][1]["state"], "ok")
         self.assertNotIn("b", server._profiles_all_slow)
 
+    def test_시간을_넘긴_읽기가_끝나면_30초_안이라도_다시_읽는다(self):
+        # 재기동 직후 첫 읽기(사이드카 묶음 받기)가 10초를 넘겨도 뒤에서 끝나면 캐시가 찬다. 그 뒤에도 30초 동안 「응답 없음」을 내면
+        # 화면이 정상 자료를 받지 못한다(스펙 2026-11-02-002). 아직 읽는 중일 때만 건너뛴다
+        a, b = pod("a", "kim@x.com"), pod("b", "kim@x.com")
+        calls = []
+
+        def slow():
+            calls.append("slow")
+            time.sleep(0.3)
+            return [row("main")]
+        with mock.patch.object(server, "_PROFILES_ALL_TIMEOUT", 0.1):
+            first = self.run_all(Reg([a, b]), self.KIM, a, {"a": [row("main")], "b": slow})
+            self.assertEqual(first["groups"][1]["error"], "응답 없음")
+            time.sleep(0.5)                                                                  # 뒤에서 하던 읽기가 끝났다
+            again = self.run_all(Reg([a, b]), self.KIM, a, {"a": [row("main")], "b": [row("main")]})
+        self.assertEqual(calls, ["slow"])
+        self.assertEqual(again["groups"][1]["state"], "ok")
+        self.assertNotIn("b", server._profiles_all_slow)
+
     def test_나란히_읽는_스레드도_요청_언어를_쓴다(self):
         a, b = pod("a", "kim@x.com"), pod("b", "kim@x.com")
         seen = []

@@ -1243,6 +1243,8 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
         profile,
         conversation: conversationKey(S),
         stt: vst?.stt,
+        sttStream: vst?.stt_stream,
+        sttStreamMaxSeconds: vst?.stt_stream_max_seconds,
         blockedReason: blocked || vst?.error ? t('voice.blocked') : undefined,
         refresh: () => void store.refresh(),
       }

@@ -38,4 +38,17 @@ export default {
   'voice.stopped': 'Recording finished. Transcribing',
   'voice.discarded': 'Recording discarded',
   'voice.inserted': 'Transcribed text added to the message box. Check it and press Enter to send',
+  // Live (streaming) transcription (OMAI-1554, spec 2026-10-31-001 D21-D24)
+  'voice.tooltipStream': 'Voice input · up to {min} min · recordings are not stored',
+  'voice.autoStoppedAt': 'Recording stopped at the maximum length ({time})',
+  'voice.streamBusy': 'Live transcription is busy. The recording will be transcribed when you finish',
+  'voice.finishing': 'Finishing…',
+  'voice.recovering': 'Connection lost. Finishing the transcription…',
+  'voice.loginRequired': 'Your session ended. Sign in again',
+  'voice.forbidden': 'Voice input is not available for this AI Agent Workspace',
+  // Second pass (spec 2026-11-01-001 D12, D13, D18, D19)
+  'voice.refining': 'Refining…',
+  'voice.refined': 'Transcript refined',
+  'voice.undo': 'Undo',
+  'voice.refinedInserted': 'Transcript refined. Check it and press Enter to send',
 } as Record<string, string>;

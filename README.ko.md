@@ -316,6 +316,8 @@ Docker Compose 의 주요 설정이다. `deploy/compose/.env` 에 적는다. 전
 | `AAS_ALLOWED_HOSTS` | `AAS_PORT` 를 붙인 `localhost`·`127.0.0.1` | AI Agent Studio 가 받는 Host 이름 |
 | `AAS_CHAT_TEMPLATE_KWARGS` | `on` | LLM 서버가 `chat_template_kwargs` 인자를 거절하면(예: OpenAI API) `off` |
 | `AAS_TRUSTED_PROXY` | (비움) | `X-Forwarded-Proto` 를 믿을 연결(`true` 또는 CIDR). AI Agent Studio 앞에 HTTPS 리버스 프록시를 두면 적는다 |
+| `AAS_SIDECAR_MAX_ENTRIES` | `50000` | 사이드카가 Hermes 데이터 폴더를 한 번에 나열하는 항목 수의 상한. 서버 로그에 사이드카 목록이 잘렸다는 줄이 보이면 올린다 |
+| `AAS_TREE_SKIP_DIRS_EXTRA` | (비움) | 서버가 안을 읽지 않을 폴더 이름을 쉼표로 더한다(예: `vendor,target,build`). `.venv`·`site-packages`·`node_modules` 같은 의존성 폴더는 늘 건너뛴다. `skills`·`profiles` 같은 Hermes 폴더 이름은 넣지 않는다. 서버가 여러 대면 모두 같은 값을 쓴다 |
 | `AAS_WS` | `on` | 웹 화면이 WebSocket 하나로 실시간 갱신을 받는다. `off` 면 HTTP 폴링으로 받는다 |
 | `AAS_VERSION`, `AAS_IMAGE`, `AAS_SIDECAR_IMAGE` | `latest`, GHCR 이미지 | AI Agent Studio 이미지. 폐쇄망이면 자기 레지스트리를 쓴다 |
 | `HERMES_IMAGE` | `nousresearch/hermes-agent:v0.22.2` | Hermes 이미지 |
@@ -419,6 +421,7 @@ docker compose down -v     # 볼륨까지 지운다. 계정·프로파일·기�
 | 모델 화면에 키가 거절됐다고 나온다 | `.env` 의 `HERMES_LLM_API_KEY` 를 확인하고 `docker compose up -d` 를 실행한다 |
 | AI 보조가 `chat_template_kwargs` 오류로 실패한다 | `.env` 에 `AAS_CHAT_TEMPLATE_KWARGS=off` 를 적고 `docker compose up -d` 를 실행한다 |
 | AI Agent Studio 가 Hermes 를 읽지 못한다(대시보드가 비어 있다) | 서버와 사이드카의 `AAS_SIDECAR_TOKEN` 이 같은지 본다. 붙기 파일을 쓰면 `HERMES_UID`·`HERMES_GID` 가 Hermes 파일의 주인 번호인지 본다 |
+| **프로파일** 화면이 비거나 느리고, 서버 로그에 사이드카 목록이 잘렸다는 줄이 있다 | Hermes 데이터 폴더의 항목이 너무 많다. `AAS_SIDECAR_MAX_ENTRIES` 를 올리거나 큰 폴더 이름을 `AAS_TREE_SKIP_DIRS_EXTRA` 에 더한 뒤 `docker compose up -d` 를 실행한다 |
 | 화면 아래 버전이 `vN/A` 로 나온다 | 버전 정보 없이 소스로 빌드한 이미지다. 기능에는 영향이 없다 |
 
 ## 개발
@@ -446,7 +449,7 @@ AI Agent Studio 는 사용자마다 Hermes 를 하나씩 두는 쿠버네티스�
 
 - 홈페이지: <https://www.openmaru.io>
 - 문서 사이트: <https://docs.openmaru.io>
-- YouTube: <https://www.youtube.com/@kubernetes-tv>
+- YouTube: <https://www.youtube.com/@msaptv>
 
 ## 기여와 보안
 

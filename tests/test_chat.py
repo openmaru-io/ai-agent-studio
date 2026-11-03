@@ -173,6 +173,10 @@ class ChatHubTest(unittest.TestCase):
         self.assertTrue(self.hub.resume("ma", "st1")["reused"])                        # 두 번 열지 않는다
         self.assertEqual([f["method"] for f in self.ws.sent].count("session.resume"), 1)
         self.assertEqual(self.hub.history("ma")[0]["live_session_id"], "s1")
+        # resume 이 뒤에서 보내는 session.control.read 가 끝나기를 기다린다. send 뒤에 도착하면 마지막 프레임이 바뀌어
+        # 가끔 실패했다(2026-11-03 공개 내보내기 시험)
+        for th in [th for th in threading.enumerate() if th.name == "aas-chat-control"]:
+            th.join(timeout=5)
         self.hub.send("s1", "이어서")                                                   # 이어 쓰기
         self.assertEqual(self.ws.sent[-1]["method"], "prompt.submit")
 

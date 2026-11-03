@@ -47,19 +47,20 @@ interface Screen {
   label: string;
   badge?: number;
   tone?: Tone;
+  hint?: string;
 }
 
 /** 묶음 안의 화면 항목. */
 export function screensOf(group: MenuGroup): Screen[] {
-  return group.items.map((i) => ({ id: i.id, label: i.label, badge: i.badge, tone: i.tone }));
+  return group.items.map((i) => ({ id: i.id, label: i.label, badge: i.badge, tone: i.tone, hint: i.hint }));
 }
 
-function Count({ n, tone }: { n?: number; tone?: Tone }) {
+function Count({ n, tone, hint }: { n?: number; tone?: Tone; hint?: string }) {
   if (!n) return null;
-  return (
+  const badge = (
     <Box
       component="span"
-      aria-label={t('sidebar.count', { count: n })}
+      aria-label={hint ?? t('sidebar.count', { count: n })}
       sx={{
         ml: 'auto',
         px: 0.75,
@@ -76,6 +77,7 @@ function Count({ n, tone }: { n?: number; tone?: Tone }) {
       {n}
     </Box>
   );
+  return hint ? <Tooltip title={hint}>{badge}</Tooltip> : badge;
 }
 
 export interface SidebarProps {
@@ -143,7 +145,7 @@ export function Sidebar({ groups, currentView, currentGroup, collapsed, onNaviga
                     <Typography component="span" sx={{ ml: '14px', fontSize: shellMetrics.menuFontSize, fontWeight: 'inherit' }}>
                       {g.label}
                     </Typography>
-                    <Count n={g.badge} tone={g.tone} />
+                    <Count n={g.badge} tone={g.tone} hint={g.hint} />
                   </>
                 )}
               </ListItemButton>
@@ -175,7 +177,7 @@ export function Sidebar({ groups, currentView, currentGroup, collapsed, onNaviga
                               <Typography component="span" sx={{ fontSize: shellMetrics.menuFontSize, fontWeight: 'inherit' }}>
                                 {s.label}
                               </Typography>
-                              <Count n={s.badge} tone={s.tone} />
+                              <Count n={s.badge} tone={s.tone} hint={s.hint} />
                             </ListItemButton>
                           </li>
                         );
@@ -255,7 +257,7 @@ export function Sidebar({ groups, currentView, currentGroup, collapsed, onNaviga
               }}
             >
               {sc.label}
-              <Count n={sc.badge} tone={sc.tone} />
+              <Count n={sc.badge} tone={sc.tone} hint={sc.hint} />
             </MenuItem>
           ))}
       </Menu>

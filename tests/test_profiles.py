@@ -154,7 +154,7 @@ class ProfileTest(unittest.TestCase):
                                                                                  {"id": "cogentai-aas-aux", "in_litellm": True, "aas_model": True},
                                                                                  {"id": "openmaru-cogentai-agent", "in_litellm": True, "aas_model": False}]}),
             f"{pid}:health": (now, {"profiles": [{"name": "ma", "jobs_total": 5, "jobs_active": 4, "failed_jobs": 1, "open_incidents": 2}]}),
-            f"{pid}:credentials": (now, {"items": [{"profile": "ma", "flags": ["만료됨"]}, {"profile": "ma", "flags": []}, {"profile": "", "flags": []}]}),
+            f"{pid}:credentials_nousage": (now, {"items": [{"profile": "ma", "flags": ["만료됨"]}, {"profile": "ma", "flags": []}, {"profile": "", "flags": []}]}),
             f"{pid}:activity7": (now, {"profiles": [{"name": "ma", "sessions": 9, "last_activity": "2026-10-05T06:20"}]})})
 
     def req(self, method, path, body=None, headers=None):
@@ -1061,7 +1061,7 @@ class ProfileTest(unittest.TestCase):
         key = f"{self.pod.id}:credentials"
         self.addCleanup(server._cache.clear)                                  # 표식을 다른 시험에 남기지 않는다
         def fill():
-            for k in (key, key + "|en", f"{self.pod.id}:tools"):
+            for k in (key, key + "|en", key + "_nousage", f"{self.pod.id}:tools"):
                 server._cache[k] = (time.time() + 3600, {"items": [], "old": True})
         def old(k):
             hit = server._cache.get(k)
@@ -1069,6 +1069,7 @@ class ProfileTest(unittest.TestCase):
         fill()
         self.assertEqual(self.act("ma", "env_set", target="LAW_OC", value="super-secret-value-123")[0], 200)
         self.assertFalse(old(key)); self.assertFalse(old(key + "|en"))
+        self.assertFalse(old(key + "_nousage"))                               # 프로파일 줄용 표도 버린다(스펙 2026-11-03-003 R4)
         self.assertTrue(old(f"{self.pod.id}:tools"))                          # 비밀값은 도구 목록을 바꾸지 않는다
         fill()
         self.assertEqual(self.act("ma", "env_clear", target="LAW_OC", confirm="LAW_OC")[0], 200)

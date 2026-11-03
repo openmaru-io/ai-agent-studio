@@ -168,6 +168,86 @@ describe('Claude Code 연결 화면', () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith('/auth/login'));
   });
 
+  // 「읽기만」에서 보내기가 빠진 뒤의 안내(스펙 2026-11-03-001 DD7·DD8·DD11)
+  const NOTICE = /‘읽기만’ 연결은 이제 AI 에이전트에게 메시지를 보낼 수 없습니다/;
+
+  it('반영 전에 만든 살아 있는 「읽기만」 연결이 있을 때만 목록 위에 안내 하나', async () => {
+    localStorage.clear();
+    stubApi({
+      '/api/me': ME,
+      '/api/tokens': DATA([
+        row({ id: 'r1', bundle: 'read', read_send_removed: true }),
+        row({ id: 'r2', kind: 'oauth', bundle: 'read', read_send_removed: true }),
+        row({ id: 'r3', bundle: 'read', read_send_removed: true, state: 'revoked', ended: NOW - 60 }),
+      ]),
+    });
+    mountScreen(<Connections />, '/connections');
+    await screen.findByTestId('conn-row-r1');
+    expect(screen.getAllByText(NOTICE)).toHaveLength(1);
+    expect(screen.getByText(NOTICE).textContent).toContain('수동 토큰은 새로 만드세요');
+  });
+
+  it('새로 만든 「읽기만」·다른 묶음·끝난 연결만 있으면 안내가 없다', async () => {
+    localStorage.clear();
+    stubApi({
+      '/api/me': ME,
+      '/api/tokens': DATA([
+        row({ id: 'r1', bundle: 'read', read_send_removed: false }),
+        row({ id: 'r2', bundle: 'skill-dev', read_send_removed: false }),
+        row({ id: 'r3', bundle: 'read', read_send_removed: true, state: 'expired', ended: NOW - 60 }),
+      ]),
+    });
+    mountScreen(<Connections />, '/connections');
+    await screen.findByTestId('conn-row-r1');
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it('안내 닫기: 닫으면 사라지고 다시 열어도 보이지 않는다', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    const api = { '/api/me': ME, '/api/tokens': DATA([row({ id: 'r1', bundle: 'read', read_send_removed: true })]) };
+    stubApi(api);
+    const { unmount } = mountScreen(<Connections />, '/connections');
+    await screen.findByText(NOTICE);
+    await user.click(screen.getByRole('button', { name: '안내 닫기' }));
+    await waitFor(() => expect(screen.queryByText(NOTICE)).toBeNull());
+    unmount();
+    stubApi(api);
+    mountScreen(<Connections />, '/connections');
+    await screen.findByTestId('conn-row-r1');
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    localStorage.clear();
+  });
+
+  it('저장소가 예외를 던져도 화면과 안내가 보이고 닫힌다', async () => {
+    const user = userEvent.setup();
+    const boom = () => {
+      throw new Error('SecurityError');
+    };
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(boom);
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(boom);
+    try {
+      stubApi({ '/api/me': ME, '/api/tokens': DATA([row({ id: 'r1', bundle: 'read', read_send_removed: true })]) });
+      mountScreen(<Connections />, '/connections');
+      expect(await screen.findByText(NOTICE)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: '안내 닫기' }));
+      await waitFor(() => expect(screen.queryByText(NOTICE)).toBeNull());
+      expect(screen.getByTestId('conn-row-r1')).toBeInTheDocument();
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it('만들기 창의 「읽기만」 설명은 보내지 못한다고 적는다', async () => {
+    const user = userEvent.setup();
+    stubApi({ '/api/me': ME, '/api/tokens': DATA([]) });
+    mountScreen(<Connections />, '/connections');
+    await user.click(await screen.findByRole('button', { name: '토큰 만들기' }));
+    const dlg = await screen.findByRole('dialog', { name: '토큰 만들기' });
+    expect(within(dlg).getByRole('radio', { name: '읽기만 — 대화를 보고 결과를 받습니다. 메시지는 보낼 수 없습니다' })).toBeInTheDocument();
+  });
+
   it('로그인을 끈 설치는 안내만', async () => {
     stubApi({ '/api/tokens': new Response(JSON.stringify({ error: 'off', reason: 'login_off' }), { status: 404 }) });
     mountScreen(<Connections />, '/connections');

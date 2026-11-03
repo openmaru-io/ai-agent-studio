@@ -162,6 +162,70 @@ class OpsTest(unittest.TestCase):
             quick.sqlite("state.db", slow, [])
         self.assertEqual(cm.exception.code, 408)
 
+    def test_sqlite_reads_mode_ro_first_and_says_so(self):
+        """WAL 에만 있는 최신 기록도 mode=ro 로는 보인다. immutable 은 놓친다(스펙 2026-11-03-001 R15, 2026-11-03-002 2A)."""
+        db = self.root / "wal.db"
+        writer = sqlite3.connect(db)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE t (x)")
+        writer.execute("INSERT INTO t VALUES (1)")
+        writer.commit()                                                   # 아직 체크포인트 전 — 기록은 wal 파일에만 있다
+        out = self.ops.sqlite("wal.db", "SELECT COUNT(*) FROM t", [])
+        self.assertEqual((out["rows"], out["read_mode"]), ([[1]], "ro"))
+        self.assertEqual(self.ops.sqlite("state.db", "SELECT COUNT(*) FROM sessions", [])["read_mode"], "ro")
+
+    def test_sqlite_busy_is_not_hidden_by_immutable(self):
+        """잠금(SQLITE_BUSY)은 읽기 방식 탓이 아니다 — immutable 로 다시 열면 지금 쓰는 중인 파일을 낡은 채로 읽는다.
+        열기·IO 계열(CANTOPEN·IOERR·READONLY)만 다시 연다(스펙 2026-11-03-002 D3·D9·D10)."""
+        db = self.root / "busy.db"
+        writer = sqlite3.connect(db, timeout=0)
+        self.addCleanup(writer.close)
+        writer.execute("CREATE TABLE t (x)")
+        writer.commit()
+        writer.execute("PRAGMA locking_mode=EXCLUSIVE")
+        writer.execute("BEGIN EXCLUSIVE")
+        with self.assertRaises(ops.OpError) as cm:
+            self.ops.sqlite("busy.db", "SELECT COUNT(*) FROM t", [])
+        self.assertEqual(cm.exception.code, 503)
+
+    def test_sqlite_falls_back_to_immutable_when_mode_ro_cannot_open(self):
+        real = sqlite3.connect
+
+        def connect(target, *a, **kw):
+            if "mode=ro" in str(target):
+                exc = sqlite3.OperationalError("unable to open database file")   # 읽기 전용 마운트에서 WAL 공유 메모리를 못 잡을 때
+                exc.sqlite_errorcode, exc.sqlite_errorname = 14, "SQLITE_CANTOPEN"
+                raise exc
+            return real(target, *a, **kw)
+        from unittest import mock
+        with mock.patch.object(ops.sqlite3, "connect", side_effect=connect):
+            out = self.ops.sqlite("state.db", "SELECT COUNT(*) FROM sessions", [])
+        self.assertEqual((out["rows"], out["read_mode"]), ([[10]], "immutable"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root 는 읽기 전용 폴더에도 쓸 수 있다")
+    def test_sqlite_falls_back_on_a_read_only_folder_with_a_wal_db(self):
+        ro = self.root / "ro"
+        ro.mkdir()
+        conn = sqlite3.connect(ro / "w.db")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x)")
+        conn.execute("INSERT INTO t VALUES (5)")
+        conn.commit()
+        conn.close()                                                      # 닫으면 -wal·-shm 이 지워진다. 읽기 전용 폴더에서는 다시 만들지 못한다
+        ro.chmod(0o555)
+        self.addCleanup(ro.chmod, 0o755)
+        out = self.ops.sqlite("ro/w.db", "SELECT x FROM t", [])
+        self.assertEqual((out["rows"], out["read_mode"]), ([[5]], "immutable"))
+
+    def test_sqlite_sql_error_is_not_retried_as_immutable(self):
+        """SQL 오류(표 없음 등)는 읽기 방식 탓이 아니다 — immutable 로 다시 읽지 않고 400 으로 낸다."""
+        with self.assertRaises(ops.OpError) as cm:
+            self.ops.sqlite("state.db", "SELECT * FROM no_such_table", [])
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIn("no such table", cm.exception.message)
+
     def test_version(self):
         v = self.ops.version()
         self.assertEqual(v["api"], 1)

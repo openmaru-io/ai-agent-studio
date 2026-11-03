@@ -160,12 +160,15 @@ def _hidden(params: dict) -> str:
 
 def _bundles() -> list[tuple[str, str, str, list[str]]]:
     """(묶음, 이름, 설명, 위험 목록) — 화면 순서는 좁은 것부터, 기본은 「전체」(§3-7 ①)."""
+    # 「읽기만」은 보내지 못한다(chat:send 없음). 보내는 묶음은 위험 줄 맨 앞에 「일을 시킴」(스펙 2026-11-03-001 DD8).
+    # 묶음 이름의 en 은 mcp_server.READ_ONLY_SEND 안내에도 그대로 쓴다(§12-4 L2) — 바꾸면 둘을 함께 바꾼다
+    work = tr("AI 에이전트에게 일을 시킴(터미널 실행 포함)", "making AI Agents do work (including terminal commands)")
     approve, secret, skill = tr("위험 명령 승인", "approving risky commands"), tr("비밀값 넣기", "setting secrets"), tr("스킬 올리기", "uploading skills")
-    return [("read", tr("읽기만", "Read only"), tr("대화를 보고 결과를 받습니다", "Read chats and get results"), []),
+    return [("read", tr("읽기만", "Read only"), tr("대화를 보고 결과를 받습니다. 메시지는 보낼 수 없습니다", "Read chats and get results. Cannot send messages."), []),
             ("skill-dev", tr("스킬 개발용", "Skill development"), tr("대화·파일·스킬·비밀값·승인", "Chats, files, skills, secrets, approvals"),
-             [approve, secret, skill]),
-            ("all", tr("전체(내 에이전트)", "Everything (my agents)"), tr("내가 화면에서 할 수 있는 일 모두", "Everything you can do on the screen"),
-             [approve, secret, skill, tr("마켓 게시", "publishing to the market"), tr("설정 바꾸기", "changing settings")])]
+             [work, approve, secret, skill]),
+            ("all", tr("전체(내 AI 에이전트)", "Everything (my AI agents)"), tr("내가 화면에서 할 수 있는 일 모두", "Everything you can do on the screen"),
+             [work, approve, secret, skill, tr("마켓 게시", "publishing to the market"), tr("설정 바꾸기", "changing settings")])]
 
 
 def _consent(params: dict, c: dict, user: dict, session: str, agents: list[str]) -> Response:

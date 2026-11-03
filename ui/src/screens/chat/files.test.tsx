@@ -4,7 +4,7 @@
  */
 
 // 대화 파일 화면 부품(OMAI-1153 D5·D6·D19·D20·D22 → 스펙 2026-10-20-002): 결과 뱃지 접기, 받을 수 없는 뱃지의 이유, 보낼 첨부 줄의 「+N」·접근성 이름,
-// 「파일」 서랍 → 파일 뷰어(경로 복사·AI 에게 묻기·지우기), 말풍선의 옛 「경로:」 줄(DD2)과 글 안 경로(DD1·R6·R14).
+// 「파일」 서랍 → 파일 뷰어(경로 복사·AI에게 묻기·지우기), 말풍선의 옛 「경로:」 줄(DD2)과 글 안 경로(DD1·R6·R14).
 // 리뷰 R8: 칩·서랍 단추를 뱃지·뷰어로 옮기며 지키던 동작(받을 수 없음의 이유, 지운 파일 취소선, 경로 복사 값, 클립보드 실패 안내, 폴더 줄)은 같은 단언으로,
 // 바뀐 동작(누르면 바로 받기 → 뷰어, AI 단추가 글 대신 첨부 뱃지, aria-disabled → 이름에 상태)은 새 단언으로 적는다.
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -157,12 +157,12 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
     expect(await screen.findByText('복사하지 못했습니다')).toBeTruthy();
   });
 
-  it('「AI 에게 묻기」는 글 대신 첨부 뱃지로 붙이고, 뷰어를 닫고, 입력 칸에 묻는 글을 제안한다(새 대화를 만들지 않는다)', async () => {
+  it('「AI에게 묻기」는 글 대신 첨부 뱃지로 붙이고, 뷰어를 닫고, 입력 칸에 묻는 글을 제안한다(새 대화를 만들지 않는다)', async () => {
     const s = store();
     s.profile = 'main';
     mountDrawer(s);
     const dlg = await openRow('스크린샷 1.png');
-    await userEvent.click(within(dlg).getByRole('button', { name: 'AI 에게 묻기' }));
+    await userEvent.click(within(dlg).getByRole('button', { name: 'AI에게 묻기' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(s.uploads.map((u) => [u.path, u.state, u.picked])).toEqual([['workspace/uploads/2026-10-14/스크린샷 1.png', 'done', true]]);
     expect(s.composeOffer).toBe('이 파일의 내용을 알려 줘.');
@@ -175,7 +175,7 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
     s.attachExisting({ name: '스크린샷 1.png', path: 'workspace/uploads/2026-10-14/스크린샷 1.png', size: 1500 });
     mountDrawer(s);
     const dlg = await openRow('스크린샷 1.png');
-    await userEvent.click(within(dlg).getByRole('button', { name: 'AI 에게 묻기' }));
+    await userEvent.click(within(dlg).getByRole('button', { name: 'AI에게 묻기' }));
     expect(await screen.findByText('이미 붙어 있습니다')).toBeTruthy();
     expect(s.uploads).toHaveLength(1);
   });
@@ -191,10 +191,10 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
     expect(await screen.findByText('summary.md 을 지웠습니다')).toBeTruthy();
   });
 
-  it('줄의 「AI 에게 묻기」 단추는 뷰어를 열지 않고 첨부 뱃지로 붙인 뒤 입력 칸에 묻는 글을 제안한다', async () => {
+  it('줄의 「AI에게 묻기」 단추는 뷰어를 열지 않고 첨부 뱃지로 붙인 뒤 입력 칸에 묻는 글을 제안한다', async () => {
     const s = store();
     mountDrawer(s);
-    await userEvent.click(await screen.findByRole('button', { name: '스크린샷 1.png 에 대해 AI 에게 묻기' }));
+    await userEvent.click(await screen.findByRole('button', { name: '스크린샷 1.png 에 대해 AI에게 묻기' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(s.uploads.map((u) => [u.path, u.state, u.picked])).toEqual([['workspace/uploads/2026-10-14/스크린샷 1.png', 'done', true]]);
     expect(s.composeOffer).toBe('이 파일의 내용을 알려 줘.');
@@ -202,7 +202,7 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
 
   it('줄의 지우기 단추는 확인을 거쳐 DELETE 하고 알린다. 회의 공유 파일 줄에는 지우기 단추가 없다', async () => {
     const fn = mountDrawer(store(), { '/api/chat/files?pod=p1&path=workspace%2Freport': () => new Response('{}', { status: 200 }) });
-    expect(await screen.findByRole('button', { name: 'f1-회의록.md 에 대해 AI 에게 묻기' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'f1-회의록.md 에 대해 AI에게 묻기' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'f1-회의록.md 지우기' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: /^report 폴더/ }));
     await userEvent.click(screen.getByRole('button', { name: 'summary.md 지우기' }));
@@ -287,7 +287,7 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
     mountTree([f('workspace/old.md', 1760000005), f('workspace/.hermes/plans/p.md', 1760000001), f('workspace/rooms/13/k.html', 1760000009)]);
     await folderBtn('rooms/13');
     const agent = screen.getByRole('region', { name: 'AI 에이전트가 만든 파일' });
-    const names = within(agent).getAllByRole('button').map((b) => b.getAttribute('aria-label')).filter((n) => n && !n.endsWith('지우기') && !n.endsWith('AI 에게 묻기') && !n.startsWith('AI'));
+    const names = within(agent).getAllByRole('button').map((b) => b.getAttribute('aria-label')).filter((n) => n && !n.endsWith('지우기') && !n.endsWith('AI에게 묻기') && !n.startsWith('AI'));
     expect(names).toEqual(['rooms/13 폴더, 파일 1개', '.hermes/plans 폴더, 파일 1개', 'old.md 열기']);
   });
 

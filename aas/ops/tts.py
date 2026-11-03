@@ -4,6 +4,8 @@
 
 - 글 다듬기: Markdown 기호·코드 블록(「코드 생략」)·표·URL 을 지운다. Hermes `tools/tts_text_normalize.py`(MIT)의
   규칙을 옮겼다. 영어 단위·통화 읽기(°C → degrees Celsius 등)는 한국어 낭독에 맞지 않아 옮기지 않았다.
+  숫자를 읽는 말(「3시」→「세 시」)로 바꾸는 규칙은 없다. 숫자 읽기는 엔진에 맡긴다 — Magpie(Nemotron TTS)는 apply_TN=True 로 직접
+  바꾸므로 여기서 먼저 바꾸면 이중 변환이 된다. 그래서 엔진 종류에 따라 끌 것도 없다(OMAI-1554 확인, 시험 MagpieVoicesTest).
 - 조각 나누기: 문장 하나씩(D15), 15자 미만은 다음과 합치고, 100자 넘으면 쉼표·띄어쓰기·100자에서 자르고,
   마지막이 15자 미만이면 앞 조각에 붙인다(2차 리뷰 A2-1). 같은 글은 늘 같은 조각이다(화면이 번호로 부른다).
 - 목소리 목록: AAS_TTS_VOICES(JSON). 합성: LiteLLM `/v1/audio/speech` 를 바로 부른다(Hermes 를 거치지 않음, §3-1).
@@ -67,12 +69,15 @@ _FILENAME_EXT_RE = re.compile(
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _HASH_PREFIX_RE = re.compile(r"\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}", re.IGNORECASE)
 _HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
-_IDENT_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
+_IDENT_RE = re.compile(r"\+?[A-Za-z0-9_./~@-]+")   # 맨 앞 + 는 국제 전화번호(+82-10-…)를 한 낱말로 보려고(OMAI-1554)
 _DATE_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
+# 전화번호(국내 0으로 시작하는 지역·휴대 번호, +국가번호)는 식별자가 아니라 읽을 글이다. 붙임표 2개라 아래 규칙이 지웠다(OMAI-1554).
+# 8자리 대표번호(1588-1234)는 붙임표 1개라 처음부터 남는다. 5묶음 이상·0 으로 시작하지 않는 숫자 묶음은 그대로 식별자로 본다.
+_PHONE_RE = re.compile(r"(?:0\d{1,2}|\+\d{1,3}-\d{1,2})-\d{3,4}-\d{4}")
 
 
 def _dense_identifier(token: str) -> bool:
-    if "@" in token or _DATE_RE.fullmatch(token):
+    if "@" in token or _DATE_RE.fullmatch(token) or _PHONE_RE.fullmatch(token):
         return False
     if token.startswith(("~/", "./", "../", "/")) and len(token) > 1:
         return True

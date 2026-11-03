@@ -83,11 +83,11 @@ describe('userActions — 잠금 규칙(V12)', () => {
     expect(a.delete.locked).toBeUndefined();
   });
 
-  it('설치 때 지정됨(AAS_ADMINS): 권한·사용 중지·삭제는 잠그고 비밀번호·로그인 끊기·고치기는 허용', () => {
+  it('설치 때 지정됨(운영자가 정한 관리자): 권한·사용 중지·삭제는 잠그고 비밀번호·로그인 끊기·고치기는 허용', () => {
     const a = userActions(kcUser({ admin: true, fixed: true, sessions: 2 }), ME, 5);
-    expect(a.role.locked).toMatch(/AAS_ADMINS/);
-    expect(a.enable.locked).toMatch(/AAS_ADMINS/);
-    expect(a.delete.locked).toMatch(/AAS_ADMINS/);
+    expect(a.role.locked).toMatch(/운영자가 관리자로 정한/);
+    expect(a.enable.locked).toMatch(/운영자가 관리자로 정한/);
+    expect(a.delete.locked).toMatch(/운영자가 관리자로 정한/);
     expect(a.password.locked).toBeUndefined();
     expect(a.edit.locked).toBeUndefined();
     expect(a.logout.locked).toBeUndefined();

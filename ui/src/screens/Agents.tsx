@@ -103,6 +103,8 @@ const REASON_KEY: Record<string, string> = {
   idle: 'agents.reasonIdle',
   keycloak: 'agents.reasonKeycloak',
   admin: 'agents.reasonAdmin',
+  disabled: 'agents.reasonDisabled',
+  deleted: 'agents.reasonDeleted',
 };
 const reasonText = (r: string, fallback: string) => (REASON_KEY[r] ? t(REASON_KEY[r]) : fallback);
 const phaseTone = (a: AgentRow) => (a.phase === 'Failed' ? 'bad' : a.ready ? 'good' : 'warn');

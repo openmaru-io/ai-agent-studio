@@ -70,7 +70,7 @@ def _analyze(profile: str, skill_md: Path, home: Path, mcp_names: set[str]) -> d
     md = _read(skill_md)
     meta = _frontmatter(md)
     files = []
-    for p in sorted(sdir.rglob("*")):
+    for p in sorted(hr.search_rglob(sdir, "*")):                 # 의존성 폴더(node_modules·.venv 등)는 스킬 파일이 아니다(스펙 2026-11-03-003 D11)
         if p.is_file() and not any(part.startswith(".") for part in p.relative_to(sdir).parts):
             files.append(p)
         if len(files) >= MAX_FILES:

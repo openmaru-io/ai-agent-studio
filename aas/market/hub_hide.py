@@ -87,7 +87,7 @@ def _check(ns: str, name: str) -> None:
     if not (ns_ok and NAME.match(name or "")):
         raise MarketError(tr("이 스킬 허브에서 다루지 않는 패키지입니다", "This skill hub does not serve that package"), 404)
     if name in skill_bundle.names():
-        raise MarketError(tr("AAS 기본 스킬은 레포에서 관리합니다", "AAS built-in skills are managed in the repository"), 403)
+        raise MarketError(tr("AAS 기본 스킬은 AAS 서버가 관리합니다", "AAS built-in skills are managed by the AAS server"), 403)
 
 
 def hide(ns: str, name: str, who: str) -> dict:

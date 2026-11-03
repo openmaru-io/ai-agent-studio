@@ -35,7 +35,7 @@ export default {
   'rollout.band.paused': '멈춤 — {done}/{total} 끝남. 지금 바꾸던 묶음은 끝까지 바뀝니다',
   'rollout.band.done': '{n}개 모두 {version} 으로 바뀜 · {time}',
   'rollout.band.failed': '롤아웃이 실패했습니다: {message}',
-  'rollout.band.chart': '마지막 롤아웃의 이미지가 차트 값과 다릅니다 — 버전을 올릴 때는 롤아웃을 만드세요',
+  'rollout.band.chart': '마지막 롤아웃의 이미지가 지금 설치된 이미지와 다릅니다 — 버전을 올릴 때는 롤아웃을 만드세요',
   'rollout.band.unknown': '아직 롤아웃을 한 적이 없어 오래된 AI 에이전트 작업공간을 알 수 없습니다',
   'rollout.band.readError': '롤아웃 상태를 읽지 못했습니다',
   'rollout.band.suspended': '멈춤 {n}개는 켜질 때 반영',

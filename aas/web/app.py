@@ -97,6 +97,8 @@ def create_app(background: bool = True) -> Starlette:
         routes += ws.routes()
     except ImportError:
         pass
+    from . import stt_stream            # 스트리밍 받아쓰기 중계(OMAI-1554, 계약 stt-stream-protocol.md). 레거시 Mount 앞
+    routes += stt_stream.routes()
     from . import files                 # 대화 파일(OMAI-1153) — 본문이 커서 옛 Handler 어댑터를 거치지 않는다
     routes += files.routes()
     from . import meeting_files         # 회의 파일 공유 — 방 구성원 인증, 레거시 Mount 앞(/api/office/meeting/ 접두를 레거시 Handler 도 받는다)

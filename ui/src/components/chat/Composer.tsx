@@ -20,7 +20,7 @@ import { activeToken, applyPick, applyPickToFront, filterItems, pickable, Sugges
 import { ReadBand, ReadLive, useReadBand } from './ReadAloud';
 import { SuggestList, SuggestState } from './SuggestList';
 import { useChatTokens } from './useChatTokens';
-import { useVoiceView, VoiceBand, VoiceButton, VoiceLine, voiceRecorder, VoiceTarget } from './VoiceInput';
+import { useVoiceView, VoiceBand, VoiceButton, VoiceEdit, VoiceLine, voiceRecorder, VoiceTarget } from './VoiceInput';
 
 /** 고르기 목록 하나(「/」 또는 「@」). 항목은 부르는 쪽이 읽어 넘긴다 — 보낼 때 같은 목록으로 스킬을 가려야 해서다(R7) */
 export interface ComposerSuggest {
@@ -96,6 +96,8 @@ export interface ComposerProps {
 
 /** 조합이 끝나고 보내기까지 기다리는 시간. 확정된 글자로 다시 그려지고, 뒤따르는 Enter 이벤트가 지나갈 만큼 */
 const IME_SEND_DELAY_MS = 30;
+/** 2차 인식 결과를 이만큼 들고 있는다: 한글 조합 중이거나 사용자가 방금 손댔을 때(스펙 2026-11-01-001 D16) */
+const VOICE_HOLD_MS = 1000;
 
 const hidden = {
   position: 'absolute',
@@ -123,6 +125,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const vv = useVoiceView(voiceOwner);
   const voiceBusy = !!voice && vv.busy;
   const canSend = canSendProp && !voiceBusy;
+  // 보내기는 모두 여기를 지난다(Enter·조합 뒤 Enter·단추 둘). 다듬는 중에 보내면 남은 2차 결과는 버린다(스펙 2026-11-01-001 D14)
+  const send = () => {
+    if (voice) {
+      voiceText.current = null;
+      voiceRecorder.sent(voiceOwner);
+    }
+    onSend();
+  };
   useImperativeHandle(ref, () => ({ focus: () => input.current?.focus() }), []);
 
   // ---- 고르기 목록 --------------------------------------------------------
@@ -199,12 +209,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // 한글 조합 중 Enter 는 글자 확정에 쓰인다. 그 Enter 를 기억했다가 조합이 끝나면 보낸다 — 끝 글자가 조합 중이면 Enter 로
   // 보내지지 않고 Ctrl+Enter(Ctrl 이 조합을 먼저 끝낸다)만 보내졌다(2026-10-16 사용자 보고). 조합이 끝난 뒤 바뀐 값으로 다시
   // 그린 다음 보내도록 한 박자 늦추고, 그 사이 브라우저가 Enter 를 한 번 더 보내면(macOS Chrome) 그 Enter 는 버린다.
-  const latest = useRef({ onSend, canSend });
-  latest.current = { onSend, canSend };
+  const latest = useRef({ onSend: send, canSend });
+  latest.current = { onSend: send, canSend };
   const afterIme = useRef<'none' | 'pending' | 'sending'>('none');
   useEffect(() => () => void (afterIme.current = 'none'), []);
 
   const onKeyDown = (e: KeyboardEvent) => {
+    userAt.current = Date.now();
     const mod0 = e.metaKey || e.ctrlKey;
     if (open && !e.nativeEvent.isComposing) {
       const count = state === 'list' ? shown.length : state === 'error' ? (src?.onRetry ? 1 : 0) : state === 'empty' ? (src?.emptyLink ? 1 : 0) : 0;
@@ -248,26 +259,56 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!sends) return;
     e.preventDefault();
     if (afterIme.current === 'sending') return; // 조합을 끝낸 Enter 가 한 번 더 왔다 — 곧 보낸다
-    if (canSend) onSend();
+    if (canSend) send();
     else if (voiceBusy) voiceRecorder.sendBlocked(voiceOwner);
   };
 
   // 받아쓴 글 넣기(17A): 글이 도착한 때의 커서(선택 영역이면 그 끝) 자리에 넣고, 앞 글자가 공백이 아니면 공백 하나를 앞에 둔다.
   // 시작한 입력칸이 포커스를 갖고 있으면 insertText 로 넣어 Ctrl+Z 한 번으로 되돌리게 하고, 아니면 값 바꾸기로 넣는다(§11 M4).
   // 한글 조합 중이면 들고 있다가 조합이 끝난 뒤 넣는다(15A)
+  // 스트리밍의 확정 구간(append, OMAI-1554 D19)은 커서와 관계없이 글 끝에 덧붙이고, 사용자가 입력칸에서 고치는 중이면 그 커서·선택을 그대로 둔다.
+  // 이미 넣은 글은 바꾸지 않는다. 구간이 연달아 와도 앞 구간을 덮지 않게 latestValue 를 바로 고친다(다시 그리기 전에 다음 구간이 온다)
   const composing = useRef(false);
-  const heldVoice = useRef('');
+  const heldVoice = useRef<{ text: string; append: boolean } | null>(null);
+  const keepSel = useRef<[number, number] | null>(null);
+  useLayoutEffect(() => {
+    const sel = keepSel.current;
+    if (!sel || !input.current) return;
+    keepSel.current = null;
+    if (document.activeElement === input.current) input.current.setSelectionRange(sel[0], sel[1]);
+  });
   /** 사용자가 커서를 놓은 적이 있는가. 없으면 글 끝에 넣는다 — 손대지 않은 입력칸의 selectionEnd 는 브라우저마다 0 일 수 있다 */
   const userCaret = useRef(false);
   const latestValue = useRef({ value, onChange });
   latestValue.current = { value, onChange };
-  const insertVoice = (text: string) => {
+  // 2차 인식(스펙 2026-11-01-001 D27): 이번 녹음이 덧붙인 글의 시작 자리와 내용. 녹음 중 그 글을 고치거나 사이에 글을 치면 broken.
+  // 바꿀 때 그 자리 글이 그대로인지 다시 보고(D17), 앞에 글을 쳐 자리가 밀렸으면 같은 글이 하나뿐일 때만 그것으로 본다
+  const voiceText = useRef<{ start: number; text: string; broken: boolean; original: string | null } | null>(null);
+  /** 사용자가 마지막으로 입력칸에 손댄 때(키·포인터·입력). 앱이 넣은 글·옮긴 선택은 세지 않는다(D16) */
+  const userAt = useRef(0);
+  const insertVoice = (text: string, opts?: { append?: boolean }) => {
     if (composing.current) {
-      heldVoice.current = heldVoice.current ? `${heldVoice.current} ${text}` : text;
+      const held = heldVoice.current;
+      heldVoice.current = { text: held ? `${held.text} ${text}` : text, append: (held?.append ?? true) && !!opts?.append };
       return;
     }
     const el = input.current;
     const v = latestValue.current.value;
+    if (opts?.append) {
+      const next = v + (v && !/\s$/.test(v) ? ' ' : '') + text;
+      const r = voiceText.current;
+      if (!r) voiceText.current = { start: next.length - text.length, text, broken: false, original: null };
+      else if (!r.broken) {
+        if (v.slice(r.start) === r.text) r.text = next.slice(r.start);
+        else r.broken = true; // 녹음 중 이 글을 고쳤거나 뒤에 글을 쳤다 — 다듬지 않는다
+      }
+      const focused = !!el && document.activeElement === el;
+      if (focused && el) keepSel.current = [el.selectionStart ?? v.length, el.selectionEnd ?? v.length];
+      latestValue.current = { ...latestValue.current, value: next };
+      latestValue.current.onChange(next);
+      return;
+    }
+    if (voiceText.current) voiceText.current.broken = true; // 일괄 경로로 커서 자리에 넣었다 — 이번 녹음 글이 이어지지 않는다
     const at = userCaret.current && el ? Math.min(el.selectionEnd ?? v.length, v.length) : v.length;
     const s = (at > 0 && !/\s/.test(v[at - 1]) ? ' ' : '') + text;
     if (el && document.activeElement === el && typeof document.execCommand === 'function') {
@@ -287,12 +328,55 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     placeCaret(at + s.length); // 넣은 글 끝에 커서를 두고 입력칸에 포커스를 돌려준다
   };
 
+  /** 이번 녹음 글을 to 로 바꾼다. 그 자리 글이 녹음이 넣은 그대로가 아니면 하지 않는다 */
+  const swapVoice = (to: string): boolean => {
+    const r = voiceText.current;
+    if (!r || r.broken) return false;
+    const v = latestValue.current.value;
+    let at = v.slice(r.start, r.start + r.text.length) === r.text ? r.start : -1;
+    if (at < 0) {
+      const i = v.indexOf(r.text);
+      at = i >= 0 && v.indexOf(r.text, i + 1) < 0 ? i : -1;
+    }
+    if (at < 0 || r.text === to) return false;
+    const next = v.slice(0, at) + to + v.slice(at + r.text.length);
+    const el = input.current;
+    if (el && document.activeElement === el) {
+      // 커서·선택은 바꾼 글 뒤면 길이 차이만큼 옮기고, 바꾼 글 안이면 바꾼 글 끝을 넘지 않게 한다
+      const end = at + r.text.length;
+      const move = (p: number) => (p >= end ? p + to.length - r.text.length : Math.min(p, at + to.length));
+      keepSel.current = [move(el.selectionStart ?? v.length), move(el.selectionEnd ?? v.length)];
+    }
+    voiceText.current = { start: at, text: to, broken: false, original: r.original ?? r.text };
+    latestValue.current = { ...latestValue.current, value: next };
+    latestValue.current.onChange(next);
+    return true;
+  };
+  const voiceEdit: VoiceEdit = {
+    begin: () => void (voiceText.current = null),
+    refine: async (text) => {
+      const deadline = Date.now() + VOICE_HOLD_MS;
+      const held = () =>
+        composing.current || (document.activeElement === input.current && Date.now() - userAt.current < VOICE_HOLD_MS);
+      while (held()) {
+        if (Date.now() >= deadline) return false; // 계속 손대고 있다 — 다듬지 않는다
+        await new Promise((ok) => setTimeout(ok, 100));
+      }
+      return swapVoice(text);
+    },
+    undo: () => {
+      const r = voiceText.current;
+      if (!r?.original || !swapVoice(r.original)) return;
+      voiceText.current = { ...voiceText.current!, broken: true }; // 되돌린 글은 이후 바꾸지 않는다(D19)
+    },
+  };
+
   const onCompositionEnd = () => {
     composing.current = false;
     if (heldVoice.current) {
       const held = heldVoice.current;
-      heldVoice.current = '';
-      setTimeout(() => insertVoice(held), 0); // 확정된 글자로 다시 그려진 뒤에 넣는다
+      heldVoice.current = null;
+      setTimeout(() => insertVoice(held.text, held.append ? { append: true } : undefined), 0); // 확정된 글자로 다시 그려진 뒤에 넣는다
     }
     if (afterIme.current !== 'pending') return;
     afterIme.current = 'sending';
@@ -312,6 +396,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const readBandId = useId();
   const reading = useReadBand(readConv) && !(voice && vv.band);
   const band = (!!voice && vv.band) || reading;
+  // 녹음 띠가 보이는 동안 입력칸은 줄어들지 않는다 — 다듬은 글이 짧아도 띠가 닫힐 때까지 높이를 둔다(D20)
+  const voiceBand = !!voice && vv.band;
+  const [frozenH, setFrozenH] = useState(0);
+  useLayoutEffect(() => {
+    if (!voiceBand) {
+      if (frozenH) setFrozenH(0);
+      return;
+    }
+    const h = input.current ? parseFloat(getComputedStyle(input.current).height) : 0;
+    if (h > frozenH) setFrozenH(h);
+  }, [voiceBand, frozenH, value]); // 글이 바뀔 때마다(늘어난 높이) 다시 잰다
   const describedIds = [band ? (reading ? readBandId : bandId) : hint ? hintId : '', !band && note ? noteId : '', voice && vv.line ? lineId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined;
   const slash = suggest?.find((x) => x.trigger === '/' && x.touchButton);
   // 손가락 화면의 「/」 단추(DD7): 글 맨 앞(회의실은 @이름 들 뒤)에 / 를 넣고 목록을 연다. 이미 /낱말이 있으면 그 끝으로 커서만
@@ -351,6 +446,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         onChange={(e) => {
           onChange(e.target.value);
           userCaret.current = true;
+          userAt.current = Date.now();
           setCaret(e.target.selectionStart ?? e.target.value.length);
         }}
         inputRef={input}
@@ -360,6 +456,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           onKeyDown,
           onCompositionEnd,
           onCompositionStart: () => void (composing.current = true),
+          onPointerDown: () => void (userAt.current = Date.now()),
           onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
             userCaret.current = true;
             setCaret(e.currentTarget.selectionStart ?? 0);
@@ -374,7 +471,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               }
             : {}),
         }}
-        sx={{ px: 1.5, pt: 1.25, pb: 0.5, fontSize: chatType.body, lineHeight: chatType.bodyLine, color: tk.text }}
+        sx={{
+          px: 1.5,
+          pt: 1.25,
+          pb: 0.5,
+          fontSize: chatType.body,
+          lineHeight: chatType.bodyLine,
+          color: tk.text,
+          ...(frozenH ? { '& textarea': { minHeight: `${frozenH}px` } } : {}),
+        }}
       />
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, pb: 1, pt: 0.25 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', ...touchChildren }}>
@@ -432,7 +537,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             녹음 중에는 녹음 띠(경과·✕·✓)가 이 앞에 온다 */}
         {voice && (
           <Box sx={{ display: 'flex', alignItems: 'center', ...touchChildren }}>
-            <VoiceButton owner={voiceOwner} voice={voice} onInsert={insertVoice} suggestOpen={open} rootRef={root} />
+            <VoiceButton owner={voiceOwner} voice={voice} onInsert={insertVoice} onEdit={voiceEdit} suggestOpen={open} rootRef={root} />
           </Box>
         )}
         {busy && sendWhileBusy && (
@@ -442,7 +547,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             color="inherit"
             aria-label={sendLabel}
             disabled={!canSend}
-            onClick={onSend}
+            onClick={send}
             sx={[tier1 as object, { minWidth: 0, width: 32, height: 32, p: 0, borderRadius: '8px' }, touch]}
           >
             <SendIcon fontSize="small" />
@@ -465,7 +570,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             color="inherit"
             aria-label={sendLabel}
             disabled={!canSend}
-            onClick={onSend}
+            onClick={send}
             sx={[tier1 as object, { minWidth: 0, width: 32, height: 32, p: 0, borderRadius: '8px' }, touch]}
           >
             <SendIcon fontSize="small" />

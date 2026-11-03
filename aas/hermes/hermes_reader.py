@@ -98,6 +98,32 @@ def _connect_immutable(db: Path):
     return conn
 
 
+# 사이드카 ops._REOPEN_IMMUTABLE_CODES 와 같은 값(사이드카는 별도 이미지라 가져다 쓰지 못한다): READONLY 8·IOERR 10·CANTOPEN 14 만 다시 연다
+_REOPEN_IMMUTABLE_CODES = {8, 10, 14}
+
+
+def _connect_read(db: Path) -> tuple[sqlite3.Connection, str]:
+    """로컬 DB 를 사이드카 sqlite 연산(sidecar/aas_sidecar/ops.py Ops._open_db)과 같은 차례로 연다: mode=ro 먼저, 안 되면 immutable.
+    (연결, 읽기 방식 "ro"|"immutable"). immutable 은 WAL 에만 있는 최신 기록을 놓치므로 부른 쪽이 「없음」을 단정하지 않는다(스펙 2026-11-03-001 R15).
+    query_batch_read_mode 만 쓴다. 다른 읽기(_connect_immutable)는 그대로 immutable 이다 — mode=ro 는 쓰기 가능한 폴더에 -shm·-wal 을 만들 수 있어서다."""
+    uri = f"file:{db}"
+    conn = None
+    try:
+        conn = sqlite3.connect(f"{uri}?mode=ro", uri=True, timeout=1.0)
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()      # 여는 것만으로는 -shm 실패가 드러나지 않는다
+        conn.row_factory = sqlite3.Row
+        return conn, "ro"
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        code = getattr(exc, "sqlite_errorcode", None)
+        if not (isinstance(code, int) and (code & 0xFF) in _REOPEN_IMMUTABLE_CODES):
+            raise                                                           # 잠금(BUSY) 등은 immutable 로 덮지 않는다(사이드카와 같은 규칙)
+    conn = sqlite3.connect(f"{uri}?immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn, "immutable"
+
+
 class MissingDb(sqlite3.OperationalError):
     """DB 파일이 없다(사이드카 404, 로컬은 파일 없음). 파일 있음 확인을 건너뛴 읽기가 「DB 없음」으로 본다(스펙 2026-10-24-011 R1)."""
 
@@ -105,6 +131,18 @@ class MissingDb(sqlite3.OperationalError):
 def query_batch(items: list[tuple]) -> list:
     """(DB 경로, SQL, 인자) 여러 개를 한 번에 실행한다(OMAI-1102). 원격이면 사이드카 요청 하나, 로컬이면 차례로.
     결과는 같은 차례의 행 목록(이름·번호로 읽는 행)이거나 sqlite3.Error 다 — 하나가 실패해도 나머지는 낸다."""
+    return _query_batch(items, None)
+
+
+def query_batch_read_mode(items: list[tuple]) -> tuple[list, str]:
+    """query_batch 와 같고, 읽기 방식을 함께 낸다: 읽은 것 중 하나라도 immutable 이면 "immutable", 아니면 "ro"(스펙 2026-11-03-001 R15).
+    로컬은 _connect_read(mode=ro 먼저). 원격은 사이드카 응답의 read_mode — 이 값이 없는 응답(read_mode 를 더하기 전 사이드카)은 늘 immutable 로 읽은 것이다."""
+    modes: list[str] = []
+    out = _query_batch(items, modes)
+    return out, ("immutable" if "immutable" in modes else "ro")
+
+
+def _query_batch(items: list[tuple], modes: list | None) -> list:
     out: list = [None] * len(items)
     remote_groups: dict = {}
     for i, (db, sql, params) in enumerate(items):
@@ -114,9 +152,14 @@ def query_batch(items: list[tuple]) -> list:
             out[i] = MissingDb(tr("DB 파일이 없습니다", "The DB file does not exist"))
         else:
             try:
-                conn = _connect_immutable(db)
+                if modes is None:
+                    conn = _connect_immutable(db)
+                else:
+                    conn, mode = _connect_read(db)
                 try:
                     out[i] = [r for r in conn.execute(sql, tuple(params))]
+                    if modes is not None:
+                        modes.append(mode)
                 finally:
                     conn.close()
             except sqlite3.Error as exc:
@@ -134,6 +177,8 @@ def query_batch(items: list[tuple]) -> list:
             else:
                 cols = tuple(res["columns"])
                 out[i] = [_remote.RemoteRow(cols, [_remote.RemoteConnection._cell(c) for c in r]) for r in res["rows"]]
+                if modes is not None:
+                    modes.append(res.get("read_mode") or "immutable")
     return out
 
 
@@ -257,6 +302,12 @@ def mcp_server_names(home: Path | None = None) -> dict[str, list[str]]:
     return result
 
 
+def search_rglob(path, pattern: str) -> list:
+    """찾기·집계용 재귀 목록. 의존성·캐시 폴더(`remote.search_skip_dirs()`)와 그 안을 빼고, 로컬·원격 같은 결과를 낸다.
+    원격이면 그 폴더 안을 사이드카에 묻지 않는다(스펙 2026-11-03-003 R5·D11). 모든 파일이 필요한 곳(라이브러리·해시)은 쓰지 않는다."""
+    return _remote.search_rglob(path, pattern)
+
+
 def skill_files(home: Path | None = None) -> list[tuple[str, Path]]:
     """(프로파일 이름, SKILL.md 경로). 점으로 시작하는 디렉터리(백업 등)는 제외."""
     home = home or hermes_home()
@@ -265,7 +316,7 @@ def skill_files(home: Path | None = None) -> list[tuple[str, Path]]:
         root = prof.path / "skills"
         if not root.is_dir():
             continue
-        for p in sorted(root.rglob("SKILL.md")):
+        for p in sorted(search_rglob(root, "SKILL.md")):    # 의존성 폴더 안 SKILL.md 는 스킬이 아니다(스펙 2026-11-03-003 D11)
             if any(part.startswith(".") for part in p.relative_to(root).parts[:-1]):
                 continue                                   # 점으로 시작하는 폴더(백업 등)는 건너뛴다
             out.append((prof.name, p))
@@ -289,7 +340,7 @@ def shared_skill_files(home: Path | None = None) -> list[tuple[str, str, Path]]:
             if root == prof.path / "skills" or not root.is_dir():
                 continue
             label = shared_skills.label_of(d)
-            for p in sorted(root.rglob("SKILL.md")):
+            for p in sorted(search_rglob(root, "SKILL.md")):
                 if any(part.startswith(".") for part in p.relative_to(root).parts[:-1]):
                     continue
                 out.append((prof.name, label, p))

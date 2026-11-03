@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..common.i18n import tr
+from ..hermes.readers import remote
 
 TEXT_EXT = {".md", ".py", ".sh", ".js", ".ts", ".json", ".yaml", ".yml", ".txt", ".toml", ".sql", ".html", ".css", ".tmpl", ".j2"}
 MAX_BYTES = 400_000
@@ -107,7 +108,7 @@ def siblings(home: Path, rel: str) -> list[str]:
             root = d
             break
     out = []
-    for p in sorted(root.rglob("*")):
+    for p in sorted(remote.search_rglob(root, "*")):            # 의존성 폴더 안 파일은 보이지 않는다(스펙 2026-11-03-003 D11)
         if len(out) >= 60:
             break
         if p.is_file() and p.suffix.lower() in TEXT_EXT and not any(x.startswith(".") for x in p.relative_to(root).parts):

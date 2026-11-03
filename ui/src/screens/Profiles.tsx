@@ -5,6 +5,7 @@
 
 // 프로파일: 한 에이전트의 모델·성격·채널·스킬·도구·크론을 한곳에서 보고 관리한다. 목록과 상세(?name=)를 한 주소에서 나눈다.
 import AddIcon from '@mui/icons-material/Add';
+import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined';
 import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
 import type { Theme } from '@mui/material';
 import {
@@ -34,6 +35,8 @@ import { useDrawerGuard, useDrawerHead, useDrawerPage } from '@/components/drawe
 import { ListView } from '@/components/ListView';
 import { useUi } from '@/components/UiContext';
 import { useOpenParam, useParamPatch, useRouteDrawer } from '@/components/useRouteDrawer';
+import { InboxPanel } from '@/features/office/InboxPanel';
+import { useInbox } from '@/features/office/useInbox';
 import { RequestAdminButton } from '@/features/requests/RequestAdminButton';
 import { t } from '@/i18n';
 import { agentLabel, agentProfileLabel } from '@/lib/agentLabel';
@@ -82,6 +85,12 @@ type RawList = Partial<AllList> & {
   owner?: boolean;
   owner_name?: string;
 };
+
+/** 응답 없는(error) 작업공간 묶음이 있으면 이 간격으로 다시 읽는다(스펙 2026-11-02-003). 서버 재기동 직후 첫 읽기(사이드카 묶음 받기)가
+ *  10초를 넘겨 「응답 없음」이 와도, 서버가 뒤에서 읽기를 끝내면 다음 읽기에서 정상이 된다(2026-11-02-002). 멈춘·뜨는 중은 다시 읽지 않는다 */
+export function profilesRetryMs(data: RawList | undefined): number | false {
+  return data?.groups?.some((g) => g.state === 'error') ? 5000 : false;
+}
 
 function normalize(raw: RawList, pod: string, podName: string | undefined, fallbackPrimary: string | undefined): AllList {
   if (raw.groups) return raw as AllList;
@@ -492,7 +501,12 @@ function ProfileList() {
   const chat = useMakeChatDefault();
   const agents = useAgentList();
   // 내 에이전트 전체(스펙 2026-10-19-018 A1). 다시 읽는 동안 이전 줄을 그대로 둔다(디자인 DD4)
-  const q = useQuery<RawList>({ queryKey: ['profiles', 'all'], queryFn: () => get('/api/profiles?all=1'), placeholderData: keepPreviousData });
+  const q = useQuery<RawList>({
+    queryKey: ['profiles', 'all'],
+    queryFn: () => get('/api/profiles?all=1'),
+    placeholderData: keepPreviousData,
+    refetchInterval: (query) => profilesRetryMs(query.state.data),
+  });
   // 「지금 에이전트 먼저」의 기준은 화면에 들어올 때의 에이전트로 고정한다 — 줄을 눌러 바꾼 뒤 다시 정렬하면 서랍 뒤에서 표가 뒤섞였다(디자인 DD4)
   const anchor = useRef('');
   if (!anchor.current && current) anchor.current = current;
@@ -705,6 +719,27 @@ export function ProfilePage({ page }: { page: PageOf<'profile'> }) {
   );
 }
 
+// 관리자에게 온 처리 대기 요청(스펙 2026-11-02-001). 사이드바의 「프로파일」 배지가 이 건수라, 배지를 보고 들어온 화면에서 이유와
+// 처리할 곳(받은편지함)을 바로 보인다. 요청은 관리자에게만 오므로 따로 권한을 보지 않는다
+function AdminRequestsNotice() {
+  const { openDrawer } = useUi();
+  const n = useInbox().items.filter((i) => i.kind === 'admin_request').length;
+  if (!n) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 1 }}
+      action={
+        <Button color="inherit" size="small" onClick={() => openDrawer({ title: t('office.inbox'), icon: NotificationsNoneOutlinedIcon, body: <InboxPanel /> })}>
+          {t('profiles.adminRequestsOpen')}
+        </Button>
+      }
+    >
+      {t('profiles.adminRequests', { n })}
+    </Alert>
+  );
+}
+
 // 상세는 목록 위 오른쪽 서랍으로 연다(주소 `?name=` 는 그대로라 다른 화면의 링크가 동작한다)
 export function Profiles() {
   const { head, pod, agentName, office } = useProfileHead();
@@ -736,6 +771,7 @@ export function Profiles() {
           {t('common.primaryPreparing', { name: primary.profile })}
         </Alert>
       )}
+      <AdminRequestsNotice />
       <AgentAnnouncer silent />
       <ProfileList />
     </>

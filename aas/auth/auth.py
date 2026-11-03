@@ -291,7 +291,7 @@ class Auth:
         ok = verify_password(password or "", users.get(email) or _DUMMY_HASH) and email in users
         if not ok:
             store.log_usage("login_failed", ip)
-            raise AuthError(tr("아이디 또는 비밀번호가 맞지 않습니다.", "Wrong username or password."))
+            raise AuthError(tr("이메일 또는 비밀번호가 맞지 않습니다.", "Wrong email or password."))
         with self._lock:
             self._tries.pop(ip, None)
         return self._new_session(email, "")

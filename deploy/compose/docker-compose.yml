@@ -66,6 +66,7 @@ services:
     user: "${HERMES_UID:-10000}:${HERMES_GID:-10000}"
     environment:
       AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN:?AAS_SIDECAR_TOKEN 을 .env 에 정하세요(16자 이상, 예 openssl rand -hex 24)}"
+      AAS_SIDECAR_MAX_ENTRIES: ${AAS_SIDECAR_MAX_ENTRIES:-}
     volumes:
       - hermes-data:/opt/data:ro
     healthcheck:
@@ -91,6 +92,7 @@ services:
       AAS_CONFIG_DIR: /etc/aas
       AAS_SIDECAR_URL: http://sidecar:17950
       AAS_SIDECAR_TOKEN: "${AAS_SIDECAR_TOKEN}"
+      AAS_TREE_SKIP_DIRS_EXTRA: ${AAS_TREE_SKIP_DIRS_EXTRA:-}
       AAS_DASHBOARD_URL: http://hermes:9119
       AAS_DASHBOARD_USER: ${HERMES_DASHBOARD_USER:-aas}
       AAS_DASHBOARD_PASSWORD: ${HERMES_DASHBOARD_PASSWORD}
@@ -128,6 +130,9 @@ services:
       # AAS_TTS_VOICES 는 목소리 목록 JSON(id·name·gender·sample). 깨진 값이면 꺼지고 기동 로그에 경고가 남는다(.env.example)
       AAS_TTS_MODEL: ${AAS_TTS_MODEL:-}
       AAS_TTS_VOICES: ${AAS_TTS_VOICES:-}
+      # 실시간(스트리밍) 받아쓰기 엔진 웹소켓 주소와 키(.env.example). 비우면 녹음을 끝낸 뒤 받아쓴다
+      AAS_STT_STREAM_URL: ${AAS_STT_STREAM_URL:-}
+      AAS_STT_STREAM_KEY: ${AAS_STT_STREAM_KEY:-}
       # https 리버스 프록시 뒤에서 X-Forwarded-Proto 를 믿을 연결(true 또는 CIDR). 비우면 믿지 않고 http 로 본다
       AAS_TRUSTED_PROXY: ${AAS_TRUSTED_PROXY:-}
     extra_hosts:

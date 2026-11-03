@@ -106,6 +106,8 @@ docker compose down -v     # 볼륨까지 지운다
 | `HERMES_LLM_BASE_URL`·`HERMES_LLM_MODEL`·`HERMES_LLM_API_KEY` | Hermes 가 쓰는 OpenAI 호환 LLM. 빠른 시작은 앞의 둘이 필수. 여러 개 시험은 비우면 호스트의 LiteLLM(14400) |
 | `HERMES_IMAGE`·`HERMES_COMMAND` | Hermes 이미지(기본 상류 v0.22.2)와 시작 명령(기본 `gateway run`) |
 | `HERMES_UID`·`HERMES_GID` | Hermes 와 사이드카의 사용자 번호(기본 10000) |
+| `AAS_SIDECAR_MAX_ENTRIES` | 사이드카가 한 번에 나열하는 항목 수의 상한(기본 50000). 서버 로그에 「사이드카 묶음이 항목 상한에서 잘렸습니다」가 보이면 올린다 |
+| `AAS_TREE_SKIP_DIRS_EXTRA` | 서버가 안을 읽지 않을 폴더 이름을 쉼표로 더한다(예 `vendor,target,build`). `.venv`·`site-packages`·`node_modules` 등 의존성 폴더는 늘 건너뛴다. `skills`·`profiles` 는 넣지 않는다. 서버 여러 대는 같은 값 |
 | `AAS_VERSION`·`AAS_IMAGE`·`AAS_SIDECAR_IMAGE` | AAS·사이드카 이미지(기본 GHCR, 없으면 소스 빌드) |
 | `HERMES_DATA_DIR` | 붙기: Hermes 데이터 폴더의 호스트 경로. 사이드카가 읽기 전용으로 붙인다 |
 | `AAS_ADMINS` | 붙기: 관리자 이메일(쉼표·공백으로 여러 명). 비우면 `AAS_ADMIN_EMAIL` |

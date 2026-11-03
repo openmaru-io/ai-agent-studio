@@ -1230,7 +1230,7 @@ def _tool(name, scope, fn, desc, props=None, required=()):
 
 TOOLS = {t["name"]: t for t in (
     _tool("agents_list", "chat", agents_list, "List the agents (POD) and profiles you can use."),
-    _tool("chat_start", "chat", chat_start,
+    _tool("chat_start", "chat:send", chat_start,
           "Open a new chat on an agent, or reopen a past one with resume=<stored_id>. Returns session_id and `after` for chat_wait, "
           "and stored_id once the agent has saved the chat (chat_wait also returns it).",
           {"pod": POD, "profile": PROFILE, "resume": _s("stored_id of a past chat to reopen"),
@@ -1240,7 +1240,7 @@ TOOLS = {t["name"]: t for t in (
           "It reopens the chat, so you can then chat_send to it with the returned session_id.",
           {"pod": POD, "profile": PROFILE, "stored_id": _s("Saved chat id or cron run id"),
            "last": {"type": "integer", "description": "How many messages, 1-50 (default 10)"}}, ("pod", "stored_id")),
-    _tool("chat_send", "chat", chat_send,
+    _tool("chat_send", "chat:send", chat_send,
           "Send a message. Returns at once with `after`; then call chat_wait. `skill` runs that skill with the text as its input.",
           {"pod": POD, "session_id": SESSION, "text": _s("Message (up to 64KB)"), "skill": _s("Skill name to run"),
            "files": {"type": "array", "items": {"type": "string"}, "description": "Names of files uploaded to the chat workspace"}},
@@ -1250,7 +1250,7 @@ TOOLS = {t["name"]: t for t in (
           "approval (call approval_respond), clarify (call clarify_answer), error, disconnected. Tool calls show name and state only.",
           {"pod": POD, "session_id": SESSION, "after": {"type": "integer", "description": "Last event number you saw"},
            "timeout": {"type": "number", "description": "Seconds to wait, 0-50 (default 50)"}}, ("pod", "session_id")),
-    _tool("chat_interrupt", "chat", chat_interrupt, "Stop the answer in progress.", {"pod": POD, "session_id": SESSION},
+    _tool("chat_interrupt", "chat:send", chat_interrupt, "Stop the answer in progress.", {"pod": POD, "session_id": SESSION},
           ("pod", "session_id")),
     _tool("approval_respond", "approve", approval_respond, "Answer an approval card from chat_wait.",
           {"pod": POD, "session_id": SESSION, "request_id": _s("request_id from the approval"),
@@ -1478,6 +1478,17 @@ TOOLS = {t["name"]: t for t in (
 )}
 
 
+# 「읽기만」 토큰이 보내기 도구를 부를 때의 안내(스펙 2026-11-03-001 DD6). 묶음 이름은 동의 화면의 en 이름과 같게(§12-4 L2, mcp_oauth._bundles)
+READ_ONLY_SEND = ('This connection is read-only ("Read only" bundle) and cannot send messages to agents. To send, reconnect with the '
+                  '"Skill development" or "Everything (my AI agents)" bundle in Settings › Claude Code connections.')
+
+
+def _scope_denied(scope: str) -> str:
+    if scope == "chat:send":
+        return READ_ONLY_SEND
+    return f"this connection does not have the `{scope}` scope"
+
+
 def tools_for(scopes: set[str]) -> list[dict]:
     """그 토큰 범위로 쓸 수 있는 도구만(D14)."""
     return [t["spec"] for t in TOOLS.values() if t["scope"] in scopes]
@@ -1516,7 +1527,7 @@ async def call_tool(ctx: Ctx, params: dict) -> dict:
     word = "ok"
     try:
         if tool["scope"] not in ctx.scopes:
-            raise ToolError("forbidden", f"this connection does not have the `{tool['scope']}` scope")
+            raise ToolError("forbidden", _scope_denied(tool["scope"]))
         if await anyio.to_thread.run_sync(mcp_limits.hit, ctx.email) > mcp_limits.per_minute():
             raise ToolError("busy", f"up to {mcp_limits.per_minute()} calls a minute", _hint("busy"))
         out = _result(await tool["fn"](ctx, args))

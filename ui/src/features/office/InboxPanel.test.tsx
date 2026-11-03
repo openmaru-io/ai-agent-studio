@@ -33,7 +33,7 @@ describe('받은편지함(계획 007 P4)', () => {
   it('승인은 그 자리에서 고르고, 질문에는 답을 보낸다', async () => {
     const fn = stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items: ITEMS } });
     mountScreen(<InboxPanel />, '/office');
-    await userEvent.click(await screen.findByRole('button', { name: '이번만 허용' }));
+    await userEvent.click(await screen.findByRole('button', { name: '한 번 허용' }));
     // 에이전트가 명령을 실행하게 되므로 확인을 받는다. 확인 창에 명령이 보인다(OMAI-1135)
     const box = await screen.findByRole('dialog');
     expect(box).toHaveTextContent('ops 이(가) 이 명령을 이번 한 번 실행하도록 허용합니다.');
@@ -53,7 +53,7 @@ describe('받은편지함(계획 007 P4)', () => {
     stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items } });
     mountScreen(<InboxPanel />, '/office');
     expect(await screen.findByText(/· 영업 도우미$/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: '이번만 허용' }));
+    await userEvent.click(screen.getByRole('button', { name: '한 번 허용' }));
     expect(await screen.findByRole('dialog')).toHaveTextContent('영업 도우미 이(가) 이 명령을');
     expect(screen.queryByText(/aas-agent-kim-1a2b/)).toBeNull();
   });
@@ -119,11 +119,11 @@ describe('받은편지함(계획 007 P4)', () => {
   it('거절도 확인을 받고, 취소하면 보내지 않는다', async () => {
     const fn = stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items: ITEMS } });
     mountScreen(<InboxPanel />, '/office');
-    await userEvent.click(await screen.findByRole('button', { name: '거절' }));
-    expect(await screen.findByText(/이 명령을 거절합니다/)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: '거부' }));
+    expect(await screen.findByText(/이 명령을 거부합니다/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '취소' }));
     expect(postedTo(fn, '/api/office/inbox/answer')).toEqual([]);
-    await userEvent.click(await screen.findByRole('button', { name: '거절' }));
+    await userEvent.click(await screen.findByRole('button', { name: '거부' }));
     await userEvent.click(await screen.findByRole('button', { name: '확인' }));
     await waitFor(() => expect(postedTo(fn, '/api/office/inbox/answer')).toEqual([{ id: 'a1', choice: 'deny' }]));
   });

@@ -21,6 +21,8 @@ export interface MenuNode {
   sub?: string;
   badge?: number;
   tone?: Tone;
+  /** 배지가 무엇의 건수인가(풍선말·접근 이름). 없으면 「N건」(스펙 2026-11-02-001) */
+  hint?: string;
 }
 
 export interface MenuGroup {
@@ -28,6 +30,7 @@ export interface MenuGroup {
   label: string;
   badge?: number;
   tone?: Tone;
+  hint?: string;
   items: MenuNode[];
 }
 
@@ -62,7 +65,9 @@ export function buildMenus({ health, creds, waiting = 0, admin = true, owner = f
   const totals = health?.totals ?? {};
   const expiring = creds?.items ? expiringCreds(creds.items).length : creds?.totals?.expiring;
   const cronBad = countCronBad(totals);
-  const screen = (id: string, extra: Partial<Pick<MenuNode, 'badge' | 'tone' | 'label' | 'sub'>> = {}): MenuNode => {
+  // 처리 대기 요청 배지는 프로파일 화면의 숫자와 관계없어 무엇의 건수인지 풍선말로 밝힌다(스펙 2026-11-02-001)
+  const requests = adminRequests ? { ...n(adminRequests, 'warn'), hint: t('menu.adminRequests', { n: adminRequests }) } : {};
+  const screen = (id: string, extra: Partial<Pick<MenuNode, 'badge' | 'tone' | 'label' | 'sub' | 'hint'>> = {}): MenuNode => {
     const v = viewById(id)!;
     return { id, label: v.label, sub: v.sub, ...extra };
   };
@@ -72,7 +77,7 @@ export function buildMenus({ health, creds, waiting = 0, admin = true, owner = f
       : owner || teamManager
       ? [screen('changes', { sub: t('changes.ownerSub', { pod, days: 30 }) })]
       : [];
-  const group = (id: GroupId, items: MenuNode[], extra: Pick<MenuNode, 'badge' | 'tone'> = {}): MenuGroup => ({
+  const group = (id: GroupId, items: MenuNode[], extra: Pick<MenuNode, 'badge' | 'tone' | 'hint'> = {}): MenuGroup => ({
     id,
     label: t(`views.group.${id}`),
     ...extra,
@@ -87,11 +92,11 @@ export function buildMenus({ health, creds, waiting = 0, admin = true, owner = f
       'agent',
       [
         // 처리 대기 요청은 「프로파일 열기」로 이어지는 프로파일 메뉴에 건수를 붙인다. 보조 문구는 건수를 말로 풀어 쓴다
-        screen('profiles', { ...n(adminRequests, 'warn'), ...(adminRequests ? { sub: t('menu.adminRequests', { n: adminRequests }) } : {}) }),
+        screen('profiles', { ...requests, ...(adminRequests ? { sub: t('menu.adminRequests', { n: adminRequests }) } : {}) }),
         screen('agents'),
         screen('models'),
       ],
-      n(adminRequests, 'warn')
+      requests
     ),
     // 라이브러리는 이미지 패키지 목록을 채울 길이 없어 메뉴에서 숨긴다(스펙 2026-10-14-025 변경 B). 라우트와 서버는 그대로 둔다
     // 도구(스크립트 목록·MCP 서버 탭)도 같은 방식으로 숨긴다(스펙 2026-10-19-002)

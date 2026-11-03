@@ -789,7 +789,8 @@ def _with_market_issues(pod: Pod, rows: list[dict]) -> list[dict]:
 def _profile_rows(pod: Pod) -> list[dict]:
     def build():
         listed = HermesAPI(hub(pod).auth).call("GET", "/api/profiles").get("profiles", [])
-        creds = _cached(f"{pod.id}:credentials", 120, lambda: inventory.credentials(pod.hermes_home))["items"]
+        # 줄은 「만료」 플래그만 쓴다 — 사용처 없이 모으고, 자격증명 화면(`{pod}:credentials`)과 캐시 키를 나눈다(스펙 2026-11-03-003 R4, OV1)
+        creds = _cached(f"{pod.id}:credentials_nousage", 120, lambda: inventory.credentials(pod.hermes_home, usage=False))["items"]
         act = _cached(f"{pod.id}:activity7", 60, lambda: activity.collect(7, home=pod.hermes_home))
         rows = profiles.summarize(listed, _agents(pod), _channels(pod), _models(pod), _health(pod), creds, act,
                                   cron_health.hr.mcp_server_names(pod.hermes_home))
@@ -2168,6 +2169,7 @@ def _forget_mcp_login(pod_id: str, profile: str) -> None:
         _drop_locked(f"{pod_id}:mcplogin:{profile}")
         _drop_locked(f"{pod_id}:mcplogin_inbox")                    # 받은편지함 항목도 다음 읽기에서 새로(V14)
         _drop_locked(f"{pod_id}:credentials")                       # 자산 › 자격증명의 토큰 행(T7)
+        _drop_locked(f"{pod_id}:credentials_nousage")               # 프로파일 줄용 같은 표(사용처 없음, 스펙 2026-11-03-003 R4)
     topics.invalidate(f"pod:{pod_id}:mcp:{profile}")                # 보고 있는 화면에 곧바로 보낸다(14-22)
     cache_epoch.bump(pod_id)                                        # 다른 서버 복제본도 버린다(OMAI-1287)
 
@@ -3081,7 +3083,7 @@ def _user_lock(kc, tok: str, reg, uid: str, email: str, user, action: str) -> st
     if (email and email == me) or (uid and uid == me_sub):
         return tr("내 계정은 다른 관리자가 바꿔야 합니다", "Another admin must change your own account")
     if email and email in reg.admins:
-        return tr("AAS_ADMINS(차트 server.admins)에서 정한 관리자입니다", "This admin is set by AAS_ADMINS (chart server.admins)")
+        return tr("설치할 때 운영자가 관리자로 정한 사람입니다", "This admin was set by the operator at installation")
     admins = kc.admin_ids(tok)
     if uid in admins and len(set(admins.values()) | set(reg.admins)) <= 1:
         what = {"disable": tr("사용 중지할", "disable"), "delete": tr("삭제할", "delete"), "demote": tr("관리자에서 뺄", "demote")}[action]
@@ -3245,7 +3247,7 @@ def _users_keycloak_write(a, user, reg, kc, me: str, path: str, body: dict) -> t
         fixed, grant_admin = email in reg.admins, email in set(reg.admin_grants())
         demote = role == "user" and (kc_admin or fixed or grant_admin)
         if demote:
-            why = tr("AAS_ADMINS(차트 server.admins)에서 정한 관리자입니다", "This admin is set by AAS_ADMINS (chart server.admins)") if fixed else lock("demote")
+            why = tr("설치할 때 운영자가 관리자로 정한 사람입니다", "This admin was set by the operator at installation") if fixed else lock("demote")
             if why:
                 return {"error": why}, 409
         for kc_key in ("lastName", "firstName", "department"):
@@ -4077,6 +4079,9 @@ def _chat_status(pod: Pod) -> dict:
     out["primary"] = primary.primary_of(pod.id)                      # 루트 default 가 숨겨진 POD 에서 화면이 default 를 주 에이전트로 바꾼다
     out["owner_name"] = _pod_owner_name(pod)                         # 프로파일 이름 옆에 누구의 것인지(2026-10-18-010)
     out["stt"] = bool(_stt_model())                                  # 음성 인식이 설정된 설치인가 — 거짓이면 화면이 마이크 단추를 숨긴다(2026-10-22-005 R2)
+    from . import stt_stream                                          # 스트리밍 받아쓰기(OMAI-1554, 계약 §5). 거짓이면 화면은 일괄 경로만 쓴다
+    out["stt_stream"] = stt_stream.enabled()                         # AAS_STT_STREAM_URL 이 있으면 참. 마이크 단추는 stt 가 참일 때만 보인다
+    out["stt_stream_max_seconds"] = stt_stream.max_seconds()
     speech = tts.info()                                              # 읽어 주기(chat-reply-tts §3-8). 목록이 깨져도 예외 없이 거짓(리뷰 C1)
     out["tts"], out["tts_voices"] = speech["tts"], speech["voices"]
     try:
@@ -4325,9 +4330,12 @@ def _offline_agent_groups(reg: Registry, user) -> list[dict]:
 
 # 모은 프로파일 목록에서 시간을 넘긴 에이전트와 그 시각(스펙 2026-10-19-018 리뷰 D6). 30초 동안은 다시 부르지 않는다 —
 # map_pods 는 시간을 넘겨도 돌던 스레드를 멈추지 못해, 새로 고칠 때마다 Hermes 를 기다리는 스레드가 쌓였다
+# 건너뛰는 것은 그 읽기가 아직 도는 동안만이다. 재기동 직후 첫 읽기(사이드카 묶음 받기, OKE 10~15초)는 뒤에서 끝나 캐시를 채우므로,
+# 끝난 뒤에도 30초 동안 「응답 없음」을 내면 화면이 정상 자료를 받지 못했다(스펙 2026-11-02-002)
 _PROFILES_ALL_TIMEOUT = 10.0
 _PROFILES_ALL_QUIET = 30.0
 _profiles_all_slow: dict[str, float] = {}
+_profiles_all_reading: dict[str, int] = {}                 # 에이전트별 아직 도는 읽기 수
 
 
 def _profiles_all(reg: Registry, user, auth_enabled: bool, current: Pod) -> dict:
@@ -4338,13 +4346,22 @@ def _profiles_all(reg: Registry, user, auth_enabled: bool, current: Pod) -> dict
     pods, names, mine = _my_agent_pods(reg, user, auth_enabled, current)
     lang = i18n.get_lang()
     now = time.time()
-    quiet = {p.id for p in pods if now - _profiles_all_slow.get(p.id, 0) < _PROFILES_ALL_QUIET}
+    with _lock:
+        quiet = {p.id for p in pods if now - _profiles_all_slow.get(p.id, 0) < _PROFILES_ALL_QUIET and p.id in _profiles_all_reading}
 
     def read(pod: Pod) -> list[dict]:
         i18n.set_lang(lang)                                        # map_pods 의 스레드는 요청 언어를 물려받지 않는다(리뷰 I5)
-        rows = _visible_profile_rows(pod, admin)
-        can = may_use_market("/api/market/install", pod, user, auth_enabled, admin)
-        return issue_acks.apply(pod.id, _with_market_issues(pod, rows) if can else rows, can)   # 스킬 새 버전은 올릴 수 있는 사람에게만(R7). 확인한 주의·안내는 뺀다
+        with _lock:
+            _profiles_all_reading[pod.id] = _profiles_all_reading.get(pod.id, 0) + 1
+        try:
+            rows = _visible_profile_rows(pod, admin)
+            can = may_use_market("/api/market/install", pod, user, auth_enabled, admin)
+            return issue_acks.apply(pod.id, _with_market_issues(pod, rows) if can else rows, can)   # 스킬 새 버전은 올릴 수 있는 사람에게만(R7). 확인한 주의·안내는 뺀다
+        finally:
+            with _lock:
+                left = _profiles_all_reading.pop(pod.id, 1) - 1
+                if left > 0:
+                    _profiles_all_reading[pod.id] = left
     got = collect_all.map_pods([p for p in pods if p.id not in quiet], read, timeout=_PROFILES_ALL_TIMEOUT)
     rows, groups = [], []
     for pod in pods:
@@ -5108,7 +5125,7 @@ class Handler(BaseHTTPRequestHandler):
                             f"{(user or {}).get('email', 'local')} {claimed['profile']}/{claimed['server']} {out['reason']}", pod=claimed["pod"])
             if not out["ok"]:
                 raise mcp_oauth_relay.RelayError(out["message"], 502 if out["reason"] in ("hermes_down", "hermes_rejected") else 400, reason=out["reason"])
-            _forget(pod_obj, ("flow", "credentials", "libraries", "skills", "observed", "activity7", "activity30"))   # 토큰이 생겼다 — 도구·MCP 목록을 다시 읽게
+            _forget(pod_obj, ("flow", "credentials", "credentials_nousage", "libraries", "skills", "observed", "activity7", "activity30"))   # 토큰이 생겼다 — 도구·MCP 목록을 다시 읽게
             page(200, _mcp_oauth_waiting_page(claimed))
         except mcp_oauth_relay.RelayError as exc:
             page(exc.code if exc.code < 500 else 502, _mcp_oauth_error_page(exc, row))
@@ -6616,7 +6633,7 @@ class Handler(BaseHTTPRequestHandler):
                     # 비밀값을 넣거나 지우고(.env 줄) 설정 파일을 고치거나 되돌리고(providers 의 api_key, mcp_servers 의 env·headers)
                     # 모델을 바꾸면(Hermes 가 config.yaml 을 다시 써 providers 의 base_url 등이 바뀐다) 자격증명 표가 바뀌므로 그 캐시(120초)는 남기지 않는다(OMAI-1175)
                     kept = ("flow", "tools", "libraries", "skills", "observed", "activity7", "activity30") if action in ("env_set", "env_clear", "config", "config_revert", "model", "mcp_add", "mcp_remove", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_to_oauth", "channel_save", "channel_test", "pairing_approve", "pairing_revoke") else \
-                        ("flow", "credentials", "tools", "libraries", "skills", "observed", "activity7", "activity30")
+                        ("flow", "credentials", "credentials_nousage", "tools", "libraries", "skills", "observed", "activity7", "activity30")
                     if action in ("config", "config_revert", "mcp", "mcp_add", "mcp_remove", "mcp_install", "mcp_to_oauth"):          # 도구 화면의 MCP 서버 목록이 config.yaml 의 mcp_servers 를 읽는다(OMAI-1249)
                         kept = tuple(k for k in kept if k != "tools")
                     _forget(pod) if action in ("create", "rename", "delete") else _forget(pod, kept)
@@ -7521,7 +7538,7 @@ def _office_route(acc: office_access.Access, method: str, path: str, query: dict
             auto.record_owner(board, task_id, acc.email)
             audit(alias, f"카드 {task_id}")   # i18n-ignore: 사용 기록에 저장되는 문장
         return status, out
-    tm = re.fullmatch(hub_auto.KANBAN + r"/tasks/([^/]+)(?:/([a-z-]+))?", path)
+    tm = hub_auto.TASK_PATH.fullmatch(path)                     # 카드 하위 경로(runs/<번호>/commands 포함, 스펙 2026-11-03-001 X2)도 담당 검사를 받는다
     if tm and not acc.admin:
         assignee = auto.card_assignee(board, tm.group(1))
         if assignee:

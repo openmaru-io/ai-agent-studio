@@ -42,7 +42,7 @@ def pod_values(pod) -> dict:
     """POD 하나의 게이트웨이·문제 프로파일·만료 자격증명. 사이드카 읽기 두 번(채널 상태 파일, 자격증명 파일)."""
     from ..assets import inventory
     chan = channels.collect(pod.hermes_home, pod.container)["totals"]
-    creds = inventory.credentials(pod.hermes_home)["items"]
+    creds = inventory.credentials(pod.hermes_home, usage=False)["items"]   # 「만료」·「백업」 플래그만 센다 — 사용처는 계산하지 않는다(스펙 2026-11-03-003 D5)
     return {"profiles": chan["profiles"], "gateways_up": chan["gateways_up"], "profiles_bad": chan["profiles_with_bad"],
             "creds_expiring": expiring_credentials(creds),
             "messengers_connected": chan["messengers_connected"], "messengers_total": chan["messengers_total"]}

@@ -614,7 +614,7 @@ describe('Cron: 작업 서랍', () => {
 
   it('관리자가 아니면 바꾸는 부분이 없다', async () => {
     const { dlg } = await open('/cron?tab=jobs', JOB({ can_edit: false }));
-    expect(within(dlg).getAllByText('관리자만 바꿀 수 있습니다.').length).toBeGreaterThan(0);
+    expect(within(dlg).getAllByText('이 AI 에이전트 작업공간의 주인, 팀 관리자, 관리자만 바꿀 수 있습니다.').length).toBeGreaterThan(0);
     expect(within(head(dlg)).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['닫기']); // 머리 동작 단추 없음
   });
 

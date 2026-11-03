@@ -157,7 +157,8 @@ def _usage_index(home: Path) -> dict[str, set[str]]:
         for tok in set(_TOKEN.findall(text)):
             index.setdefault(tok, set()).add(label)
 
-    skills = [(md, [p for p in md.parent.rglob("*") if p.is_file() and p.suffix in (".md", ".py", ".sh", ".js")]) for prof, md in hr.skill_files(home)]
+    # 의존성 폴더(node_modules·.venv 등) 안 파일은 사용처가 아니다 — 들어가지 않는다(스펙 2026-11-03-003 D11)
+    skills = [(md, [p for p in hr.search_rglob(md.parent, "*") if p.is_file() and p.suffix in (".md", ".py", ".sh", ".js")]) for prof, md in hr.skill_files(home)]
     scripts = []
     for prof in hr.profiles(home):
         d = prof.path / "scripts"
@@ -228,16 +229,19 @@ def _auth_kind(data, providers) -> str:
     return kind
 
 
-def credentials(home: Path | None = None) -> dict:
+def credentials(home: Path | None = None, usage: bool = True) -> dict:
+    """usage=False: 사용처(`used_by`·「쓰는 곳 없음」)를 계산하지 않는다. 프로파일 목록과 홈 요약은 「만료」·「백업」 플래그만 쓰는데,
+    사용처 계산이 모든 스킬 파일을 읽어 큰 데이터 폴더에서 목록이 10초를 넘겼다(GitHub #1, 스펙 2026-11-03-003 R4·D5).
+    결과 모양이 달라 메모 키도 따로 둔다 — 같은 키면 자격증명 화면이 「쓰는 곳」 빈 결과를 받는다(외부 검토 OV1)."""
     home = home or hr.hermes_home()
     remote.prefetch(home)                                     # 원격이면 묶음을 먼저 받고, 같은 묶음 안에서는 한 번만 만든다(OMAI-1102)
-    return remote.memo(home, "credentials", lambda: _credentials(home))
+    return remote.memo(home, "credentials" if usage else "credentials:nousage", lambda: _credentials(home, usage))
 
 
-def _credentials(home) -> dict:
+def _credentials(home, with_usage: bool = True) -> dict:
     items: list[dict] = []
     share = _Share()
-    usage = _usage_index(home)
+    usage = _usage_index(home) if with_usage else {}
     src_secrets = tr("secrets 파일", "secrets file")
     # AAS 가 넣는 기본 값은 표에서 뺀다 — 같은 값 묶음·합계에도 들지 않게 share.add 전에 거른다(스펙 2026-10-28-006 R3)
     hidden: dict[str, int] = {}
@@ -358,11 +362,18 @@ def _credentials(home) -> dict:
     # secrets 파일은 경로로 참조된다 — 같은 이름이 루트와 프로파일에 따로 있으므로 이름만 보면
     # 프로파일 사본이 루트 정본의 참조를 물려받는다(만료된 사본이 「쓰는 곳 90」 으로 보이던 원인).
     file_items = [i for i in items if i.get("_fname")]
-    if file_items:
+    if file_items and not with_usage:
+        for i in file_items:                                     # 사용처를 계산하지 않는 결과(R4) — 참조 찾기도 하지 않는다(외부 검토 OV2)
+            del i["_fname"]
+    elif file_items:
         texts: list[tuple[str, str, str]] = []
-        for prof, md in hr.skill_files(home):
+        # 의존성 폴더는 들어가지 않고(D11), 원격이면 파일마다 왕복하지 않고 묶어 읽는다(외부 검토 OV2)
+        skills = [(prof, md, [p for p in hr.search_rglob(md.parent, "*") if p.is_file() and p.suffix in (".md", ".py", ".sh", ".js")])
+                  for prof, md in hr.skill_files(home)]
+        read = iter(_read_many([p for _, _, files in skills for p in files]))
+        for prof, md, files in skills:
             texts.append(("" if prof == "default" else prof, tr(f"스킬 {md.parent.name}", f"Skill {md.parent.name}"),
-                          "\n".join(_read(p) for p in md.parent.rglob("*") if p.is_file() and p.suffix in (".md", ".py", ".sh", ".js"))))
+                          "\n".join(next(read) for _ in files)))
         for prof in hr.profiles(home):
             d = prof.path / "scripts"
             if d.is_dir():
@@ -386,7 +397,7 @@ def _credentials(home) -> dict:
                 i["flags"].append(f"{days}일 뒤 만료")  # i18n-ignore: 다른 모듈과 UI 가 맞대어 보는 값
         if i["shared_with"] > 1:
             i["flags"].append(f"같은 값이 {i['shared_with']}곳에")  # i18n-ignore: 플래그 문구는 한국어로 고정(맞대어 보는 값과 한 묶음)
-        if i["set"] and not i["used_count"] and i["source"] in (".env", src_secrets) and "백업·임시 파일" not in i["flags"]:  # i18n-ignore: 플래그 비교
+        if with_usage and i["set"] and not i["used_count"] and i["source"] in (".env", src_secrets) and "백업·임시 파일" not in i["flags"]:  # i18n-ignore: 플래그 비교
             i["flags"].append("쓰는 곳을 찾지 못함")  # i18n-ignore: 다른 모듈이 맞대어 보는 값
     _attach_registry("credential", items)
     # name_pattern: 이 표가 .env 에서 행으로 싣는 이름의 규칙. 화면이 새 비밀값 이름이 표에 나타날지 같은 식으로 미리 알린다(스펙 2026-10-14-025 D9)
@@ -590,10 +601,15 @@ def _mcp(home) -> tuple[list[dict], list[dict]]:
 # ---------------------------------------------------------------------------
 
 def _dist_infos(site: Path) -> list[dict]:
+    # top_level.txt 는 묶어 읽는다. 가상 환경 폴더를 묶음에서 건너뛰면(스펙 2026-11-03-003 R2) 패키지마다 사이드카 왕복이 생겼다(R9·D14).
+    # 작은 파일이라 크기를 먼저 묻지 않고(_read_many 는 파일마다 stat 한다) 바로 묶어 읽는다. 없는 파일은 빈 글(_read 와 같다)
+    dists = list(site.glob("*.dist-info"))
+    tops = [d / "top_level.txt" for d in dists]
+    tops_text = remote.read_texts(tops) if isinstance(site, remote.RemotePath) else [_read(p) for p in tops]
     out = []
-    for d in site.glob("*.dist-info"):
+    for d, text in zip(dists, tops_text):
         name, _, version = d.name[: -len(".dist-info")].rpartition("-")
-        tops = [t.strip() for t in _read(d / "top_level.txt").splitlines() if t.strip()]
+        tops = [t.strip() for t in text.splitlines() if t.strip()]
         out.append({"name": name or d.name, "version": version, "modules": tops or [name.replace("-", "_").lower()]})
     return out
 

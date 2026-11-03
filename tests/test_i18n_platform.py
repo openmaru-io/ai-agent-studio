@@ -72,8 +72,8 @@ class PlatformI18nTest(unittest.TestCase):
             except auth.AuthError as exc:
                 return str(exc)
         r = self._both(f)
-        self.assertEqual(r["en"], "Wrong username or password.")
-        self.assertEqual(r["ko"], "아이디 또는 비밀번호가 맞지 않습니다.")
+        self.assertEqual(r["en"], "Wrong email or password.")
+        self.assertEqual(r["ko"], "이메일 또는 비밀번호가 맞지 않습니다.")
 
     def test_remote_relative_error(self):
         def f():

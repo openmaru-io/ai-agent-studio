@@ -766,14 +766,13 @@ async def endpoint(ws: WebSocket) -> None:
     if draining():
         await _refuse(ws, protocol.RESTART, "restart", retry_after_ms=random.randint(5000, 30000))
         return
-    if not origin_ok(view):
-        print(f"웹소켓 Origin 거절: {view.headers.get('origin', '')[:120]!r} host={view._effective_host()[:80]!r}", flush=True)   # i18n-ignore: 로그
+    refused, user = await admit(ws, view)
+    if refused == "origin":
         m.stats["refused_origin"] += 1
         await _refuse(ws, protocol.FORBIDDEN, "origin")
         return
     cookie = ws.headers.get("cookie", "")
-    user = await run_in_threadpool(a.user, cookie) if a.enabled else None
-    if a.enabled and not user:
+    if refused:
         m.stats["refused_auth"] += 1
         await _refuse(ws, protocol.UNAUTHORIZED, "login_required")
         return
@@ -803,6 +802,20 @@ async def endpoint(ws: WebSocket) -> None:
             sender.cancel()
         m.remove(conn)
         server.PRESENCE.release(conn.id)                  # 이 연결이 붙잡던 사람은 서버가 더 쓰지 않는다 — TTL(30초) 뒤 빠진다(스펙 2026-10-26-001 D15)
+
+
+async def admit(ws: WebSocket, view: _View | None = None) -> tuple[str, dict | None]:
+    """받아들인 웹소켓의 Origin·세션 쿠키 검사. (거절 이유, 사용자). 이유는 ""(통과)·"origin"·"login_required".
+    /ws 와 받아쓰기 스트림(stt_stream.py)이 함께 쓴다 — 출처·로그인 규칙을 두 벌 두지 않는다. 로그인이 꺼져 있으면 사용자는 None."""
+    view = view or _View(ws)
+    if not origin_ok(view):
+        print(f"웹소켓 Origin 거절: {view.headers.get('origin', '')[:120]!r} host={view._effective_host()[:80]!r} path={ws.url.path[:60]!r}", flush=True)   # i18n-ignore: 로그
+        return "origin", None
+    a = server.auth()
+    user = await run_in_threadpool(a.user, ws.headers.get("cookie", "")) if a.enabled else None
+    if a.enabled and not user:
+        return "login_required", None
+    return "", user
 
 
 async def _refuse(ws: WebSocket, code: int, reason: str, retry_after_ms: int | None = None) -> None:

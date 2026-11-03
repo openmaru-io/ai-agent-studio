@@ -144,6 +144,45 @@ class TokenModuleTest(unittest.TestCase):
             tokens.notice_ack(exp["id"], EMAILS[1])                                       # 남의 알림
         self.assertEqual(tokens.inbox_items(EMAILS[0], now=1003.0 + tokens.NOTICE_KEEP + 10), [])   # 14일 뒤(만료 지난 week 도 빠짐)
 
+    def test_chat_send_이전은_전체와_스킬_개발용_행에만_한_번(self):
+        """스펙 2026-11-03-001 R2: 보내기 도구 3개를 chat:send 로 옮겼다. 옛 「전체」·「스킬 개발용」 행에만 더하고 「읽기만」은 그대로."""
+        from aas.auth import tokens
+        old = {"all": " ".join(s for s in tokens.SCOPES if s != "chat:send"),
+               "skill-dev": "chat files:read files:write skills:write secrets:write approve", "read": "chat files:read"}
+        with tokens._conn() as conn:
+            for b, sc in old.items():
+                conn.execute("INSERT INTO personal_tokens (id, kind, family, user_email, name, bundle, scopes, token_hash, prefix, created, expires) "
+                             "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f"mig-{b}", "pat", f"mig-{b}", EMAILS[0], b, b, sc, f"h-mig-{b}", "p", 1000.0, 9e12))
+        for _ in range(2):                                                                 # 두 번 돌려도 같다
+            with tokens._conn() as conn:
+                tokens.migrate_chat_send(conn)
+        with tokens._conn() as conn:
+            got = {r["bundle"]: r["scopes"].split() for r in conn.execute("SELECT bundle, scopes FROM personal_tokens WHERE id LIKE 'mig-%'")}
+        self.assertEqual(got["read"], ["chat", "files:read"])
+        self.assertEqual(sorted(got["skill-dev"]), sorted(tokens.BUNDLES["skill-dev"]))
+        self.assertEqual(sorted(got["all"]), sorted(tokens.SCOPES))
+        self.assertEqual((got["skill-dev"].count("chat:send"), got["all"].count("chat:send")), (1, 1))
+        self.assertIn("chat:send", tokens.BUNDLES["all"])
+        self.assertNotIn("chat:send", tokens.BUNDLES["read"])
+        with tokens._conn() as conn:
+            r = dict(conn.execute("SELECT * FROM personal_tokens WHERE id='mig-skill-dev'").fetchone())
+        new, _ = tokens.rotate(r, 30, now=2000.0)
+        self.assertEqual(sorted(new["scopes"]), sorted(tokens.BUNDLES["skill-dev"]))       # 교체는 행의 범위를 복사한다
+
+    def test_반영_전에_만든_읽기만_연결에만_안내_표시(self):
+        """스펙 2026-11-03-001 DD7: 이전이 처음 돈 시각보다 먼저 만든 「읽기만」 줄에만 read_send_removed."""
+        from aas.auth import tokens
+        cutoff = tokens.chat_send_cutoff()
+        self.assertGreater(cutoff, 0)
+        old, _ = tokens.issue(self.user(), "old", "read", 30, now=cutoff - 100)
+        dev, _ = tokens.issue(self.user(), "dev", "skill-dev", 30, now=cutoff - 100)
+        new, _ = tokens.issue(self.user(), "new", "read", 30, now=cutoff + 1)
+        got = {t["name"]: t["read_send_removed"] for t in tokens.list_for(EMAILS[0], now=cutoff + 2)}
+        self.assertEqual(got, {"old": True, "dev": False, "new": False})
+        self.assertFalse(new["read_send_removed"])
+        self.assertTrue(old["read_send_removed"])
+        self.assertFalse(dev["read_send_removed"])
+
     def test_DB_이전_표_목록에_들어_있다(self):
         from aas.auth import tokens
         from aas.common import dbmigrate

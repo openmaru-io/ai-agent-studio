@@ -112,7 +112,7 @@ def blockers(name: str, version: str | None, namespace: str, files: list[tuple[s
         out.append(tr("SKILL.md 의 name 은 소문자·숫자·하이픈으로 2~63자여야 합니다", "The name in SKILL.md must be 2-63 lowercase letters, digits or hyphens"))
         return out
     if name in skill_bundle.names():
-        out.append(tr("AAS 기본 스킬은 레포에서 관리합니다. 레포의 묶음 버전을 올려 배포하세요", "AAS built-in skills are managed in the repository. Bump the bundle version there"))
+        out.append(tr("AAS 기본 스킬은 AAS 서버가 관리합니다. 서버를 새 버전으로 반영해 배포하세요", "AAS built-in skills are managed by the AAS server. Deploy a new server version to update them"))
     if mp._exists_readonly(name):
         out.append(tr("공개 미러에 같은 이름이 있습니다 — 다른 이름을 쓰세요", "The public mirror has a package with that name. Use another name"))
     from . import hub_hide

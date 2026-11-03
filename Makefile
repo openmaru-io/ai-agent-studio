@@ -49,7 +49,7 @@ push: ## 서버·읽기 사이드카 이미지를 여러 아키텍처로 빌드�
 	@[ -n "$(REGISTRY)" ] || { echo "REGISTRY 를 정하세요. 예: make push REGISTRY=ghcr.io/<조직> VERSION=$(VERSION)" >&2; exit 2; }
 	docker buildx inspect aas-multi >/dev/null 2>&1 || docker buildx create --name aas-multi >/dev/null
 	docker buildx build --builder aas-multi --platform $(PLATFORMS) $(BUILD_INFO) -t $(REGISTRY)/cogentai-aas-server:$(VERSION) --push .
-	docker buildx build --builder aas-multi --platform $(PLATFORMS) -t $(REGISTRY)/cogentai-aas-sidecar:$(VERSION) --push sidecar
+	docker buildx build --builder aas-multi --platform $(PLATFORMS) --build-arg AAS_VERSION=$(VERSION) -t $(REGISTRY)/cogentai-aas-sidecar:$(VERSION) --push sidecar
 
 lint-ui: ## 화면 린트와 타입 검사
 	cd ui && npm ci --silent && npm run lint && npm run tsc
@@ -62,7 +62,7 @@ build-ui: ## 화면 빌드 + 에어갭 검사(외부 주소가 섞이면 실패)
 
 docker: ## 서버·읽기 사이드카 이미지
 	docker build $(BUILD_INFO) -t $(IMG) .
-	docker build -t $(SIDECAR_IMG) sidecar
+	docker build --build-arg AAS_VERSION=$(VERSION) -t $(SIDECAR_IMG) sidecar
 
 verify-keycloak: ## AAS 전용 Keycloak 설치를 kind 에서 확인(docker·kind 필요, 약 5분). 사내 레포에만 있다
 	@test -x deploy/k8s/keycloak/verify-kind.sh || { echo "deploy/k8s/keycloak 은 공개본에 없다(쿠버네티스 설치는 공개하지 않았다)" >&2; exit 2; }

@@ -528,5 +528,38 @@ class HttpTest(unittest.TestCase):
             lim.release("local")
 
 
+class MagpieVoicesTest(unittest.TestCase):
+    """Nemotron(Magpie) 엔진으로 바꿀 때(OMAI-1554, 스펙 2026-10-31-001 §7-2 G·D25). 목록은 설정 값(AAS_TTS_VOICES)이 정한다."""
+    MAGPIE = [{"id": "sofia", "name": {"ko": "소피아", "en": "Sofia"}, "gender": "female", "sample": "안녕하세요. 소피아입니다."},
+              {"id": "jason", "name": {"ko": "제이슨", "en": "Jason"}, "gender": "male", "sample": "안녕하세요. 제이슨입니다."}]
+
+    def test_저장된_옛_목소리_id_가_목록에_없으면_조용히_첫_목소리_sofia(self):
+        with mock.patch.dict(os.environ, {"AAS_TTS_MODEL": "cogentai-tts", "AAS_TTS_VOICES": json.dumps(self.MAGPIE, ensure_ascii=False)}):
+            vs = tts.voices()
+            self.assertEqual([v["id"] for v in tts.info()["voices"]], ["sofia", "jason"])
+        self.assertEqual(tts.resolve_voice("ko-female-calm-a", vs), "sofia")      # 옛 Qwen3-TTS 목소리(D25, 안내 없음)
+        self.assertEqual(tts.resolve_voice("jason", vs), "jason")
+
+    def test_숫자는_읽는_말로_바꾸지_않는다_엔진_apply_TN_과_이중_변환이_되지_않게(self):
+        # Magpie 는 apply_TN=True 로 숫자를 읽는 말로 바꾼다. AAS 가 먼저 「세 시」로 바꾸면 엔진 TN 이 틀린 문맥을 받는다
+        for text in ("오후 3시 30분에 2,000원을 냈습니다.", "2026년 11월 18일, 15% 할인", "회의실 3개, 1.5배"):
+            out = tts.normalize(text)
+            self.assertEqual("".join(ch for ch in out if ch.isdigit()), "".join(ch for ch in text if ch.isdigit()), text)
+
+
+class PhoneNumberTest(unittest.TestCase):
+    """전화번호는 식별자로 지우지 않고 읽는다(OMAI-1554). 붙임표 2개 이상이라 _dense_identifier 가 파일 이름·UUID 처럼 지웠다."""
+
+    def test_전화번호는_남는다(self):
+        for phone in ("010-1234-5678", "02-123-4567", "031-987-6543", "+82-10-1234-5678", "1588-1234"):
+            out = tts.normalize(f"문의는 {phone} 로 연락 주세요.")
+            self.assertIn(phone, out, phone)
+
+    def test_전화번호와_닮은_식별자는_계속_지운다(self):
+        for ident in ("2026-10-31-001", "a1b2-c3d4-e5f6", "v1.0.5-rc-2", "550e8400-e29b-41d4-a716-446655440000", "12-34-56-78-90"):
+            out = tts.normalize(f"값은 {ident} 입니다.")
+            self.assertNotIn(ident, out, ident)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -180,6 +180,11 @@ class OAuthTest(unittest.TestCase):
         self.assertIn("oa-a", page)
         self.assertRegex(page, r"value=all checked")                                    # 기본 묶음은 「전체」(§3-1)
         self.assertNotIn(" disabled", page)
+        # 「읽기만」은 보내지 못한다고 적고, 보내는 묶음은 위험 줄 맨 앞에 「일을 시킴」(스펙 2026-11-03-001 DD8)
+        self.assertIn("<b>읽기만</b> — 대화를 보고 결과를 받습니다. 메시지는 보낼 수 없습니다", page)
+        for key in ("skill-dev", "all"):
+            self.assertRegex(page, rf"id=warn-{key} [^>]*>▸ AI 에이전트에게 일을 시킴\(터미널 실행 포함\) · 위험 명령 승인")
+        self.assertNotIn("id=warn-read", page)
 
     def test_에이전트가_없으면_허용을_막는다(self):
         _, reg = self.register()

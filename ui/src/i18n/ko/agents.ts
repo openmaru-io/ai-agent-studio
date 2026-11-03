@@ -14,6 +14,8 @@ export default {
   'agents.reasonIdle': '오래 쓰지 않아 멈춤',
   'agents.reasonKeycloak': 'OIDC 그룹에서 빠져 멈춤',
   'agents.reasonAdmin': '관리자가 멈춤',
+  'agents.reasonDisabled': '사용자 사용 중지로 멈춤',
+  'agents.reasonDeleted': '사용자 계정 삭제로 멈춤',
   'agents.createStarted': 'AI 에이전트 작업공간 {name} 을(를) 만들기 시작했습니다. 준비되면 사용할 수 있습니다',
   'agents.nameOptional': '이름(선택)',
   'agents.namePlaceholder': '예: 마케팅 도우미',

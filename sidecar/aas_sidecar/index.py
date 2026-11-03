@@ -52,7 +52,13 @@ class ChangeIndex:
         with self._lock:
             st = self._state.get(key)
             if fresh or st is None or st["prev"] is None or self._clock() - st["at"] >= REUSE:
-                cursor = self._record(key, self._scan(params))
+                listing = self._scan(params)
+                if listing.get("truncated"):
+                    # 항목 상한에서 잘린 목록을 견주면 잘린 나머지가 「없어짐」으로 적혀 서버가 있는 파일을 없다고 답한다.
+                    # 색인을 버리고 reset 으로 알린다 — 서버는 잘린 묶음으로 처리한다(스펙 2026-11-03-003 R7·D12)
+                    self._state.pop(key, None)
+                    return {"cursor": "", "reset": True, "truncated": True}
+                cursor = self._record(key, listing)
                 st = self._state[key]
             else:
                 cursor = f"{self._epoch}:{st['gen']}"

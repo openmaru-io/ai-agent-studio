@@ -294,5 +294,5 @@ export default {
   'market.hub.hiddenBy': 'Hidden by',
   'market.hub.hiddenTs': 'Hidden at',
   'market.hub.withdrawn': 'Withdrawn from the skill hub — installed skills stay',
-  'market.hub.builtin': 'AAS built-in skills are managed in the repository',
+  'market.hub.builtin': 'AAS built-in skills are managed by the AAS server',
 } as Record<string, string>;
