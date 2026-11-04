@@ -38,11 +38,11 @@ class FakeHub:
         FakeHub.calls.append(("history", profile))
         return []
 
-    def create_session(self, profile):
+    def create_session(self, profile, by=""):
         FakeHub.calls.append(("session", profile))
         return {"session_id": "s1", "profile": profile, "title": ""}
 
-    def resume(self, profile, stored):
+    def resume(self, profile, stored, by=""):
         FakeHub.calls.append(("resume", profile))
         return {"session_id": "s2", "profile": profile, "title": ""}
 
@@ -107,7 +107,7 @@ class HttpTest(unittest.TestCase):
         """Hermes 에 대화가 없으면 503 이 아니라 404 — 화면이 지워진 대화를 5분 동안 다시 열지 않게(스펙 2026-10-20-030 R9)."""
         from aas.hermes.hermes_chat import ChatNotFound
 
-        def gone(profile, stored):
+        def gone(profile, stored, by=""):
             raise ChatNotFound("session not found")
         with mock.patch.object(FakeHub, "resume", side_effect=gone, autospec=False):
             status, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x"})

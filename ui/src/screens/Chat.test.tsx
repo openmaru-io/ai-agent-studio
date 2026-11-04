@@ -126,7 +126,7 @@ describe('Chat: 에이전트 목록', () => {
     // 상태를 받기 전: 제목 아래 진행 막대(다른 화면의 ScreenLoading 과 같다)
     expect(screen.getByRole('heading', { level: 1, name: '채팅' })).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).toBeInTheDocument();
-    await screen.findByText('왼쪽에서 AI 에이전트를 고르면 바로 대화가 열립니다.');
+    await screen.findByText('왼쪽에서 세션을 고르거나 「새 세션」을 시작하세요.');
     expect(screen.getByRole('heading', { level: 1, name: '채팅' })).toBeInTheDocument();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
     act(() => {
@@ -156,7 +156,7 @@ describe('Chat: 에이전트 목록', () => {
 
   it('에이전트마다 제목·이름·상태·마지막 글을 보인다. 왼쪽에서 고르라는 안내가 있다', async () => {
     mount();
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 바로 대화가 열립니다.')).toBeInTheDocument();
+    expect(await screen.findByText('왼쪽에서 세션을 고르거나 「새 세션」을 시작하세요.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^마케팅 와 대화/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^ops 와 대화, 게이트웨이 중지됨/ })).toBeInTheDocument();
     expect(screen.getByText('실패 2')).toBeInTheDocument();
@@ -183,9 +183,10 @@ describe('Chat: 에이전트 목록', () => {
   it('에이전트를 누르면 대화가 열리고 머리말에 이름이 나온다. 뒤로 가면 목록으로 돌아간다', async () => {
     const { user } = await open();
     expect(screen.getByRole('region', { name: '마케팅 와 나눈 대화' })).toBeInTheDocument();
-    expect(screen.getByText('아래에 메시지를 쓰면 대화가 시작됩니다.')).toBeInTheDocument();
+    // 세션 중심 채팅: 에이전트를 고르면 새 세션이 열리고, 첫 말 전에는 큰 안내 화면이다
+    expect(screen.getByTestId('new-session-hero')).toHaveTextContent('무엇을 맡길까요?');
     await user.click(screen.getByRole('button', { name: 'AI 에이전트 목록으로' }));
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 바로 대화가 열립니다.')).toBeInTheDocument();
+    expect(await screen.findByText('왼쪽에서 세션을 고르거나 「새 세션」을 시작하세요.')).toBeInTheDocument();
   });
 
   it('?agent= 로 들어오면 그 에이전트가 열린다', async () => {
@@ -357,15 +358,14 @@ describe('Chat: 보내기와 답', () => {
     const user = userEvent.setup();
     const reply = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }));
     let up = false;
-    let n = 0;
     const fn = vi.fn((url: string) => {
       const u = String(url);
       if (u.startsWith('/api/chat/status')) return reply(STATUS());
       if (u.startsWith('/api/chat/history')) return reply({ sessions: [{ id: 'old1', title: '지난', source: 'aas' }] });
       if (u.startsWith('/api/chat/resume')) {
-        n += 1;
-        return up || n === 1 ? reply({ session_id: 's2', profile: 'ma', title: '지난', reused: true, history: false }) : reply({ error: 'down' }, 503);
+        return up ? reply({ session_id: 's2', profile: 'ma', title: '지난', reused: true, history: false }) : reply({ error: 'down' }, 503);
       }
+      if (u.startsWith('/api/chat/session')) return reply({ session_id: 's1', profile: 'ma', title: '' }); // 에이전트를 고르면 새 세션
       return reply({ ok: true });
     });
     vi.stubGlobal('fetch', fn);
@@ -395,10 +395,9 @@ describe('Chat: 보내기와 답', () => {
       if (u.startsWith('/api/chat/status')) return reply(STATUS());
       if (u.startsWith('/api/chat/history')) return reply({ sessions: [{ id: 'old1', title: '지난', source: 'aas' }] });
       if (u.startsWith('/api/chat/resume'))
-        return fn.mock.calls.filter(([x]) => String(x).startsWith('/api/chat/resume')).length > 1
-          ? reply({ error: 'gone', code: 'not_found' }, 404)
-          : reply({ session_id: 's2', profile: 'ma', title: '지난' });
-      if (u.startsWith('/api/chat/session')) return reply({ session_id: 's3', profile: 'ma', title: '' });
+        return reply({ error: 'gone', code: 'not_found' }, 404); // 에이전트를 고르면 새 세션(s3)이고, 끊긴 뒤 다시 열 때 저장 대화가 없다
+      if (u === '/api/chat/session')
+        return reply({ session_id: fn.mock.calls.filter(([x]) => String(x) === '/api/chat/session').length > 1 ? 's4' : 's3', profile: 'ma', title: '' });
       return reply({ ok: true });
     });
     vi.stubGlobal('fetch', fn);
@@ -408,7 +407,7 @@ describe('Chat: 보내기와 답', () => {
     FakeES.all.at(-1)!.onerror?.();
     expect(await screen.findByRole('alert')).toHaveTextContent('이 대화를 찾을 수 없습니다');
     await user.click(screen.getByRole('button', { name: '새 대화' }));
-    await waitFor(() => expect(fn.mock.calls.some(([u]) => String(u).startsWith('/api/chat/session'))).toBe(true));
+    await waitFor(() => expect(fn.mock.calls.filter(([u]) => String(u) === '/api/chat/session').length).toBe(2));
   });
 });
 
@@ -556,7 +555,7 @@ describe('Chat: 대화 메뉴와 지난 대화', () => {
     expect(screen.queryByRole('menuitem', { name: /지난 대화 보기/ })).not.toBeInTheDocument();
     await user.keyboard('{Escape}');
     await user.click(screen.getByRole('button', { name: /새 대화 시작/ }));
-    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toHaveLength(1));
+    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toHaveLength(2)); // 에이전트를 고를 때 한 번 + 새 대화 한 번
   });
 
   it('지난 대화: 기본은 크론을 빼고 보이며, 고르면 이어 쓴다', async () => {
@@ -670,8 +669,9 @@ describe('Chat — 여러 에이전트 묶음', () => {
     expect(screen.queryByRole('group', { name: /관리자 AAS/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^관리자 AAS 와 대화, 지금 AI 에이전트 작업공간/ })).toHaveTextContent('지금 AI 에이전트 작업공간');
     await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 main 와 대화/ }));
-    await waitFor(() => expect(fn.mock.calls.some((c) => String(c[0]) === '/api/chat/history?profile=main&pod=b')).toBe(true));
-    expect(await screen.findByText('마케팅 도우미 / main')).toBeInTheDocument(); // 대화 머리(디자인 D4)
+    // 에이전트를 고르면 그 묶음(pod b)의 main 으로 새 세션
+    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toContainEqual({ profile: 'main', pod: 'b' }));
+    expect(await screen.findByText('마케팅 도우미 / main 에서 실행')).toBeInTheDocument(); // 대화 머리(디자인 D4)
     expect(head).toBeInTheDocument();
   });
 
@@ -700,17 +700,19 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const box = await screen.findByRole('textbox', { name: /^관리자 AAS 에게 보낼 메시지/ });
     expect(box).toHaveAttribute('placeholder', '관리자 AAS 에게 보낼 메시지를 입력하세요 (/ 명령·스킬)'); // 「/」 스킬 안내(스펙 2026-10-19-012 DD7)
     const head = screen.getByRole('region', { name: /관리자 AAS/ });
-    expect(within(head).getByTitle('관리자 AAS · 프로파일 main')).toHaveTextContent(/^관리자 AAS$/);
-    // 대화를 시작하기 전의 빈 화면 타일도 답한 사람과 같은 이름 값(title)을 쓴다
-    expect(within(screen.getByRole('log')).getByText('관리자 AAS')).toBeInTheDocument();
-    expect(within(screen.getByRole('log')).queryByText('main')).toBeNull();
+    // 머리 둘째 줄: 이 세션이 도는 에이전트(프로파일 이름 없이)
+    expect(within(screen.getByTestId('chat-head')).getByText('관리자 AAS 에서 실행')).toBeInTheDocument();
+    // 대화를 시작하기 전의 새 세션 화면도 같은 이름을 쓴다
+    expect(within(screen.getByTestId('new-session-hero')).getByText(/관리자 AAS 에게 새 세션으로/)).toBeInTheDocument();
+    expect(within(screen.getByTestId('new-session-hero')).queryByText(/\bmain\b/)).toBeNull();
+    expect(head).toBeInTheDocument();
   });
 
   it('머리 없는 다른 에이전트의 줄을 누르면 그 에이전트로 연다(C3)', async () => {
     const user = userEvent.setup();
     const fn = mount('/chat', GROUPS([{ pod: 'c', configured: true, name: '영업 도우미', primary: 'main', agents: [{ name: 'main' }], sessions: [] }]));
     await user.click(await screen.findByRole('button', { name: /^영업 도우미 와 대화/ }));
-    await waitFor(() => expect(fn.mock.calls.some((c) => String(c[0]) === '/api/chat/history?profile=main&pod=c')).toBe(true));
+    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toContainEqual({ profile: 'main', pod: 'c' }));
     expect(screen.getByRole('button', { name: /^영업 도우미 와 대화/ })).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('button', { name: /^관리자 AAS 와 대화/ })).toHaveAttribute('aria-current', 'false');
   });
@@ -869,7 +871,7 @@ describe('Chat: 말로 입력', () => {
     fireEvent.click(await screen.findByRole('button', { name: '말로 입력' }));
     await screen.findByText('0:00 / 1:00');
     await user.click(screen.getByRole('button', { name: /새 대화 시작/ }));
-    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toHaveLength(1));
+    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toHaveLength(2));
     await waitFor(() => expect(screen.queryByText('0:00 / 1:00')).toBeNull());
     expect(m.tracks[0].stop).toHaveBeenCalled();
     expect(postedTo(fn, '/api/chat/transcribe')).toHaveLength(0);
@@ -999,18 +1001,18 @@ describe('Chat — 딥 링크', () => {
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
     await user.click(screen.getByRole('button', { name: 'AI 에이전트 목록으로' }));
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat$/));
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 바로 대화가 열립니다.')).toBeInTheDocument();
+    expect(await screen.findByText('왼쪽에서 세션을 고르거나 「새 세션」을 시작하세요.')).toBeInTheDocument();
     expect(store.profile).toBe('');
     await user.click(screen.getByRole('button', { name: '브라우저 뒤로' }));
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b$/));
     expect(await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ })).toBeInTheDocument();
   });
 
-  it('주소와 같은 에이전트를 다시 누르면 주소를 바꾸지 않고 직접 연다(외부 검토 M3)', async () => {
+  it('주소와 같은 에이전트를 다시 누르면 주소를 바꾸지 않고 그 에이전트로 새 세션을 연다(외부 검토 M3)', async () => {
     const user = userEvent.setup();
     mount('/chat?agent=plan&pod=b', GROUPS);
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
-    const spy = vi.spyOn(store, 'openAgent');
+    const spy = vi.spyOn(store, 'startNew');
     await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
     expect(spy).toHaveBeenCalledWith('plan', 'b');
     expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b$/);
@@ -1159,5 +1161,14 @@ describe('Chat: 읽어 주기', () => {
     expect(readAloud.snap.phase).not.toBe('idle');
     await user.click(screen.getByRole('button', { name: /^Zed 와 대화/ }));
     await waitFor(() => expect(readAloud.snap.phase).toBe('idle'));
+  });
+});
+
+describe('Chat — 세션 목록', () => {
+  it('「새 세션」은 AI 에이전트 찾기 칸으로 포커스를 옮긴다', async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /골라 새 세션을 시작/ }));
+    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: /에이전트/ }));
   });
 });

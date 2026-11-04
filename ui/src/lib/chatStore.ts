@@ -93,6 +93,45 @@ export const PRIMARY = '@primary';
 
 const key = (pod: string | undefined, profile: string) => `${pod ?? ''}|${profile}`;
 
+/** 세션 목록 한 줄의 상태. waiting: 되묻기·승인이 내 답을 기다림, running: 답하는 중, done: 끝났고 아직 안 봄, idle: 끝남, closed: 끊김 */
+export type SessionState = 'waiting' | 'running' | 'done' | 'idle' | 'closed';
+/** 서버 세션 목록(/api/chat/sessions)의 한 줄 */
+export interface LiveSessionRow {
+  session_id: string;
+  pod?: string;
+  agent_name?: string;
+  profile: string;
+  title?: string;
+  stored_id?: string;
+  created?: number;
+  last_at?: number;
+  state?: 'waiting' | 'running' | 'idle' | 'closed';
+  pending?: string[];
+}
+/** 채팅 왼쪽 세션 목록의 한 줄(이 탭에서 연 세션 + 서버에만 있는 내 세션) */
+export interface SessionRow {
+  id: string;
+  pod?: string;
+  profile: string;
+  title: string;
+  state: SessionState;
+  unread: number;
+  /** 마지막 활동(ms) */
+  at: number;
+  /** 이 탭이 아직 받지 않는 서버 세션 */
+  remote?: boolean;
+  storedId?: string;
+}
+const DISMISSED_KEY = 'aas-chat-dismissed';
+function readDismissed(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-200) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 // ---- 보일 이름(스펙 2026-10-19-013) ----
 // 프로파일이 하나뿐인 에이전트는 프로파일 이름(main) 대신 에이전트 이름을 보인다. 채팅 목록·대화 머리·답한 사람·팝업·명령 팔레트가 함께 쓴다.
 // 에이전트 id(pod)는 어디에도 보이지 않는다(2026-10-19-003) — 이름이 없으면 프로파일 이름으로 돌아간다(리뷰 R2).
@@ -132,6 +171,14 @@ export class ChatStore {
   currentId: string | null = null;
   profile = '';
   draft = '';
+  /** 세션별 입력 중이던 글. 키는 세션 id, 아직 세션이 없는 새 대화는 `new|<pod>|<프로파일>` */
+  private drafts: Record<string, string> = {};
+  /** 서버가 알려 준 내 세션들(다른 탭·새로 고침 전에 연 세션 포함) */
+  liveRows: LiveSessionRow[] = [];
+  /** 목록에서 닫은 세션(이 브라우저에만) */
+  private dismissed: Set<string> = typeof localStorage === 'undefined' ? new Set() : readDismissed();
+  /** 세션별 마지막 활동 시각(ms) */
+  private lastAt: Record<string, number> = {};
   opening = '';
   notice = '';
   version = 0;
@@ -382,6 +429,8 @@ export class ChatStore {
       this.listen(S, this.topicFor(S));
     }
     this.active[key(S.pod, S.profile)] = S.id;
+    this.lastAt[S.id] ??= Date.now();
+    this.dismissed.delete(S.id);
     if (S.profile === this.profile && S.pod === this.status?.pod) {
       this.currentId = S.id;
       S.unread = 0;
@@ -473,8 +522,9 @@ export class ChatStore {
     }
   }
 
+  /** 이 대화를 계속 잇는가. 세션 여러 개가 함께 돌므로 목록에서 닫지 않은 세션은 모두 잇는다 */
   private ownsActive(S: Session): boolean {
-    return this.active[key(S.pod, S.profile)] === S.id;
+    return this.sessions[S.id] === S && !this.dismissed.has(S.id);
   }
 
   private stopReconnect(S: Session) {
@@ -583,6 +633,8 @@ export class ChatStore {
       S.id = id;
       this.sessions[id] = S;
       for (const k of Object.keys(this.active)) if (this.active[k] === old) this.active[k] = id;
+      if (this.lastAt[old]) this.lastAt[id] = this.lastAt[old];
+      if (this.drafts[old] !== undefined) this.drafts[id] = this.drafts[old];
       if (this.currentId === old) this.currentId = id;
       this.recent.delete(old);
     }
@@ -631,6 +683,7 @@ export class ChatStore {
       return;
     }
     if (!applyEvent(S, ev)) return;
+    this.lastAt[S.id] = Date.now();
     if (S.id !== this.currentId && (ev.type === 'message.complete' || ev.type.endsWith('.request'))) S.unread++;
     this.notify();
   }
@@ -684,11 +737,150 @@ export class ChatStore {
     }
   }
 
+  /** 같은 에이전트로 새 대화. 앞 대화는 닫지 않는다 — 세션 목록에 남아 백그라운드에서 계속 답한다 */
   async newChat() {
     if (!this.profile) return;
+    await this.startNew(this.profile, this.status?.pod);
+  }
+
+  // ---- 세션 목록(세션 중심 채팅) ----
+  private draftKey(id: string | null = this.currentId, pod = this.status?.pod, profile = this.profile): string {
+    return id ?? `new|${pod ?? ''}|${profile}`;
+  }
+  /** 입력 칸이 사라질 때(다른 세션으로 옮김) 쓰던 글을 그 세션 몫으로 둔다 */
+  stashDraft(id: string | null, pod: string | undefined, profile: string, text: string) {
+    const k = this.draftKey(id, pod, profile);
+    if (text) this.drafts[k] = text;
+    else delete this.drafts[k];
+  }
+  private restoreDraft() {
+    this.draft = this.drafts[this.draftKey()] ?? '';
+  }
+  /** 에이전트를 골라 새 세션을 시작한다. 앞 세션들은 닫지 않는다. 아직 말이 없는 세션은 목록에 보이지 않는다(sessionRows) */
+  startNew(profile: string, pod?: string): Promise<Session | null> {
+    // 목록을 이미 읽었으면 고르기는 바로 한다 — 뒤따르는 주소 맞추기가 같은 대상을 보고 다시 열지 않게
+    const run = () => {
+      this.select(pod ?? this.currentPod);
+      this.profile = this.known(pod ? profile : this.resolve(profile));
+      this.currentId = null;
+      this.notice = '';
+      this.restoreDraft();
+      this.notify();
+      return this.status?.configured ? this.startSession() : Promise.resolve(null);
+    };
+    return this.status ? run() : this.preload().then(run);
+  }
+  /** 목록의 세션을 연다. 이 탭이 받는 세션이면 바로, 서버에만 있으면 붙어서 받는다 */
+  async focus(id: string): Promise<boolean> {
+    await this.preload();
+    const S = this.sessions[id];
+    if (S) {
+      this.select(S.pod);
+      this.profile = S.profile;
+      this.currentId = S.id;
+      this.active[key(S.pod, S.profile)] = S.id;
+      S.unread = 0;
+      this.notice = '';
+      this.restoreDraft();
+      this.notify();
+      if (S.closed && !S.reconnect) this.reopenNow(S);
+      return true;
+    }
+    const row = this.liveRows.find((r) => r.session_id === id);
+    if (!row) return false;
+    this.select(row.pod);
+    this.profile = row.profile;
     this.currentId = null;
-    delete this.active[key(this.status?.pod, this.profile)];
-    await this.startSession();
+    this.notice = '';
+    this.opening = row.profile;
+    this.notify();
+    try {
+      // 저장 id 가 있으면 resume(서버가 열린 세션을 그대로 돌려준다), 없으면 그 세션의 이벤트를 처음부터 받는다
+      const info = row.stored_id
+        ? await post<SessionInfo>('/api/chat/resume', { profile: row.profile, stored_id: row.stored_id, ...(row.pod ? { pod: row.pod } : {}) })
+        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running' };
+      const T = this.openSession(info, row.pod, row.stored_id || undefined);
+      if (!T.title && row.title) T.title = row.title;
+      this.lastAt[T.id] = (row.last_at ?? 0) * 1000 || Date.now();
+      this.currentId = T.id;
+      this.restoreDraft();
+      return true;
+    } catch (e) {
+      this.notice = (e as Error).message;
+      return false;
+    } finally {
+      this.opening = '';
+      this.notify();
+    }
+  }
+  /** 목록에서 세션을 닫는다(받기를 멈추고 목록에서 뺀다). Hermes 의 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다 */
+  dismiss(id: string) {
+    const S = this.sessions[id];
+    if (S) {
+      this.stopReconnect(S);
+      this.closeStream(S);
+      delete this.sessions[id];
+      for (const k of Object.keys(this.active)) if (this.active[k] === id) delete this.active[k];
+    }
+    delete this.drafts[id];
+    this.dismissed.add(id);
+    try {
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...this.dismissed].slice(-200)));
+    } catch {
+      /* 이번 화면에서만 닫힌다 */
+    }
+    if (this.currentId === id) {
+      this.currentId = null;
+      this.restoreDraft();
+    }
+    this.notify();
+  }
+  /** 서버의 내 세션 목록을 다시 읽는다(화면 진입·창 포커스·주기) */
+  async loadSessions() {
+    try {
+      const res = await get<{ sessions?: LiveSessionRow[] }>('/api/chat/sessions');
+      this.liveRows = res.sessions ?? [];
+    } catch {
+      return; // 옛 서버(라우트 없음)·일시 오류: 이 탭의 세션만 보인다
+    }
+    this.notify();
+  }
+  /** 세션 하나의 목록 상태 */
+  stateOf(S: Session): SessionState {
+    if (S.closed && !S.reconnect) return 'closed';
+    if (pending(S).length) return 'waiting';
+    if (S.busy || S.compressing) return 'running';
+    return S.unread ? 'done' : 'idle';
+  }
+  /** 왼쪽 세션 목록: 이 탭의 세션 + 서버에만 있는 내 세션. 순서는 내 답 필요 → 답하는 중 → 최근 활동 */
+  sessionRows(): SessionRow[] {
+    const rows: SessionRow[] = [];
+    const seen = new Set<string>();
+    for (const S of Object.values(this.sessions)) {
+      // 말이 없는 세션(에이전트만 고른 새 세션)은 지금 보는 것만 보인다 — 빈 세션이 목록에 쌓이지 않게
+      if (this.dismissed.has(S.id) || (!S.items.length && !S.title && S.id !== this.currentId)) continue;
+      seen.add(S.id);
+      if (S.storedId) seen.add('stored:' + S.storedId);
+      rows.push({ id: S.id, pod: S.pod, profile: S.profile, title: S.title, state: this.stateOf(S), unread: S.unread, at: this.lastAt[S.id] ?? 0, storedId: S.storedId });
+    }
+    for (const r of this.liveRows) {
+      if (seen.has(r.session_id) || (r.stored_id && seen.has('stored:' + r.stored_id)) || this.dismissed.has(r.session_id) || r.state === 'closed') continue;
+      if (!r.title && r.state === 'idle') continue; // 아직 말을 보내지 않은 빈 세션
+      if (this.sessions[r.session_id]) continue; // 이 탭이 받는 빈 세션
+      rows.push({
+        id: r.session_id,
+        pod: r.pod,
+        profile: r.profile,
+        title: r.title || '',
+        state: r.state === 'running' || r.state === 'waiting' ? r.state : 'idle',
+        unread: 0,
+        at: (r.last_at ?? r.created ?? 0) * 1000,
+        remote: true,
+        storedId: r.stored_id || undefined,
+      });
+    }
+    const rank: Record<SessionState, number> = { waiting: 0, running: 1, done: 2, idle: 2, closed: 3 };
+    return rows.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
   }
 
   /** 지금 대화의 입력창에 글을 채워 둔다(새 대화를 열지 않는다). 보내기는 사람이 누른다. */
@@ -810,11 +1002,11 @@ export class ChatStore {
 
   /** quiet: 실패를 대화 목록 오류 줄로 넣지 않고 오류 글로 돌려준다 — 카드가 자기 안에 보인다(스펙 2026-10-23-005 디자인 D5).
    *  돌려주는 값: 성공 null, 실패 오류 글. */
-  private async act(url: string, body: Record<string, unknown>, quiet = false): Promise<string | null> {
-    const S0 = this.current();
+  private async act(url: string, body: Record<string, unknown>, quiet = false, sessionId: string | null = this.currentId): Promise<string | null> {
+    const S0 = sessionId ? this.sessions[sessionId] ?? null : null;
     if (this.blocked(S0)) return null; // 끊긴 대화 아이디로 보내지 않는다(DR5)
     try {
-      await post(url, { session_id: this.currentId, ...(S0?.pod ? { pod: S0.pod } : {}), ...body });
+      await post(url, { session_id: sessionId, ...(S0?.pod ? { pod: S0.pod } : {}), ...body });
       return null;
     } catch (e) {
       const msg = (e as Error).message;
@@ -826,8 +1018,9 @@ export class ChatStore {
       return msg;
     }
   }
-  interrupt() {
-    return this.act('/api/chat/interrupt', {});
+  /** 답을 멈춘다. sessionId 를 주면 목록에서 고른 그 세션을 */
+  interrupt(sessionId: string | null = this.currentId) {
+    return this.act('/api/chat/interrupt', {}, false, sessionId);
   }
 
   // ---- 「/」 명령(스펙 2026-10-26-010) ----

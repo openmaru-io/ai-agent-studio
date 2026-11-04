@@ -59,7 +59,7 @@ import { useOpenParam, useParamPatch, useRouteDrawerValue } from '@/components/u
 import { t } from '@/i18n';
 import { setCardAreaTop } from '@/lib/cardArea';
 import { groupItems, isAsk, pending, Session } from '@/lib/chat';
-import { AgentInfo, ChatGroup, ChatStatus, ChatStore, chatStore, groupLabel, rowTitle, singleProfile, targetTitle, useChat } from '@/lib/chatStore';
+import { AgentInfo, ChatGroup, ChatStatus, ChatStore, chatStore, groupLabel, rowTitle, SessionRow, singleProfile, targetTitle, useChat } from '@/lib/chatStore';
 import { chatColumn, chatColumnPad, chatMetrics, chatType, coarseTouch, hueOf } from '@/lib/chatTokens';
 import { useMe } from '@/lib/data';
 import { fmtClock, zonedDate } from '@/lib/format';
@@ -71,6 +71,7 @@ import { useSkillSuggest } from '@/lib/useSkillSuggest';
 
 import { AnswerMarkdown, FilesBlock, FilesDrawerBody, NoticeLine, PLANS_DIR, UploadRow, UserMessageBody } from './chat/files';
 import { AgentAvatar, ApprovalCard, cancelLine, choiceLabel, ClarifyCard, GuardMark, PastBody, Steps } from './chat/parts';
+import { SessionList, StateMark } from './chat/SessionList';
 
 // 시각은 설정 › 일반의 시간대로 보인다(디자인 리뷰 7-1). 브라우저 로컬 시간을 따로 만들지 않는다.
 const hhmm = (ts: number) => fmtClock(ts);
@@ -153,7 +154,7 @@ const colorKeyOf = (g: ChatStatus | ChatGroup | null | undefined, a: AgentInfo) 
 /** 에이전트 줄 하나. pod 가 있으면(묶음 안) 그 에이전트의 프로파일이고, 아바타 색은 에이전트 색을 물려받는다(디자인 D3).
  *  headless: 프로파일이 하나뿐이라 묶음 머리 없이 이 줄이 에이전트를 대신한다(2026-10-19-013) — 이름은 에이전트 이름, 머리에 있던
  *  주인·「지금 에이전트」를 이 줄로 옮기고 낭독 이름에도 넣는다(R3·DD10·DD11). group 은 늘 넘긴다 — 빼면 선택 표시와 여는 대상이 틀린다(C3) */
-function AgentRow({ store, a, group, headless }: { store: ChatStore; a: AgentInfo; group?: ChatGroup; headless?: boolean }) {
+function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a: AgentInfo; group?: ChatGroup; headless?: boolean; onPicked?: () => void }) {
   const tk = useChatTokens();
   const pick = usePickAgent(store);
   const { S, wait, text, when } = agentInfo(store, a, group?.pod);
@@ -180,7 +181,10 @@ function AgentRow({ store, a, group, headless }: { store: ChatStore; a: AgentInf
         (wait ? `, ${t('chat.waitingShort')}` : '') +
         (S?.unread ? `, ${t('chat.unreadAria', { count: S.unread })}` : '')
       }
-      onClick={() => pick(a.name, group?.pod)}
+      onClick={() => {
+        pick(a.name, group?.pod);
+        onPicked?.();
+      }}
       sx={{
         all: 'unset',
         boxSizing: 'border-box',
@@ -308,13 +312,24 @@ function GroupState({ store, g }: { store: ChatStore; g: ChatGroup }) {
   );
 }
 
-/** 목록에서 에이전트를 고른다. 주소를 agent·pod 로 바꾸고(push, session 은 지움) 그 주소 변화가 대화를 연다(스펙 2026-10-28-014 D4).
- *  주소가 이미 같으면 바뀌는 것이 없으므로 직접 연다(외부 검토 M3) */
+/** 목록에서 에이전트를 고른다 = 그 에이전트로 새 세션(세션 중심 채팅). 다른 세션은 닫지 않고 계속 돈다.
+ *  store 를 먼저 바꾼 뒤 주소를 agent·pod 로 쓴다 — 주소 맞추기는 이미 같은 대상이라 아무것도 하지 않는다 */
 function usePickAgent(store: ChatStore) {
-  const [params, setParams] = useSearchParams();
+  const [, setParams] = useSearchParams();
   return (name: string, pod?: string) => {
-    if (params.get('agent') === name && (params.get('pod') ?? '') === (pod ?? '')) return void store.openAgent(name, pod);
+    void store.startNew(name, pod);
     setParams(pod ? { agent: name, pod } : { agent: name });
+  };
+}
+
+/** 세션 목록에서 세션을 고른다. 세션을 연 뒤 주소를 그 세션의 agent·pod(·저장 id)로 쓴다 */
+function usePickSession(store: ChatStore) {
+  const [, setParams] = useSearchParams();
+  return async (r: SessionRow) => {
+    if (!(await store.focus(r.id))) return;
+    const S = store.current();
+    const stored = S?.storedId || r.storedId;
+    setParams({ agent: r.profile, ...(r.pod ? { pod: r.pod } : {}), ...(stored ? { session: stored } : {}) });
   };
 }
 
@@ -499,7 +514,7 @@ function useChatPanel(store: ChatStore): OpenPanel {
   );
 }
 
-function AgentList({ store }: { store: ChatStore }) {
+function AgentList({ store, onPicked }: { store: ChatStore; onPicked?: () => void }) {
   const [q, setQ] = useState('');
   const [collapsed, setCollapsed] = useState<string[]>(readCollapsed);
   const primary = useMe().data?.primary;
@@ -606,7 +621,7 @@ function AgentList({ store }: { store: ChatStore }) {
         {!multi &&
           single.map(({ a }) => (
             <li key={a.name}>
-              <AgentRow store={store} a={a} />
+              <AgentRow store={store} a={a} onPicked={onPicked} />
             </li>
           ))}
         {shown.map(({ g, rows }) => {
@@ -615,7 +630,7 @@ function AgentList({ store }: { store: ChatStore }) {
           if (singleProfile(g))
             return rows.length ? (
               <li key={pod} style={{ borderTop: `1px solid ${tk.line}`, paddingTop: 4 }}>
-                <AgentRow store={store} a={rows[0].a} group={g} headless />
+                <AgentRow store={store} a={rows[0].a} group={g} headless onPicked={onPicked} />
               </li>
             ) : null;
           const open = !!needle || !collapsed.includes(pod) || pod === store.status?.pod;
@@ -687,7 +702,7 @@ function AgentList({ store }: { store: ChatStore }) {
                   ) : (
                     rows.map(({ a }) => (
                       <li key={a.name}>
-                        <AgentRow store={store} a={a} group={g} />
+                        <AgentRow store={store} a={a} group={g} onPicked={onPicked} />
                       </li>
                     ))
                   )}
@@ -1075,6 +1090,20 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
   const S = store.current();
   const { openDrawer } = useUi();
   const [input, setInput] = useState(store.draft);
+  // 세션마다 쓰던 글을 따로 둔다. 같은 에이전트의 다른 세션으로 옮기면 쓰던 글을 그 세션 몫으로 두고 옮겨 간 세션의 글을 꺼낸다
+  const inputNow = useRef(input);
+  inputNow.current = input;
+  const shownId = useRef<string | null>(store.currentId);
+  const curId = store.currentId;
+  const mountedAt = useRef({ pod: store.status?.pod, profile });
+  useEffect(() => {
+    const prev = shownId.current;
+    shownId.current = curId;
+    if (prev === curId || (prev === null && curId !== null && !store.sessions[curId]?.items.length)) return; // 새 세션의 첫 보내기는 같은 대화다
+    store.stashDraft(prev, mountedAt.current.pod, mountedAt.current.profile, inputNow.current);
+    setInput(store.draft);
+  }, [curId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => store.stashDraft(shownId.current, mountedAt.current.pod, mountedAt.current.profile, inputNow.current), [store]);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const items = pending(S);
   // 에이전트가 여럿이면 머리에 「에이전트 / 프로파일」 — 보내기는 되돌릴 수 없어 대상이 보여야 한다(2026-10-19-001 디자인 D4).
@@ -1324,13 +1353,24 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
           </IconButton>
         )}
         <AgentAvatar name={colorKeyOf(g, a)} label={rowTitle(g, a)} size={32} dot={a.running === false ? 'off' : a.running ? 'on' : undefined} />
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Box component="strong" title={one ? t('chat.profileTip', { title, name: a.name }) : title} sx={{ display: 'block', fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {title}
+        {/* 세션 중심: 머리 첫 줄은 세션 제목, 둘째 줄은 이 세션이 도는 에이전트 — 어느 에이전트의 세션인지 늘 보이게 */}
+        <Box sx={{ flex: 1, minWidth: 0 }} data-testid="chat-head">
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+            {S && <StateMark state={store.stateOf(S)} />}
+            <Box component="strong" title={S?.title || t('chat.sessUntitled')} sx={{ display: 'block', fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {S?.title || t('chat.sessUntitled')}
+            </Box>
           </Box>
           {/* 부제 줄 높이를 늘 잡아 둔다 — 비어 있다가 답하는 동안만 생기면 제목이 흔들렸다(DD7) */}
-          <Typography variant="caption" component="div" noWrap sx={{ color: tk.muted, fontSize: 12, minHeight: 16 }}>
-            {busy ? t('chat.replying') : agentSub(a, one)}
+          <Typography
+            variant="caption"
+            component="div"
+            noWrap
+            title={(one ? t('chat.profileTip', { title, name: a.name }) : title) + (agentSub(a, one) ? ` · ${agentSub(a, one)}` : '')}
+            sx={{ color: tk.muted, fontSize: 12, minHeight: 16 }}
+          >
+            {t('chat.sessRunsOn', { agent: title })}
+            {busy ? ` · ${t('chat.replying')}` : ''}
           </Typography>
         </Box>
         {/* 메뉴 안에 있던 동작을 머리줄 단추로 꺼냈다(스펙 §5 D5). 링크 다섯 개만 ⋯ 메뉴에 남는다 */}
@@ -1373,7 +1413,18 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
         </Menu>
       </Stack>
       {store.notice && <Alert severity="error">{store.notice}</Alert>}
-      <Messages S={S} store={store} profile={profile} onPanel={panel} />
+      {compact || (S && (S.items.length || S.storedId || S.busy)) ? (
+        <Messages S={S} store={store} profile={profile} onPanel={panel} />
+      ) : (
+        // 아직 보내지 않은 새 세션: 가운데 큰 안내 + 아래 큰 입력 카드(Claude·Gemini 첫 화면처럼)
+        <Box data-testid="new-session-hero" sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', px: 2, pb: 2, textAlign: 'center' }}>
+          <AgentAvatar name={colorKeyOf(g, a)} label={rowTitle(g, a)} size={48} tone="hue" />
+          <Typography component="h2" sx={{ mt: 1.5, fontSize: 22, fontWeight: 700, color: tk.text }}>
+            {t('chat.newSessionHeading')}
+          </Typography>
+          <Typography sx={{ mt: 0.5, fontSize: 13, color: tk.muted, maxWidth: 520 }}>{t('chat.newSessionSub', { agent: title })}</Typography>
+        </Box>
+      )}
       <Stack
         ref={cards}
         spacing={1}
@@ -1467,6 +1518,22 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
           )}
           <Composer
             ref={composer}
+            variant={compact ? 'default' : 'prominent'}
+            target={
+              compact ? undefined : (
+                <Box
+                  component="span"
+                  data-testid="composer-target"
+                  title={t('chat.sessTarget', { agent: title })}
+                  sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.25, borderRadius: 999, border: `1px solid ${tk.line}`, fontSize: 12, color: tk.muted, maxWidth: 220, minWidth: 0 }}
+                >
+                  <AgentAvatar name={colorKeyOf(g, a)} label={rowTitle(g, a)} size={16} tone="hue" />
+                  <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {title}
+                  </Box>
+                </Box>
+              )
+            }
             value={input}
             onChange={setInput}
             onSend={send}
@@ -1533,6 +1600,8 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
 
 export function Chat({ store = chatStore }: { store?: ChatStore }) {
   useChat(store);
+  const pickSession = usePickSession(store);
+  const agentsHead = useRef<HTMLDivElement>(null);
   const { context, title } = chatTitle(useMe().data); // 오피스처럼 회사는 맥락, 「<부서> 채팅」은 제목. 좌측 메뉴는 「채팅」 그대로
   const { back } = useChatAddress(store);
   const openPanel = useChatPanel(store);
@@ -1587,19 +1656,36 @@ export function Chat({ store = chatStore }: { store?: ChatStore }) {
         <Box sx={{ display: { xs: hasAgent ? 'none' : 'block', md: 'block' }, minHeight: 0, overflow: 'auto' }}>
           {/* 열지 못한 링크의 안내. 대화가 열려 있으면 대화 안에 보인다 */}
           {!hasAgent && store.notice && <Alert severity="error">{store.notice}</Alert>}
-          <AgentList store={store} />
+          <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100%', bgcolor: tk.rail, borderRight: { md: `1px solid ${tk.line}` } }}>
+            {/* 세션이 먼저, 그 아래에 새 세션을 시작할 AI 에이전트 목록. 「새 세션」은 에이전트 목록으로 데려간다 */}
+            <SessionList
+              store={store}
+              onPick={(r) => void pickSession(r)}
+              onNew={() => {
+                agentsHead.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+                agentsHead.current?.nextElementSibling?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+              }}
+            />
+            <Box ref={agentsHead} sx={{ px: 1.5, pt: 1.5, pb: 0.5, borderTop: `1px solid ${tk.line}` }}>
+              <Typography component="h3" sx={{ fontSize: chatType.meta, fontWeight: 600, color: tk.muted }}>
+                {t('chat.tabAgents')}
+              </Typography>
+              <Typography sx={{ fontSize: 12, color: tk.muted }}>{t('chat.pickAgentForSession')}</Typography>
+            </Box>
+            <AgentList store={store} />
+          </Box>
         </Box>
         <Box sx={{ display: { xs: hasAgent ? 'block' : 'none', md: 'block' }, minHeight: 0 }}>
           {hasAgent ? (
             <Conversation
-              key={store.profile}
+              key={`${store.status?.pod ?? ''}|${store.profile}`}
               store={store}
               onBack={back}
               onPanel={openPanel}
             />
           ) : (
             <Typography align="center" sx={{ mt: 8, color: tk.muted }}>
-              {t('chat.pickAgent')}
+              {t('chat.pickSession')}
             </Typography>
           )}
         </Box>

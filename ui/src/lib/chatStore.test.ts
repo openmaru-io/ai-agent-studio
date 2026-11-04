@@ -39,6 +39,7 @@ function api(over: Record<string, unknown | ((body: Record<string, unknown>) => 
       '/api/chat/status': 1,
       '/api/chat/history': 1,
       '/api/chat/resume': 1,
+      '/api/chat/sessions': 1,
       '/api/chat/session': 1,
       '/api/chat/send': 1,
       '/api/chat/interrupt': 1,
@@ -48,6 +49,7 @@ function api(over: Record<string, unknown | ((body: Record<string, unknown>) => 
     const base: Record<string, unknown> = {
       '/api/chat/status': STATUS,
       '/api/chat/history': { sessions: [] },
+      '/api/chat/sessions': { sessions: [] },
       '/api/chat/session': { session_id: 's-new', profile: body.profile, title: '' },
       '/api/chat/resume': { session_id: 's-old', profile: body.profile, title: '지난' },
       '/api/chat/send': { ok: true },
@@ -606,5 +608,118 @@ describe('ChatStore — 채팅 링크', () => {
       { profile: 'plan', pod: 'b' },
       { profile: 'main', pod: 'a' },
     ]);
+  });
+});
+
+// Session-centric chat: several sessions per agent run in parallel and show their state in one list
+describe('ChatStore — parallel sessions', () => {
+  const seq = () => {
+    let n = 0;
+    return (b: Record<string, unknown>) => ({ session_id: `s${++n}`, profile: b.profile, title: '' });
+  };
+
+  it('a new session keeps the previous one open and streaming', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    await s.send('first task');
+    const first = s.currentId!;
+    await s.startNew('ma');
+    expect(s.currentId).not.toBe(first);
+    expect(Object.keys(s.sessions)).toHaveLength(2);
+    expect(FakeES.all.filter((e) => !e.closed)).toHaveLength(2); // both still receive events
+  });
+
+  it('lists sessions waiting > running > recent, and hides empty sessions that are not shown', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma'); // s1: finishes after I moved on -> done (unread)
+    FakeES.all[0].emit('aas.user', { text: 'quick one' });
+    await s.startNew('ma'); // s2: running
+    FakeES.all[1].emit('aas.user', { text: 'long job' });
+    FakeES.all[0].emit('message.complete', { text: 'ok' });
+    await s.startNew('ops'); // s3: waiting for my answer
+    FakeES.all[2].emit('aas.user', { text: 'needs approval' });
+    FakeES.all[2].emit('approval.request', { request_id: 'r1', command: 'rm x', choices: ['once', 'deny'] });
+    await s.startNew('ma'); // s4: empty and current
+    await s.startNew('ops'); // s5: empty and current, s4 now hidden
+    const rows = s.sessionRows();
+    expect(rows.slice(0, 2).map((r) => [r.id, r.state])).toEqual([
+      ['s3', 'waiting'],
+      ['s2', 'running'],
+    ]);
+    expect(rows.slice(2).map((r) => `${r.id}:${r.state}`).sort()).toEqual(['s1:done', 's5:idle']);
+    expect(rows.map((r) => r.id)).not.toContain('s4');
+    expect(rows.find((r) => r.id === 's1')?.unread).toBe(1); // finished while not shown
+    expect(rows.find((r) => r.id === 's3')?.profile).toBe('ops');
+  });
+
+  it('focus switches to another session and clears its unread count', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ops');
+    FakeES.all[0].emit('message.complete', { text: 'done' });
+    expect(s.sessions.s1.unread).toBe(1);
+    expect(await s.focus('s1')).toBe(true);
+    expect(s.currentId).toBe('s1');
+    expect(s.profile).toBe('ma');
+    expect(s.sessions.s1.unread).toBe(0);
+  });
+
+  it('interrupt and answers go to the given session, not only the one shown', async () => {
+    const a = api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    await s.startNew('ma');
+    await s.interrupt('s1');
+    expect(a.posted('/api/chat/interrupt')).toEqual([{ session_id: 's1' }]);
+  });
+
+  it('keeps a separate draft per session', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    s.stashDraft('s1', s.status?.pod, 'ma', 'half written');
+    await s.startNew('ma');
+    expect(s.draft).toBe('');
+    await s.focus('s1');
+    expect(s.draft).toBe('half written');
+  });
+
+  it('dismiss closes the stream and removes the session from the list', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    s.dismiss('s1');
+    expect(FakeES.all[0].closed).toBe(true);
+    expect(s.sessionRows()).toEqual([]);
+    expect(s.currentId).toBeNull();
+  });
+
+  it('Hermes auto-title after the first turn becomes the session title', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'please summarise the weekly report and send it' });
+    FakeES.all[0].emit('session.title', { session_id: 'stored-1', title: 'Weekly report summary' });
+    expect(s.sessions.s1.title).toBe('Weekly report summary');
+    expect(s.sessions.s1.storedId).toBe('stored-1');
+  });
+
+  it('server-only sessions (opened in another tab) appear in the list and can be opened', async () => {
+    const a = api({
+      '/api/chat/sessions': { sessions: [{ session_id: 'x9', pod: '', profile: 'ops', title: 'From another tab', stored_id: 'st9', state: 'running', last_at: 100 }] },
+      '/api/chat/resume': { session_id: 'x9', profile: 'ops', title: 'From another tab', reused: true },
+    });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    expect(s.sessionRows().map((r) => [r.id, r.state, r.remote])).toEqual([['x9', 'running', true]]);
+    expect(await s.focus('x9')).toBe(true);
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ops', stored_id: 'st9' }]);
+    expect(s.currentId).toBe('x9');
   });
 });

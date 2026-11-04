@@ -33,7 +33,7 @@ class FakeHub:
         FakeHub.calls.append((self.pid, "history", profile))
         return []
 
-    def create_session(self, profile):
+    def create_session(self, profile, by=""):
         FakeHub.calls.append((self.pid, "session", profile))
         return {"session_id": f"s-{self.pid}", "profile": profile, "title": ""}
 

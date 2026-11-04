@@ -4301,6 +4301,22 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
     return groups + [{**g, "agents": [], "sessions": [], "configured": False} for g in _offline_agent_groups(reg, user)]
 
 
+def _chat_sessions(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[dict]:
+    """채팅 세션 목록: 채팅 묶음과 같은 범위의 에이전트마다 이 서버에 열린 대화 세션(오피스 중계 제외).
+    로그인이 켜져 있으면 내가 연 세션만. 상태(waiting·running·idle·closed)는 메모리에서 바로 읽어 Hermes 를 부르지 않는다."""
+    pods, names, _mine = _my_agent_pods(reg, user, auth_enabled, current)
+    by = str((user or {}).get("email") or "") if auth_enabled else None
+    out = []
+    for pod in pods:
+        h = _hubs.get(pod.id)                              # 허브를 아직 만들지 않은 에이전트는 열린 세션이 없다(연결을 새로 열지 않는다)
+        if h is None:
+            continue
+        for row in h.live_sessions(by):
+            out.append({**row, "pod": pod.id, "agent_name": names.get(pod.id, "")})
+    out.sort(key=lambda r: -r["last_at"])
+    return out
+
+
 def _my_agent_pods(reg: Registry, user, auth_enabled: bool, current: Pod) -> tuple[list, dict, object]:
     """채팅 묶음·모은 프로파일 목록이 함께 쓰는 범위(스펙 2026-10-19-001 리뷰 D9, 2026-10-19-018 A1): 내가 주인인 것 + 관리자가 나눠 준 것 + 지금 에이전트.
     관리자는 허용 목록이 전체라 자기 것 + 지금 에이전트만. 순서는 지금 에이전트 → 에이전트 이름순. 반환: (POD 목록, 에이전트 이름표, 주인 판정)."""
@@ -5695,6 +5711,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"pod": pod.id, "groups": _chat_groups(registry(), user, a.enabled, pod)})
                 else:
                     self._json(_chat_status(pod))
+            elif path == "/api/chat/sessions":                 # 세션 목록(모든 내 에이전트의 열린 대화와 상태)
+                self._json({"pod": pod.id, "sessions": _chat_sessions(registry(), user, a.enabled, pod)})
             elif path == "/api/chat/history":
                 profile = _chat_profile(pod, query.get("profile", [""])[0])
                 if profile not in {p.name for p in cron_health.hr.profiles(pod.hermes_home)}:
@@ -6809,7 +6827,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("없는 프로파일", "Profile not found")}, 400)
                     return
                 store.log_usage("chat_session", profile)
-                self._json(h.create_session(profile))
+                self._json(h.create_session(profile, by=str((user or {}).get("email") or "")))
             elif path == "/api/chat/resume":
                 profile = _chat_profile(pod, str(body.get("profile") or ""))
                 stored = str(body.get("stored_id") or "")
@@ -6817,7 +6835,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("잘못된 요청", "Invalid request")}, 400)
                     return
                 store.log_usage("chat_resume", profile)
-                self._json(h.resume(profile, stored))
+                self._json(h.resume(profile, stored, by=str((user or {}).get("email") or "")))
             elif path == "/api/chat/send":
                 text = str(body.get("text") or "").strip()
                 files_in = body.get("files") or []

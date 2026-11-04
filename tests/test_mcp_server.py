@@ -40,12 +40,12 @@ class FakeHub:
     def history(self, profile, limit=80):
         return list(self.history_rows)
 
-    def create_session(self, profile):
+    def create_session(self, profile, by=""):
         sid = f"s-{self.pid}-{len(self.sessions) + 1}"
         self.sessions[sid] = {"profile": profile, "title": "", "created": time.time()}
         return {"session_id": sid, "profile": profile}
 
-    def resume(self, profile, stored):
+    def resume(self, profile, stored, by=""):
         sid = f"r-{stored}"
         self.sessions[sid] = {"profile": profile, "title": "", "created": time.time()}
         return {"session_id": sid, "profile": profile, "stored_id": stored}
@@ -317,8 +317,8 @@ class McpServerTest(unittest.TestCase):
         hub = self.hubs["mcp-a"]
         orig = hub.resume
 
-        def resume(profile, stored):
-            out = orig(profile, stored)
+        def resume(profile, stored, by=""):
+            out = orig(profile, stored, by)
             hub.push(out["session_id"], "aas.history", {"messages": [{"role": "assistant", "text": "old answer", "timestamp": 2}]})
             return out
         with mock.patch.object(hub, "resume", resume):
@@ -578,7 +578,7 @@ class McpServerTest(unittest.TestCase):
         hub = self.hubs["mcp-a"]
         orig = hub.resume
 
-        def resume(profile, stored):
+        def resume(profile, stored, by=""):
             out = orig(profile, stored)
             hub.push(out["session_id"], "aas.history", {"messages": [
                 {"role": "user", "text": "hello", "timestamp": 1}, {"role": "tool", "name": "terminal", "text": "x" * 5000},

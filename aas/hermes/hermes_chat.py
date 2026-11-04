@@ -410,6 +410,8 @@ class ChatHub:
                 meta = self.sessions.get(sid)
                 if etype == "session.title" and meta is not None and isinstance(payload, dict):
                     meta.setdefault("stored_id", payload.get("session_id"))
+                    if str(payload.get("title") or "").strip():     # Hermes 자동 제목(첫 턴 뒤) — 세션 목록이 이 제목을 쓴다
+                        meta["title"] = mask_oauth_redirect(str(payload["title"]).strip())[:80]
                 if etype == "status.update" and meta is not None and isinstance(payload, dict) and payload.get("kind") in AUTO_KINDS:
                     meta["auto_kind"] = str(payload["kind"])
                 if etype == "session.control.update":         # 목표·반복 요약만 aas.control 로(§4-1). 원래 이벤트는 쌓지 않는다
@@ -528,6 +530,9 @@ class ChatHub:
                 events = self._events[sid] = deque((e for e in events if e["type"] != "aas.control"), maxlen=MAX_EVENTS)
             events.append({"seq": seq, "type": etype, "payload": payload})
             self._cond.notify_all()
+        meta = self.sessions.get(sid)
+        if meta is not None:                                   # 세션 목록의 「최근 활동」 순서
+            meta["last_at"] = time.time()
         profile = (self.sessions.get(sid) or {}).get("profile")
         for fn in list(self.listeners):
             try:
@@ -558,7 +563,7 @@ class ChatHub:
             raise RequestTimeout(tr(f"{method} 응답이 {timeout:.0f}초 안에 오지 않았습니다", f"No response to {method} within {timeout:.0f} seconds")) from None
 
     # ---- 채팅 동작 --------------------------------------------------------
-    def create_session(self, profile: str, relay: bool = False) -> dict:
+    def create_session(self, profile: str, relay: bool = False, by: str = "") -> dict:
         """relay: 오피스 중계가 여는 대화. 받은편지함이 그 대화의 되묻기를 항목으로 만들지 않는다(R15)."""
         # follow_profile_config: Hermes 는 다시 연 세션을 처음 쓴 모델(sessions.model)에 고정한다. 이 표시가 있으면
         # 다시 열 때도 프로파일 설정(HERMES_LLM_MODEL)을 따른다. 없으면 기본 모델을 바꿔도 이어 쓰는 대화는 옛 별칭으로
@@ -577,6 +582,8 @@ class ChatHub:
         if not sid:
             raise ChatUnavailable(tr("세션을 만들지 못했습니다", "Cannot create the session"))
         meta = self.sessions[sid] = {**self.sessions.get(sid, {}), "profile": profile or "default", "created": time.time(), "title": ""}
+        if by:                                                # 세션 목록은 내가 연 세션만 보인다
+            meta["by"] = by
         if relay:
             meta["relay"] = True
         if cwd_ok is False:
@@ -733,7 +740,7 @@ class ChatHub:
                 self._push_control(sid)
         threading.Thread(target=run, daemon=True, name="aas-chat-compact").start()
 
-    def resume(self, profile: str, stored_id: str, relay: bool = False) -> dict:
+    def resume(self, profile: str, stored_id: str, relay: bool = False, by: str = "") -> dict:
         """저장된 대화를 다시 연다. 이미 열려 있으면 그 세션을 돌려준다.
         같은 저장 대화의 요청은 하나씩 처리한다 — 서버가 다시 시작되면 탭들이 거의 동시에 다시 열어 Hermes 세션이 둘 생길 수 있었다(스펙 2026-10-20-030 R9).
         history: 이번에 aas.history 를 보냈는가. 화면은 거짓이면 받던 번호 뒤부터, 참이면 처음부터 받는다(4-4)."""
@@ -749,9 +756,9 @@ class ChatHub:
                 running.result(timeout=RESUME_TIMEOUT + 5)
             except FutureTimeout:
                 raise ChatUnavailable(tr("대화를 다시 열지 못했습니다", "Cannot reopen the chat")) from None
-            return self._resume(profile, stored_id, relay)
+            return self._resume(profile, stored_id, relay, by)
         try:
-            out = self._resume(profile, stored_id, relay)
+            out = self._resume(profile, stored_id, relay, by)
         except BaseException as exc:
             running.set_exception(exc)
             raise
@@ -762,11 +769,13 @@ class ChatHub:
             with self._lock:
                 self._resuming.pop(stored_id, None)
 
-    def _resume(self, profile: str, stored_id: str, relay: bool = False) -> dict:
+    def _resume(self, profile: str, stored_id: str, relay: bool = False, by: str = "") -> dict:
         for sid, meta in self.sessions.items():
             if meta.get("stored_id") == stored_id and not meta.get("closed"):
                 if relay:
                     meta["relay"] = True
+                if by:
+                    meta.setdefault("by", by)
                 return {"session_id": sid, "profile": meta["profile"], "title": meta["title"],
                         "reused": True, "history": False}
         params = {"session_id": stored_id, "cols": 100}
@@ -786,6 +795,8 @@ class ChatHub:
                                      "title": title, "stored_id": stored_id, "requests": known}
         if result.get("running"):                             # 반복 차례 도중 다시 열면 Hermes 는 같은 세션을 바쁜 채로 돌려준다(OV5)
             meta["running"], meta["turn_open"] = time.time(), True
+        if by:
+            meta["by"] = by
         if relay:                                             # 열린 요청을 다시 넣기 전에 붙인다 — 받은편지함이 중계 대화의 되묻기를 거른다(R17)
             meta["relay"] = True
         history = fresh or not self._events.get(sid)
@@ -1117,6 +1128,30 @@ class ChatHub:
                 if remaining <= 0:
                     return []
                 self._cond.wait(remaining)
+
+    def session_state(self, sid: str) -> str:
+        """세션 목록의 상태: waiting(되묻기·승인이 사용자 답을 기다림) > running(답하는 중) > idle. 닫힌 세션은 closed."""
+        meta = self.sessions.get(sid) or {}
+        if meta.get("closed"):
+            return "closed"
+        if meta.get("requests"):
+            return "waiting"
+        if self.running(sid) or meta.get("turn_open") or meta.get("compressing"):
+            return "running"
+        return "idle"
+
+    def live_sessions(self, by: str | None = None) -> list[dict]:
+        """이 허브에 열린 대화 세션(오피스 중계 제외). by 를 주면 그 사람이 연 세션만. 최근 활동 순."""
+        out = []
+        for sid, m in list(self.sessions.items()):
+            if m.get("relay") or (by is not None and m.get("by", "") != by):
+                continue
+            out.append({"session_id": sid, "profile": m.get("profile") or "default", "title": m.get("title") or "",
+                        "stored_id": m.get("stored_id") or "", "created": m.get("created") or 0,
+                        "last_at": m.get("last_at") or m.get("created") or 0, "state": self.session_state(sid),
+                        "pending": [e["method"] for e in (m.get("requests") or {}).values()]})
+        out.sort(key=lambda r: -r["last_at"])
+        return out
 
     def status(self) -> dict:
         return {"configured": self.configured, "connected": self.connected,
