@@ -170,7 +170,12 @@ class ChatHubTest(unittest.TestCase):
         self.assertNotIn("args", msgs[1])                                              # 도구 인자는 싣지 않는다
         self.assertEqual(msgs[1]["guard"], "recursive delete of Hermes data (/opt/data)")  # 안전장치 차단 이유는 싣는다(스펙 2026-10-24-004 6절)
         self.assertNotIn("guard", msgs[0])
-        self.assertTrue(self.hub.resume("ma", "st1")["reused"])                        # 두 번 열지 않는다
+        again = self.hub.resume("ma", "st1")
+        self.assertTrue(again["reused"])                                               # 두 번 열지 않는다
+        # 처음부터 받는 화면이 여기까지 모아서 한 번에 그린다 — 지난 답이 토큰마다 다시 흘렀다
+        self.assertEqual(again["seq"], self.hub.seq("s1"))
+        self.assertEqual(out["seq"], ev[-1]["seq"])
+        self.assertEqual([r["seq"] for r in self.hub.live_sessions() if r["session_id"] == "s1"], [self.hub.seq("s1")])
         self.assertEqual([f["method"] for f in self.ws.sent].count("session.resume"), 1)
         self.assertEqual(self.hub.history("ma")[0]["live_session_id"], "s1")
         # resume 이 뒤에서 보내는 session.control.read 가 끝나기를 기다린다. send 뒤에 도착하면 마지막 프레임이 바뀌어

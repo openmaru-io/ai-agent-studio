@@ -133,6 +133,9 @@ export interface Session {
   reconnect?: Reconnect;
   /** 다음 aas.history 를 목록을 다시 만들지 않고 끝부분만 합친다(재검토 RD2) */
   merging?: boolean;
+  /** 이 번호까지는 지난 이벤트를 따라잡는 중 — 그리지 않고 모았다가 한 번에 그린다. 지난 답이 토큰마다 다시 흘러
+   *  새로 답하는 것처럼 보였다 */
+  catchUp?: number;
   // ---- 「/」 명령(스펙 2026-10-26-010 §11) ----
   /** /compress 를 시작한 시각(ms). 서버 이벤트라 새로 고쳐도 남는다(DC4) */
   compressing?: number;
@@ -180,6 +183,8 @@ export interface SessionInfo {
   reused?: boolean;
   /** resume: 이번에 aas.history 를 보냈다 — 처음부터 받는다(4-4) */
   history?: boolean;
+  /** 서버에 지금 쌓인 마지막 이벤트 번호. 처음부터 받는 화면은 여기까지 모아서 한 번에 그린다 */
+  seq?: number;
 }
 
 export interface ChatEvent {

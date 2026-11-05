@@ -776,8 +776,9 @@ class ChatHub:
                     meta["relay"] = True
                 if by:
                     meta.setdefault("by", by)
+                # seq: 지금 마지막 번호. 처음부터 받는 화면은 여기까지 모아서 한 번에 그린다 — 지난 답이 토큰마다 다시 흘렀다
                 return {"session_id": sid, "profile": meta["profile"], "title": meta["title"],
-                        "reused": True, "history": False}
+                        "reused": True, "history": False, "seq": self.seq(sid)}
         params = {"session_id": stored_id, "cols": 100}
         if profile and profile != "default":
             params["profile"] = profile
@@ -818,7 +819,7 @@ class ChatHub:
             # 다시 열기를 기다리게 하지 않는다 — 답이 늦으면 다시 열기(와 줄 선 탭들)가 그만큼 늦었다
             threading.Thread(target=self._read_control, args=(sid,), daemon=True, name="aas-chat-control").start()
         return {"session_id": sid, "profile": profile or "default", "title": title,
-                "running": bool(result.get("running")), "reused": False, "history": history}
+                "running": bool(result.get("running")), "reused": False, "history": history, "seq": self.seq(sid)}
 
     @staticmethod
     def _shown(messages: list) -> list:
@@ -1199,7 +1200,7 @@ class ChatHub:
             out.append({"session_id": sid, "profile": m.get("profile") or "default", "title": m.get("title") or "",
                         "stored_id": m.get("stored_id") or "", "created": m.get("created") or 0,
                         "last_at": m.get("last_at") or m.get("created") or 0, "state": self.session_state(sid),
-                        "pending": [e["method"] for e in (m.get("requests") or {}).values()]})
+                        "pending": [e["method"] for e in (m.get("requests") or {}).values()], "seq": self.seq(sid)})
         out.sort(key=lambda r: -r["last_at"])
         return out
 

@@ -858,3 +858,68 @@ describe('cleanTitle', () => {
   ])('%s', (raw, want) => expect(cleanTitle(raw)).toBe(want));
   it('cuts long titles at 60 characters', () => expect(cleanTitle('가'.repeat(80))).toHaveLength(60));
 });
+
+describe('ChatStore — opening a session that already has events (catch-up)', () => {
+  const ROW = { session_id: 'x9', pod: '', profile: 'ops', title: 'Earlier chat', stored_id: 'st9', state: 'idle', last_at: 100 };
+
+  async function openExisting(resume: Record<string, unknown>) {
+    api({ '/api/chat/sessions': { sessions: [ROW] }, '/api/chat/resume': resume });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    expect(await s.focus('x9')).toBe(true);
+    return s;
+  }
+
+  it('replays past events without redrawing per token, then draws once at the server head', async () => {
+    const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true, history: false, seq: 5 });
+    const S = s.sessions.x9;
+    expect(S.catchUp).toBe(5);
+    const es = FakeES.all[0];
+    const v0 = s.version;
+    es.emit('aas.user', { text: 'question' });
+    es.emit('message.start');
+    es.emit('message.delta', { text: 'an' });
+    es.emit('message.delta', { text: 'swer' });
+    expect(s.version).toBe(v0); // nothing redrawn while catching up
+    expect(S.unread).toBe(0);
+    es.emit('message.complete', { text: 'answer' }); // seq 5 = head
+    expect(S.catchUp).toBeUndefined();
+    expect(s.version).toBe(v0 + 1); // one redraw with the whole conversation
+    expect(S.busy).toBe(false);
+    expect(S.items.filter((x) => x.kind === 'assistant').map((x) => x.text)).toEqual(['answer']);
+    es.emit('aas.user', { text: 'next' }); // live events redraw as before
+    expect(s.version).toBe(v0 + 2);
+  });
+
+  it('a session row from the server list passes its head when there is no stored id', async () => {
+    api({ '/api/chat/sessions': { sessions: [{ ...ROW, stored_id: '', seq: 3 }] } });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    await s.focus('x9');
+    expect(s.sessions.x9.catchUp).toBe(3);
+  });
+
+  it('older servers without seq keep the previous behaviour', async () => {
+    const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true });
+    expect(s.sessions.x9.catchUp).toBeUndefined();
+    const v0 = s.version;
+    FakeES.all[0].emit('aas.user', { text: 'question' });
+    expect(s.version).toBe(v0 + 1);
+  });
+
+  it('draws what it has if the head never arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true, seq: 50 });
+      FakeES.all[0].emit('aas.user', { text: 'question' });
+      expect(s.sessions.x9.catchUp).toBe(50);
+      vi.advanceTimersByTime(8000);
+      expect(s.sessions.x9.catchUp).toBeUndefined();
+      expect(s.sessions.x9.items.some((x) => x.kind === 'user')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

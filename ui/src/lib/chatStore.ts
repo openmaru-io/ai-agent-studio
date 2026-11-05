@@ -19,6 +19,8 @@ import { wsClient } from './ws';
 type Stream = { close(): void };
 /** 다시 연 뒤 이 시간 안에 또 끊기면 앞의 횟수를 이어서 센다 — 바로 끊기는 일이 되풀이되면 1초마다 다시 열지 않게 */
 const CARRY_MS = 30000;
+/** 지난 이벤트 따라잡기의 안전 시한. 끝 번호가 이 안에 오지 않으면(버퍼가 줄었거나 끊김) 받은 데까지 그린다 */
+const CATCH_UP_MAX_MS = 8000;
 const NO_TOPIC_STATES = ['fallback-http', 'replaced', 'auth-failed'];
 
 export interface AgentInfo {
@@ -107,6 +109,8 @@ export interface LiveSessionRow {
   last_at?: number;
   state?: 'waiting' | 'running' | 'idle' | 'closed';
   pending?: string[];
+  /** 서버에 쌓인 마지막 이벤트 번호(따라잡기 끝) */
+  seq?: number;
 }
 /** 채팅 왼쪽 세션 목록의 한 줄(이 탭에서 연 세션 + 서버에만 있는 내 세션) */
 export interface SessionRow {
@@ -221,6 +225,8 @@ export class ChatStore {
   private loading: Promise<void> | null = null;
   /** 대화 id → 다음 다시 열기 시도 */
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 따라잡기 안전 시한(세션별). 끝 번호가 오지 않아도 이 시간이 지나면 그린다 */
+  private catchUpTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 대화 id → 마지막으로 다시 연 때의 횟수(CARRY_MS) */
   private recent = new Map<string, { tries: number; since: number; at: number }>();
   private connTimer: ReturnType<typeof setTimeout> | null = null;
@@ -453,6 +459,8 @@ export class ChatStore {
     }
     if (!S) {
       S = this.sessions[info.session_id] = { ...newSession(info), pod, ...(storedId ? { storedId } : {}) };
+      // 이미 이벤트가 쌓인 세션을 처음부터 받는다 — 끝 번호까지는 그리지 않고 모은다
+      if ((info.seq ?? 0) > 0) this.startCatchUp(S, info.seq!);
       // 웹소켓이 켜져 있으면 토픽 pod:<대화의 pod>:chat:<세션> 으로, 아니면 SSE 로 받는다(OMAI-1100). 이벤트 모양은 같다.
       // 묶음에 pod 가 없는 옛 서버 응답이면 웹소켓이 붙은 지금 에이전트로 본다
       this.listen(S, this.topicFor(S));
@@ -705,7 +713,32 @@ export class ChatStore {
     await this.openAgent(profile, this.status?.pod);
   }
 
+  private startCatchUp(S: Session, upto: number) {
+    S.catchUp = upto;
+    const old = this.catchUpTimers.get(S.id);
+    if (old) clearTimeout(old);
+    this.catchUpTimers.set(
+      S.id,
+      setTimeout(() => this.endCatchUp(S), CATCH_UP_MAX_MS)
+    );
+  }
+
+  private endCatchUp(S: Session) {
+    const timer = this.catchUpTimers.get(S.id);
+    if (timer) clearTimeout(timer);
+    this.catchUpTimers.delete(S.id);
+    if (!S.catchUp) return;
+    S.catchUp = undefined;
+    this.notify();
+  }
+
   private onEvent(S: Session, ev: ChatEvent) {
+    if (S.catchUp && ev.type !== 'aas.disconnected') {
+      // 지난 이벤트를 따라잡는 중: 반영만 하고 그리지 않는다. 끝 번호에 닿으면 한 번 그린다
+      applyEvent(S, ev); // 마지막 활동 시각은 건드리지 않는다 — 지난 이벤트라 목록 순서가 바뀌면 안 된다
+      if ((S.lastSeq ?? 0) >= S.catchUp) this.endCatchUp(S);
+      return;
+    }
     if (ev.type === 'aas.disconnected') {
       // 서버와 Hermes 대시보드 사이가 끊겼다. 서버가 스스로 다시 붙으므로 기다리지 않고 다시 연다(R6·D6)
       this.reconnect(S, ev.payload?.code === 'hub_disconnected' ? 'hub' : 'aas');
@@ -838,7 +871,7 @@ export class ChatStore {
       // 저장 id 가 있으면 resume(서버가 열린 세션을 그대로 돌려준다), 없으면 그 세션의 이벤트를 처음부터 받는다
       const info = row.stored_id
         ? await post<SessionInfo>('/api/chat/resume', { profile: row.profile, stored_id: row.stored_id, ...(row.pod ? { pod: row.pod } : {}) })
-        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running' };
+        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running', seq: row.seq };
       const T = this.openSession(info, row.pod, row.stored_id || undefined);
       if (!T.title && row.title) T.title = row.title;
       this.lastAt[T.id] = (row.last_at ?? 0) * 1000 || Date.now();

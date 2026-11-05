@@ -830,7 +830,9 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
     prev.current = { id: S?.id, busy };
   });
 
-  const blocks = S ? groupItems(S) : [];
+  // 지난 이벤트를 따라잡는 동안은 반쯤 쌓인 대화를 그리지 않는다 — 다른 세션 때문에 다시 그려져도 끝난 뒤 한 번에 보인다
+  const catching = !!S?.catchUp;
+  const blocks = S && !catching ? groupItems(S) : [];
   // 안전장치가 막은 단계 바로 뒤의 첫 에이전트 답에 빨간 표시(스펙 2026-10-24-004). 사용자 글이 오면 끊는다
   const guardOf: Record<number, string> = {};
   {
@@ -883,12 +885,12 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
           {live.text + (live.n % 2 ? ' ' : '')}
         </Box>
         <Box sx={{ maxWidth: chatColumn, mx: 'auto' }}>
-          {!S && (
+          {(!S || catching) && (
             <Stack alignItems="center" spacing={1.5} sx={{ mt: 6 }}>
               <AgentAvatar name={color} label={title} size={chatMetrics.emptyAvatar} />
               <Typography sx={{ fontWeight: 700 }}>{title}</Typography>
               <Typography sx={{ ...small, fontSize: chatType.name }} align="center">
-                {store.opening ? t('chat.loadingPast') : t('chat.startHint')}
+                {store.opening || catching ? t('chat.loadingPast') : t('chat.startHint')}
               </Typography>
             </Stack>
           )}
