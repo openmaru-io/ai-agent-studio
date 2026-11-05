@@ -93,6 +93,72 @@ export const PRIMARY = '@primary';
 
 const key = (pod: string | undefined, profile: string) => `${pod ?? ''}|${profile}`;
 
+/** 세션 목록 한 줄의 상태. waiting: 되묻기·승인이 내 답을 기다림, running: 답하는 중, done: 끝났고 아직 안 봄, idle: 끝남, closed: 끊김 */
+export type SessionState = 'waiting' | 'running' | 'done' | 'idle' | 'closed';
+/** 서버 세션 목록(/api/chat/sessions)의 한 줄 */
+export interface LiveSessionRow {
+  session_id: string;
+  pod?: string;
+  agent_name?: string;
+  profile: string;
+  title?: string;
+  stored_id?: string;
+  created?: number;
+  last_at?: number;
+  state?: 'waiting' | 'running' | 'idle' | 'closed';
+  pending?: string[];
+}
+/** 채팅 왼쪽 세션 목록의 한 줄(이 탭에서 연 세션 + 서버에만 있는 내 세션) */
+export interface SessionRow {
+  id: string;
+  pod?: string;
+  profile: string;
+  title: string;
+  state: SessionState;
+  unread: number;
+  /** 마지막 활동(ms) */
+  at: number;
+  /** 이 탭이 아직 받지 않는 서버 세션 */
+  remote?: boolean;
+  storedId?: string;
+  /** 사용자가 위에 고정한 세션 */
+  pinned?: boolean;
+}
+const DISMISSED_KEY = 'aas-chat-dismissed';
+const PINNED_KEY = 'aas-chat-pinned';
+function readPinned(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(PINNED_KEY) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-100) : []);
+  } catch {
+    return new Set();
+  }
+}
+const lastSegment = (p: string) => p.split(/[\\/]+/).filter(Boolean).pop() ?? p;
+/** 목록에 보일 세션 제목: 따옴표·경로를 덜어 읽기 쉽게. 경로·URL 은 마지막 토막만, 60자.
+ *  예) 「"G:\공유 드라이브\영업\계약.pdf" 요약해줘」 → 「계약.pdf 요약해줘」 */
+export function cleanTitle(raw: string): string {
+  let s = (raw || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/["“'‘]([^"”'’]*[\\/][^"”'’]*)["”'’]/g, (_m, p: string) => lastSegment(p));
+  // 윈도우 경로는 폴더 이름에 빈칸이 있어도 마지막 토막(파일 이름)만. 끝 따옴표가 잘린 제목도 여기서 풀린다
+  s = s.replace(/["“']?[A-Za-z]:\\(?:[^\\\n]*\\)*([^\s\\"”']*)["”']?/g, (_m, f: string) => f);
+  s = s.replace(/\S*[\\/]\S+/g, (tok) => {
+    const url = /^https?:\/\/([^/\s]+)(\/\S*)?$/.exec(tok);
+    if (url) return url[2] && lastSegment(url[2]) ? `${url[1]}/…/${lastSegment(url[2])}` : url[1];
+    return /^[\w.-]+\/[\w.-]+$/.test(tok) && tok.length < 16 ? tok : lastSegment(tok);
+  });
+  if (/^["“].*["”]$/.test(s)) s = s.slice(1, -1);
+  return s.length > 60 ? s.slice(0, 59) + '…' : s;
+}
+function readDismissed(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-200) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 // ---- 보일 이름(스펙 2026-10-19-013) ----
 // 프로파일이 하나뿐인 에이전트는 프로파일 이름(main) 대신 에이전트 이름을 보인다. 채팅 목록·대화 머리·답한 사람·팝업·명령 팔레트가 함께 쓴다.
 // 에이전트 id(pod)는 어디에도 보이지 않는다(2026-10-19-003) — 이름이 없으면 프로파일 이름으로 돌아간다(리뷰 R2).
@@ -132,6 +198,16 @@ export class ChatStore {
   currentId: string | null = null;
   profile = '';
   draft = '';
+  /** 세션별 입력 중이던 글. 키는 세션 id, 아직 세션이 없는 새 대화는 `new|<pod>|<프로파일>` */
+  private drafts: Record<string, string> = {};
+  /** 서버가 알려 준 내 세션들(다른 탭·새로 고침 전에 연 세션 포함) */
+  liveRows: LiveSessionRow[] = [];
+  /** 목록에서 닫은 세션(이 브라우저에만) */
+  private dismissed: Set<string> = typeof localStorage === 'undefined' ? new Set() : readDismissed();
+  /** 위에 고정한 세션(이 브라우저에만) */
+  pinned: Set<string> = typeof localStorage === 'undefined' ? new Set() : readPinned();
+  /** 세션별 마지막 활동 시각(ms) */
+  private lastAt: Record<string, number> = {};
   opening = '';
   notice = '';
   version = 0;
@@ -382,6 +458,8 @@ export class ChatStore {
       this.listen(S, this.topicFor(S));
     }
     this.active[key(S.pod, S.profile)] = S.id;
+    this.lastAt[S.id] ??= Date.now();
+    this.dismissed.delete(S.id);
     if (S.profile === this.profile && S.pod === this.status?.pod) {
       this.currentId = S.id;
       S.unread = 0;
@@ -473,8 +551,9 @@ export class ChatStore {
     }
   }
 
+  /** 이 대화를 계속 잇는가. 세션 여러 개가 함께 돌므로 목록에서 닫지 않은 세션은 모두 잇는다 */
   private ownsActive(S: Session): boolean {
-    return this.active[key(S.pod, S.profile)] === S.id;
+    return this.sessions[S.id] === S && !this.dismissed.has(S.id);
   }
 
   private stopReconnect(S: Session) {
@@ -583,6 +662,8 @@ export class ChatStore {
       S.id = id;
       this.sessions[id] = S;
       for (const k of Object.keys(this.active)) if (this.active[k] === old) this.active[k] = id;
+      if (this.lastAt[old]) this.lastAt[id] = this.lastAt[old];
+      if (this.drafts[old] !== undefined) this.drafts[id] = this.drafts[old];
       if (this.currentId === old) this.currentId = id;
       this.recent.delete(old);
     }
@@ -631,6 +712,7 @@ export class ChatStore {
       return;
     }
     if (!applyEvent(S, ev)) return;
+    this.lastAt[S.id] = Date.now();
     if (S.id !== this.currentId && (ev.type === 'message.complete' || ev.type.endsWith('.request'))) S.unread++;
     this.notify();
   }
@@ -684,11 +766,211 @@ export class ChatStore {
     }
   }
 
+  /** 같은 에이전트로 새 대화. 앞 대화는 닫지 않는다 — 세션 목록에 남아 백그라운드에서 계속 답한다 */
   async newChat() {
     if (!this.profile) return;
+    await this.startNew(this.profile, this.status?.pod);
+  }
+
+  // ---- 세션 목록(세션 중심 채팅) ----
+  private draftKey(id: string | null = this.currentId, pod = this.status?.pod, profile = this.profile): string {
+    return id ?? `new|${pod ?? ''}|${profile}`;
+  }
+  /** 입력 칸이 사라질 때(다른 세션으로 옮김) 쓰던 글을 그 세션 몫으로 둔다 */
+  stashDraft(id: string | null, pod: string | undefined, profile: string, text: string) {
+    const k = this.draftKey(id, pod, profile);
+    if (text) this.drafts[k] = text;
+    else delete this.drafts[k];
+  }
+  private restoreDraft() {
+    this.draft = this.drafts[this.draftKey()] ?? '';
+  }
+  /** 에이전트를 골라 새 세션을 시작한다. 앞 세션들은 닫지 않는다. 아직 말이 없는 세션은 목록에 보이지 않는다(sessionRows) */
+  startNew(profile: string, pod?: string): Promise<Session | null> {
+    // 목록을 이미 읽었으면 고르기는 바로 한다 — 뒤따르는 주소 맞추기가 같은 대상을 보고 다시 열지 않게
+    const run = () => {
+      this.select(pod ?? this.currentPod);
+      this.profile = this.known(pod ? profile : this.resolve(profile));
+      this.currentId = null;
+      this.notice = '';
+      this.restoreDraft();
+      this.notify();
+      return this.status?.configured ? this.startSession() : Promise.resolve(null);
+    };
+    return this.status ? run() : this.preload().then(run);
+  }
+  /** 그 에이전트(프로파일)의 열린 세션 중 최근 활동 순 첫 줄. 없으면 undefined. 에이전트를 고르면 이 세션으로 가고,
+   *  없을 때만 새 세션을 연다(사용자 결정 D1, 스펙 2026-11-05-005). 닫은(숨긴) 세션은 세지 않는다 */
+  openSessionFor(profile: string, pod?: string): SessionRow | undefined {
+    const want = pod ? profile : this.resolve(profile);
+    const where = pod ?? this.currentPod;
+    const order = Object.keys(this.sessions); // 같은 시각이면 나중에 연 세션이 앞
+    const rank = (r: SessionRow) => order.indexOf(r.id);
+    return this.sessionRows()
+      .filter((r) => r.profile === want && (r.pod ?? '') === (where ?? '') && r.state !== 'closed')
+      .sort((x, y) => y.at - x.at || rank(y) - rank(x))[0];
+  }
+  /** 목록의 세션을 연다. 이 탭이 받는 세션이면 바로, 서버에만 있으면 붙어서 받는다 */
+  async focus(id: string): Promise<boolean> {
+    await this.preload();
+    const S = this.sessions[id];
+    if (S) {
+      this.select(S.pod);
+      this.profile = S.profile;
+      this.currentId = S.id;
+      this.active[key(S.pod, S.profile)] = S.id;
+      S.unread = 0;
+      this.notice = '';
+      this.restoreDraft();
+      this.notify();
+      if (S.closed && !S.reconnect) this.reopenNow(S);
+      return true;
+    }
+    const row = this.liveRows.find((r) => r.session_id === id);
+    if (!row) return false;
+    this.select(row.pod);
+    this.profile = row.profile;
     this.currentId = null;
-    delete this.active[key(this.status?.pod, this.profile)];
-    await this.startSession();
+    this.notice = '';
+    this.opening = row.profile;
+    this.notify();
+    try {
+      // 저장 id 가 있으면 resume(서버가 열린 세션을 그대로 돌려준다), 없으면 그 세션의 이벤트를 처음부터 받는다
+      const info = row.stored_id
+        ? await post<SessionInfo>('/api/chat/resume', { profile: row.profile, stored_id: row.stored_id, ...(row.pod ? { pod: row.pod } : {}) })
+        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running' };
+      const T = this.openSession(info, row.pod, row.stored_id || undefined);
+      if (!T.title && row.title) T.title = row.title;
+      this.lastAt[T.id] = (row.last_at ?? 0) * 1000 || Date.now();
+      this.currentId = T.id;
+      this.restoreDraft();
+      return true;
+    } catch (e) {
+      this.notice = (e as Error).message;
+      return false;
+    } finally {
+      this.opening = '';
+      this.notify();
+    }
+  }
+  /** 목록에서 세션을 닫는다(받기를 멈추고 목록에서 뺀다). Hermes 의 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다 */
+  dismiss(id: string) {
+    this.dismissMany([id]);
+  }
+  /** 여러 세션을 한 번에 닫는다. 서버에도 숨김을 남겨 다른 기기의 목록에서도 빠진다(실패하면 이 브라우저에만) */
+  dismissMany(ids: string[]) {
+    if (!ids.length) return;
+    const byPod = new Map<string, string[]>();
+    for (const id of ids) {
+      const S = this.sessions[id];
+      const pod = S?.pod ?? this.liveRows.find((r) => r.session_id === id)?.pod ?? '';
+      byPod.set(pod, [...(byPod.get(pod) ?? []), id]);
+      if (S) {
+        this.stopReconnect(S);
+        this.closeStream(S);
+        delete this.sessions[id];
+        for (const k of Object.keys(this.active)) if (this.active[k] === id) delete this.active[k];
+      }
+      delete this.drafts[id];
+      this.dismissed.add(id);
+      this.pinned.delete(id);
+      if (this.currentId === id) {
+        this.currentId = null;
+        this.restoreDraft();
+      }
+    }
+    const gone = new Set(ids);
+    this.liveRows = this.liveRows.filter((r) => !gone.has(r.session_id));
+    try {
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...this.dismissed].slice(-500)));
+      localStorage.setItem(PINNED_KEY, JSON.stringify([...this.pinned]));
+    } catch {
+      /* 이번 화면에서만 닫힌다 */
+    }
+    for (const [pod, list] of byPod) {
+      void post('/api/chat/sessions/hide', { ids: list, ...(pod ? { pod } : {}) }).catch(() => undefined);
+    }
+    this.notify();
+  }
+  /** 끝난 세션(실행 중·내 답 필요·고정 제외)을 모두 닫는다. 닫은 수를 돌려준다 */
+  dismissFinished(): number {
+    const ids = this.sessionRows()
+      .filter((r) => r.state !== 'running' && r.state !== 'waiting' && !r.pinned && r.id !== this.currentId)
+      .map((r) => r.id);
+    this.dismissMany(ids);
+    return ids.length;
+  }
+  /** 세션을 목록 위에 고정하거나 푼다 */
+  togglePin(id: string) {
+    if (this.pinned.has(id)) this.pinned.delete(id);
+    else this.pinned.add(id);
+    try {
+      localStorage.setItem(PINNED_KEY, JSON.stringify([...this.pinned]));
+    } catch {
+      /* 이번 화면에서만 */
+    }
+    this.notify();
+  }
+  /** AI 에이전트(`pod|프로파일`)별 살아 있는 세션 수 — 에이전트 칸의 배지 */
+  countsByAgent(): Record<string, { running: number; waiting: number; total: number }> {
+    const out: Record<string, { running: number; waiting: number; total: number }> = {};
+    for (const r of this.sessionRows()) {
+      const c = (out[key(r.pod, r.profile)] ??= { running: 0, waiting: 0, total: 0 });
+      c.total += 1;
+      if (r.state === 'running') c.running += 1;
+      if (r.state === 'waiting') c.waiting += 1;
+    }
+    return out;
+  }
+  /** 서버의 내 세션 목록을 다시 읽는다(화면 진입·창 포커스·주기) */
+  async loadSessions() {
+    try {
+      const res = await get<{ sessions?: LiveSessionRow[]; hidden?: string[] }>('/api/chat/sessions');
+      this.liveRows = res.sessions ?? [];
+      // 다른 기기에서 닫은(숨긴) 내 세션: 이 탭이 열고 있어도 목록에서 뺀다. 스트림은 그대로 둔다(스펙 2026-11-05-005 7-6)
+      for (const id of res.hidden ?? []) this.dismissed.add(id);
+    } catch {
+      return; // 옛 서버(라우트 없음)·일시 오류: 이 탭의 세션만 보인다
+    }
+    this.notify();
+  }
+  /** 세션 하나의 목록 상태 */
+  stateOf(S: Session): SessionState {
+    if (S.closed && !S.reconnect) return 'closed';
+    if (pending(S).length) return 'waiting';
+    if (S.busy || S.compressing) return 'running';
+    return S.unread ? 'done' : 'idle';
+  }
+  /** 왼쪽 세션 목록: 이 탭의 세션 + 서버에만 있는 내 세션. 순서는 내 답 필요 → 답하는 중 → 최근 활동 */
+  sessionRows(): SessionRow[] {
+    const rows: SessionRow[] = [];
+    const seen = new Set<string>();
+    for (const S of Object.values(this.sessions)) {
+      // 말이 없는 세션(에이전트만 고른 새 세션)은 지금 보는 것만 보인다 — 빈 세션이 목록에 쌓이지 않게
+      if (this.dismissed.has(S.id) || (!S.items.length && !S.title && S.id !== this.currentId)) continue;
+      seen.add(S.id);
+      if (S.storedId) seen.add('stored:' + S.storedId);
+      rows.push({ id: S.id, pod: S.pod, profile: S.profile, title: cleanTitle(S.title), state: this.stateOf(S), unread: S.unread, at: this.lastAt[S.id] ?? 0, storedId: S.storedId, pinned: this.pinned.has(S.id) });
+    }
+    for (const r of this.liveRows) {
+      if (seen.has(r.session_id) || (r.stored_id && seen.has('stored:' + r.stored_id)) || this.dismissed.has(r.session_id) || r.state === 'closed') continue;
+      if (!r.title && r.state === 'idle') continue; // 아직 말을 보내지 않은 빈 세션
+      if (this.sessions[r.session_id]) continue; // 이 탭이 받는 빈 세션
+      rows.push({
+        id: r.session_id,
+        pod: r.pod,
+        profile: r.profile,
+        title: cleanTitle(r.title || ''),
+        state: r.state === 'running' || r.state === 'waiting' ? r.state : 'idle',
+        pinned: this.pinned.has(r.session_id),
+        unread: 0,
+        at: (r.last_at ?? r.created ?? 0) * 1000,
+        remote: true,
+        storedId: r.stored_id || undefined,
+      });
+    }
+    const rank: Record<SessionState, number> = { waiting: 0, running: 1, done: 2, idle: 2, closed: 3 };
+    return rows.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
   }
 
   /** 지금 대화의 입력창에 글을 채워 둔다(새 대화를 열지 않는다). 보내기는 사람이 누른다. */
@@ -810,11 +1092,11 @@ export class ChatStore {
 
   /** quiet: 실패를 대화 목록 오류 줄로 넣지 않고 오류 글로 돌려준다 — 카드가 자기 안에 보인다(스펙 2026-10-23-005 디자인 D5).
    *  돌려주는 값: 성공 null, 실패 오류 글. */
-  private async act(url: string, body: Record<string, unknown>, quiet = false): Promise<string | null> {
-    const S0 = this.current();
+  private async act(url: string, body: Record<string, unknown>, quiet = false, sessionId: string | null = this.currentId): Promise<string | null> {
+    const S0 = sessionId ? this.sessions[sessionId] ?? null : null;
     if (this.blocked(S0)) return null; // 끊긴 대화 아이디로 보내지 않는다(DR5)
     try {
-      await post(url, { session_id: this.currentId, ...(S0?.pod ? { pod: S0.pod } : {}), ...body });
+      await post(url, { session_id: sessionId, ...(S0?.pod ? { pod: S0.pod } : {}), ...body });
       return null;
     } catch (e) {
       const msg = (e as Error).message;
@@ -826,8 +1108,9 @@ export class ChatStore {
       return msg;
     }
   }
-  interrupt() {
-    return this.act('/api/chat/interrupt', {});
+  /** 답을 멈춘다. sessionId 를 주면 목록에서 고른 그 세션을 */
+  interrupt(sessionId: string | null = this.currentId) {
+    return this.act('/api/chat/interrupt', {}, false, sessionId);
   }
 
   // ---- 「/」 명령(스펙 2026-10-26-010) ----

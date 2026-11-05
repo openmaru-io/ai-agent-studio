@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import ipaddress
 from datetime import datetime
 import contextvars
@@ -59,6 +60,11 @@ TRANSCRIBE_PATH = "/api/chat/transcribe"
 TRANSCRIBE_MAX_BODY = 2 * 1024 * 1024
 TRANSCRIBE_TIMEOUT = 150            # Hermes 쪽은 stt.openai.timeout 60·max_retries 1 이라 최악 약 120초. 그보다 길게 기다린다(§9-7 Low)
 POD_COOKIE = "aas_pod"
+# 사용자 단위 서버 고정(스펙 2026-11-05-005 §5-1 U1·U7). 서버가 둘이면 ingress 가 이 값으로 서버를 고른다 — HAProxy 는
+# `balance hash req.cook(aas_u)`, nginx 는 `upstream-hash-by: $cookie_aas_u`. 한 사용자의 모든 기기가 같은 서버에 붙어 채팅 세션 목록
+# (서버 메모리)이 같다. 로그인 전에는 고정하지 않는다 — 로그인 진행 상태(PKCE·state)는 DB(auth_pending)라 어느 서버가 받아도 된다.
+# 🔴 이름에 하이픈을 쓰지 않는다 — nginx 의 $cookie_<이름> 변수는 하이픈 이름을 읽지 못한다(처음 이름 aas-u 를 바꿈, 2026-11-05).
+STICKY_COOKIE = "aas_u"
 _cache: dict[str, tuple[float, object]] = {}
 _building: dict[str, threading.Lock] = {}              # 키마다 만드는 중 표시(같은 값을 동시에 두 번 만들지 않게)
 _refreshing: set[str] = set()                          # 뒤에서 다시 만드는 중인 키
@@ -4301,6 +4307,66 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
     return groups + [{**g, "agents": [], "sessions": [], "configured": False} for g in _offline_agent_groups(reg, user)]
 
 
+def _chat_session_ttl() -> float:
+    """세션 목록 자동 정리 기준(초). AAS_CHAT_SESSION_TTL_HOURS(기본 24, 0 이면 끔)."""
+    try:
+        return max(0.0, float(os.environ.get("AAS_CHAT_SESSION_TTL_HOURS", "24"))) * 3600
+    except ValueError:
+        return 24 * 3600
+
+
+def _chat_sessions(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[dict]:
+    """채팅 세션 목록: 채팅 묶음과 같은 범위의 에이전트마다 이 서버에 열린 대화 세션(오피스 중계 제외).
+    로그인이 켜져 있으면 내가 연 세션만. 상태(waiting·running·idle·closed)는 메모리에서 바로 읽어 Hermes 를 부르지 않는다."""
+    pods, names, _mine = _my_agent_pods(reg, user, auth_enabled, current)
+    by = str((user or {}).get("email") or "") if auth_enabled else None
+    out = []
+    for pod in pods:
+        h = _hubs.get(pod.id)                              # 허브를 아직 만들지 않은 에이전트는 열린 세션이 없다(연결을 새로 열지 않는다)
+        if h is None:
+            continue
+        for row in h.live_sessions(by):                    # 읽기만 한다 — 정리는 shared_tick 60초 블록(_prune_chat_hubs, 스펙 2026-11-05-005 D4)
+            out.append({**row, "pod": pod.id, "agent_name": names.get(pod.id, "")})
+    out.sort(key=lambda r: -r["last_at"])
+    return out
+
+
+def _chat_hidden(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[str]:
+    """내가 목록에서 닫은(숨긴) 세션 id. 다른 기기에서 닫은 세션을 그 세션을 열고 있는 탭도 목록에서 빼게 한다(스펙 2026-11-05-005 7-6).
+    로그인이 꺼져 있으면 모두. 사용자 단위 서버 고정(aas_u)이라 한 사용자의 세션은 이 서버 허브에 있다."""
+    pods, _names, _mine = _my_agent_pods(reg, user, auth_enabled, current)
+    by = str((user or {}).get("email") or "") if auth_enabled else None
+    out = []
+    for pod in pods:
+        h = _hubs.get(pod.id)
+        if h is None:
+            continue
+        out += [sid for sid, m in list(h.sessions.items())
+                if m.get("hidden") and not m.get("relay") and (by is None or m.get("by", "") == by)]
+    return out
+
+
+def _sticky_attrs(secure: bool) -> str:
+    return "; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000" + ("; Secure" if secure else "")
+
+
+def _sticky_value(email: str) -> str:
+    """aas_u 값: 이메일의 HMAC 앞 16자. 두 서버가 같은 비밀값(AAS_OIDC_CLIENT_SECRET)을 써서 같은 값을 낸다. 이메일 원문은 쿠키에 넣지 않는다.
+    HMAC 의 키·접두어 "aas-u" 는 값 계산용이라 쿠키 이름을 바꿀 때 그대로 뒀다."""
+    key = (os.environ.get("AAS_OIDC_CLIENT_SECRET") or "aas-u").encode()
+    return hmac.new(key, b"aas-u:" + email.strip().lower().encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _prune_chat_hubs() -> None:
+    """이 서버의 채팅 허브마다 오래 쉬던 세션을 걷어내고 Hermes 세션도 닫는다(shared_tick 60초 블록). 한 허브가 실패해도 나머지는 한다."""
+    ttl = _chat_session_ttl()
+    for pod_id, h in list(_hubs.items()):
+        try:
+            h.prune(ttl)
+        except Exception as exc:
+            print(f"채팅 세션을 정리하지 못했습니다({pod_id}): {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+
+
 def _my_agent_pods(reg: Registry, user, auth_enabled: bool, current: Pod) -> tuple[list, dict, object]:
     """채팅 묶음·모은 프로파일 목록이 함께 쓰는 범위(스펙 2026-10-19-001 리뷰 D9, 2026-10-19-018 A1): 내가 주인인 것 + 관리자가 나눠 준 것 + 지금 에이전트.
     관리자는 허용 목록이 전체라 자기 것 + 지금 에이전트만. 순서는 지금 에이전트 → 에이전트 이름순. 반환: (POD 목록, 에이전트 이름표, 주인 판정)."""
@@ -4842,8 +4908,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Vary", "Accept-Language, Cookie")              # 언어는 고른 언어 쿠키로도 바뀐다
         for k, v in (headers or {}).items():
             self.send_header(k, v)
+        self._send_sticky()
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_sticky(self):
+        """_context 가 정한 사용자 고정 쿠키(aas_u)를 한 번 싣는다. 같은 연결의 다음 요청에 남지 않게 지운다."""
+        sticky = getattr(self, "_sticky", None)
+        if sticky:
+            self.send_header("Set-Cookie", sticky)
+            self._sticky = None
 
     def _assets(self, path: str):
         """React 빌드 산출물의 assets/. 같은 방어를 하고, 해시 이름이라 오래 캐시한다."""
@@ -4897,6 +4971,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if cookie:
             self.send_header("Set-Cookie", cookie)
+        self._send_sticky()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -5031,6 +5106,12 @@ class Handler(BaseHTTPRequestHandler):
             return a, user, pod
         user = a.user(self.headers.get("Cookie")) if a.enabled else None
         pod = registry().pick(user, a.enabled, _cookie(self.headers.get("Cookie"), POD_COOKIE))
+        self._sticky = None
+        email = str((user or {}).get("email") or "")
+        if email:                                           # 로그인한 요청: 사용자 고정 쿠키가 없거나 다르면 이 응답에 싣는다(_send·_redirect)
+            want = _sticky_value(email)
+            if _cookie(self.headers.get("Cookie"), STICKY_COOKIE) != want:
+                self._sticky = f"{STICKY_COOKIE}={want}" + _sticky_attrs(self._secure_request())
         return a, user, pod
 
     # ---- 로그인 -----------------------------------------------------------
@@ -5695,6 +5776,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"pod": pod.id, "groups": _chat_groups(registry(), user, a.enabled, pod)})
                 else:
                     self._json(_chat_status(pod))
+            elif path == "/api/chat/sessions":                 # 세션 목록(모든 내 에이전트의 열린 대화와 상태)
+                self._json({"pod": pod.id, "sessions": _chat_sessions(registry(), user, a.enabled, pod),
+                            "hidden": _chat_hidden(registry(), user, a.enabled, pod)})
             elif path == "/api/chat/history":
                 profile = _chat_profile(pod, query.get("profile", [""])[0])
                 if profile not in {p.name for p in cron_health.hr.profiles(pod.hermes_home)}:
@@ -6809,7 +6893,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("없는 프로파일", "Profile not found")}, 400)
                     return
                 store.log_usage("chat_session", profile)
-                self._json(h.create_session(profile))
+                self._json(h.create_session(profile, by=str((user or {}).get("email") or "")))
             elif path == "/api/chat/resume":
                 profile = _chat_profile(pod, str(body.get("profile") or ""))
                 stored = str(body.get("stored_id") or "")
@@ -6817,7 +6901,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("잘못된 요청", "Invalid request")}, 400)
                     return
                 store.log_usage("chat_resume", profile)
-                self._json(h.resume(profile, stored))
+                self._json(h.resume(profile, stored, by=str((user or {}).get("email") or "")))
             elif path == "/api/chat/send":
                 text = str(body.get("text") or "").strip()
                 files_in = body.get("files") or []
@@ -6867,6 +6951,12 @@ class Handler(BaseHTTPRequestHandler):
                                                               lambda: h.clarify(sid, rid, body.get("answer"), qid))})
             elif path == "/api/chat/interrupt":
                 self._json({"ok": True, "result": h.interrupt(sid)})
+            elif path == "/api/chat/sessions/hide":          # 세션 목록에서 닫기(여러 개). 내가 연 세션만, 다른 기기에서도 빠진다
+                ids = body.get("ids") or []
+                if not isinstance(ids, list):
+                    raise ValueError("ids")
+                self._json({"ok": True, "hidden": h.hide_sessions([str(x) for x in ids][:500],
+                                                                  str((user or {}).get("email") or "") if a.enabled else None)})
             else:
                 self._json({"error": "not found"}, 404)
         except ChatNotFound as exc:                 # Hermes 에 대화가 없다 — 화면은 다시 열기를 멈춘다(스펙 2026-10-20-030 R9)
@@ -7274,6 +7364,7 @@ def shared_tick() -> None:
         SHARED.cleanup()
         PRESENCE.expire()                                     # 걸음 읽기는 만료 행을 거르기만 한다 — 지우기는 여기서(리뷰 C2)
         _sweep_meetings()
+        _prune_chat_hubs()                                    # 오래 쉬던 채팅 세션(스펙 2026-11-05-005 D4)
         _shared_at["clean"] = now
 
 

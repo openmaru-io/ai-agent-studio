@@ -333,8 +333,9 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     for (const it of fresh) push(it);
     if (msgs.length) push({ kind: 'divider', text: t('chat.dividerPastTitle'), hint: t('chat.dividerPastHint'), code: 'past' });
   } else if (T === 'session.title') {
-    // 저장된 대화 id — 끊기면 이 대화를 다시 연다(R3). 화면에 그릴 것은 없다
+    // 저장된 대화 id — 끊기면 이 대화를 다시 연다(R3). Hermes 자동 제목(첫 턴 뒤)이 있으면 세션 제목으로 쓴다
     if (p.session_id) S.storedId = str(p.session_id);
+    if (str(p.title).trim()) S.title = str(p.title).trim().slice(0, 60);
     return true;
   } else if (T === 'aas.reconnect.failed') {
     // 저절로 다시 열기를 그만뒀다(R5). 찾지 못함(404)이면 「새 대화」, 아니면 「다시 열기」(DR4)

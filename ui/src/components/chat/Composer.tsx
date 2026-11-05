@@ -78,6 +78,10 @@ export interface ComposerProps {
   hint?: ReactNode;
   /** 입력칸 위(칩 줄·업로드 줄) */
   top?: ReactNode;
+  /** 'prominent': 채팅 화면의 큰 입력 카드(둥근 모서리·그림자·두 줄 이상·둥근 보내기 단추). 회의·오피스는 기본 모양 그대로 */
+  variant?: 'default' | 'prominent';
+  /** 도구 줄 왼쪽에 보일 대상 표시(누구에게 보내는지, 예: 에이전트 칩) */
+  target?: ReactNode;
   /** 입력칸 아래 왼쪽(첨부 단추) */
   leading?: ReactNode;
   /** 추가로 입력칸을 설명하는 요소 id(전송이 막힌 이유 등) */
@@ -109,7 +113,7 @@ const hidden = {
 } as const;
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { value, onChange, onSend, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, placeholder, inputLabel, sendLabel, stopLabel, hint, top, leading, describedBy, compact, suggest, note, voice, readConv },
+  { value, onChange, onSend, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, placeholder, inputLabel, sendLabel, stopLabel, hint, top, leading, describedBy, compact, suggest, note, voice, readConv, variant = 'default', target },
   ref
 ) {
   const tk = useChatTokens();
@@ -426,20 +430,37 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setDismissed('');
   };
 
+  const big = variant === 'prominent';
+  // 큰 입력 카드의 보내기·멈춤: 둥근 단추, 보낼 수 있으면 채운 단추로 눈에 띄게
+  const roundBtn = big ? { width: 36, height: 36, borderRadius: '50%' } : { width: 32, height: 32, borderRadius: '8px' };
+  const filled = big && canSend && !busy ? { bgcolor: tk.text, color: tk.canvas, borderColor: tk.text, '&:hover': { bgcolor: tk.text, opacity: 0.85 } } : {};
   return (
     <Box
       ref={root}
-      sx={{
-        border: `1px solid ${tk.line}`,
-        borderRadius: `${chatMetrics.panelRadius}px`,
-        bgcolor: tk.composer,
-        '&:focus-within': { borderColor: tk.composerFocus },
-      }}
+      data-variant={variant}
+      sx={
+        big
+          ? {
+              border: `1px solid ${tk.line}`,
+              borderRadius: '20px',
+              bgcolor: tk.canvas,
+              boxShadow: '0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.06)',
+              transition: 'border-color .15s, box-shadow .15s',
+              '&:focus-within': { borderColor: tk.composerFocus, boxShadow: '0 1px 2px rgba(0,0,0,.08), 0 6px 24px rgba(0,0,0,.10)' },
+            }
+          : {
+              border: `1px solid ${tk.line}`,
+              borderRadius: `${chatMetrics.panelRadius}px`,
+              bgcolor: tk.composer,
+              '&:focus-within': { borderColor: tk.composerFocus },
+            }
+      }
     >
       {top && <Box sx={{ px: 1.5, pt: 1 }}>{top}</Box>}
       <InputBase
         multiline
-        maxRows={8}
+        minRows={big ? 2 : undefined}
+        maxRows={big ? 12 : 8}
         fullWidth
         value={value}
         placeholder={placeholder}
@@ -472,18 +493,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             : {}),
         }}
         sx={{
-          px: 1.5,
-          pt: 1.25,
+          px: big ? 2 : 1.5,
+          pt: big ? 1.75 : 1.25,
           pb: 0.5,
-          fontSize: chatType.body,
+          fontSize: big ? 15 : chatType.body,
           lineHeight: chatType.bodyLine,
           color: tk.text,
           ...(frozenH ? { '& textarea': { minHeight: `${frozenH}px` } } : {}),
         }}
       />
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1, pb: 1, pt: 0.25 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: big ? 1.25 : 1, pb: big ? 1.25 : 1, pt: 0.25 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', ...touchChildren }}>
           {leading}
+          {target && <Box sx={{ display: 'inline-flex', alignItems: 'center', ml: 0.5, minWidth: 0 }}>{target}</Box>}
           {slash && (
             <Tooltip title={slash.touchButton}>
               <IconButton
@@ -548,7 +570,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             aria-label={sendLabel}
             disabled={!canSend}
             onClick={send}
-            sx={[tier1 as object, { minWidth: 0, width: 32, height: 32, p: 0, borderRadius: '8px' }, touch]}
+            sx={[tier1 as object, { minWidth: 0, p: 0, ...roundBtn }, filled, touch]}
           >
             <SendIcon fontSize="small" />
           </Button>
@@ -560,7 +582,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             aria-label={stopLabel}
             disabled={stopDisabled}
             onClick={onStop}
-            sx={[tier2 as object, { minWidth: 0, width: 32, height: 32, p: 0, borderRadius: '8px' }, touch]}
+            sx={[tier2 as object, { minWidth: 0, p: 0, ...roundBtn }, touch]}
           >
             <StopRoundedIcon fontSize="small" />
           </Button>
@@ -571,7 +593,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             aria-label={sendLabel}
             disabled={!canSend}
             onClick={send}
-            sx={[tier1 as object, { minWidth: 0, width: 32, height: 32, p: 0, borderRadius: '8px' }, touch]}
+            sx={[tier1 as object, { minWidth: 0, p: 0, ...roundBtn }, filled, touch]}
           >
             <SendIcon fontSize="small" />
           </Button>

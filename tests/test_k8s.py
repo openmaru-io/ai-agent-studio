@@ -1946,7 +1946,12 @@ class SizeTest(K8sBase):
         self.assertEqual((q["slots"], q["quota_limited"]), (2, True))
         big = agents.capacity("ok", doc(), {"memory_request": "4Gi"}, now=NOW)                       # 관리자 기본값(또는 입력 창 값)으로 센다
         self.assertEqual([n["slots"] for n in big["by_node"]], [0, 0, 4])
-        self.assertEqual(agents.capacity("ok", doc(checked="2026-10-30T09:57:00Z"), {}, now=NOW)["state"], "stale")
+        # 오퍼레이터는 내용이 같으면 checkedAt 을 5분(계산 주기 30초 단위라 최대 5분 30초)마다만 고친다(capacity.go capacityCheckEvery).
+        # 그 사이를 오래됨으로 보면 정상인데도 「오퍼레이터가 멈췄을 수 있습니다」가 뜬다(2026-11-04 COP). 두 번 놓친 11분이 지나야 오래됨
+        self.assertEqual(agents.capacity("ok", doc(checked="2026-10-30T09:57:00Z"), {}, now=NOW)["state"], "ok")       # 3분 30초 전
+        self.assertEqual(agents.capacity("ok", doc(checked="2026-10-30T09:55:00Z"), {}, now=NOW)["state"], "ok")       # 5분 30초 전(갱신 간격 끝)
+        self.assertEqual(agents.capacity("ok", doc(checked="2026-10-30T09:49:30Z"), {}, now=NOW)["state"], "ok")       # 11분 전(경계)
+        self.assertEqual(agents.capacity("ok", doc(checked="2026-10-30T09:49:00Z"), {}, now=NOW)["state"], "stale")    # 11분 30초 전
         self.assertEqual(agents.capacity("unknown", None, {})["slots"], None)
         # API: ConfigMap 없음 → unknown, 쿠버네티스 오류 → error, 있으면 ok(관리자 기본값으로 센다)
         self.assertEqual(server._agents_capacity(self.reg, self.admin, True, {})["state"], "unknown")

@@ -244,6 +244,19 @@ class AuthFlowTest(unittest.TestCase):
             r, _ = self.req("GET", "/", cookie)
             self.assertEqual(r.status, 403)
 
+    def test_login_started_on_one_server_finishes_on_another(self):
+        """로그인 진행 상태(state·nonce·PKCE)는 DB 에 둔다 — 서버가 둘이면 콜백이 다른 서버로 가도 된다. 한 번만 쓴다
+        (스펙 cogentai-aas-docs 2026-11-05-005 §5-1 U7, 쿠키 고정 없이 nginx·HAProxy 어디서나)."""
+        from aas.auth import auth
+        cfg = dict(self.server._auth.cfg)
+        one, two = auth.Auth(cfg), auth.Auth(cfg)                                   # 서버 둘(메모리를 나누지 않는다)
+        one._discovery = two._discovery = self.server._auth.discovery()
+        q = parse_qs(urlsplit(one.begin("/kanban", popup=True)).query)
+        pend = two._take_pending(q["state"][0])
+        self.assertEqual((pend["nonce"], pend["next"], pend["popup"]), (q["nonce"][0], "/kanban", True))
+        self.assertIsNone(one._take_pending(q["state"][0]))                           # 두 번 쓰지 못한다
+        self.assertIsNone(two._take_pending("unknown"))
+
     def test_non_https_issuer_must_be_loopback(self):
         from aas.auth import auth
         a = auth.Auth({"issuer": "http://idp.example.com", "client_id": "c", "client_secret": "s",

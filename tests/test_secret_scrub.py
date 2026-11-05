@@ -63,10 +63,11 @@ class ScrubUnitTest(unittest.TestCase):
     def test_credential_paths(self):
         for rel in (".env", "profiles/a/.env", ".env.local", "auth.json", "secrets/x.json", "profiles/a/secrets/y.yaml",
                     "certs/c.pem", "k.key", "mcp-tokens/s.json", "Auth.JSON",
-                    "workspace/uploads/.cred-0a1b2c3d4e5f6a7b.json"):       # 인증 파일 올리기의 임시본(2026-10-22-004)
+                    "workspace/uploads/.cred-0a1b2c3d4e5f6a7b.json",       # 인증 파일 올리기의 임시본(2026-10-22-004)
+                    ".docmost-work-log.env", "daily-news-work/.calendar.env", "x/Prod.ENV"):   # 사용자 스킬의 *.env
             self.assertTrue(secret_scrub.is_credential(rel), rel)
         for rel in ("config.yaml", "SOUL.md", "skills/a/SKILL.md", "envoy.txt", "secrets", "",
-                    "workspace/uploads/cred.json", "workspace/.credits.txt"):
+                    "workspace/uploads/cred.json", "workspace/.credits.txt", "notes.env.md", "venv/x.py"):
             self.assertFalse(secret_scrub.is_credential(rel), rel)
 
     def test_pc_import_file_entries_are_covered(self):
@@ -84,6 +85,14 @@ class ScrubUnitTest(unittest.TestCase):
         self.assertEqual([ln.split("=", 1)[0] for ln in lines], ["export A", "B", "C"])
         self.assertTrue(lines[0].split("=", 1)[1].startswith(secret_scrub.PREFIX))
         self.assertEqual(lines[2], "C=")
+
+    def test_star_env_keeps_names_like_dot_env(self):
+        # *.env 도 .env 처럼 이름은 두고 값만 토큰으로(파일 전체를 토큰 하나로 바꾸면 이름만 보는 곳이 깨진다)
+        for rel in (".docmost-work-log.env", "daily-news-work/.calendar.env"):
+            out = secret_scrub.scrub(rel, f"DOCMOST_KEY={SHARED}\nexport CAL_URL='{BOT}'\n".encode()).decode()
+            self.assertNotIn(SHARED, out, rel)
+            self.assertNotIn(BOT, out, rel)
+            self.assertEqual([ln.split("=", 1)[0] for ln in out.splitlines()], ["DOCMOST_KEY", "export CAL_URL"], rel)
 
     def test_same_value_same_digest_and_jwt_expiry_survives(self):
         self.assertEqual(secret_scrub.digest(SHARED), secret_scrub.digest(secret_scrub.token(SHARED)))

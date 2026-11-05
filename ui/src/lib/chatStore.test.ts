@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ChatStore, groupLabel, PRIMARY, rowTitle, singleProfile, targetTitle } from './chatStore';
+import { ChatStore, cleanTitle, groupLabel, PRIMARY, rowTitle, singleProfile, targetTitle } from './chatStore';
 
 class FakeES {
   static all: FakeES[] = [];
@@ -39,6 +39,7 @@ function api(over: Record<string, unknown | ((body: Record<string, unknown>) => 
       '/api/chat/status': 1,
       '/api/chat/history': 1,
       '/api/chat/resume': 1,
+      '/api/chat/sessions': 1,
       '/api/chat/session': 1,
       '/api/chat/send': 1,
       '/api/chat/interrupt': 1,
@@ -48,6 +49,7 @@ function api(over: Record<string, unknown | ((body: Record<string, unknown>) => 
     const base: Record<string, unknown> = {
       '/api/chat/status': STATUS,
       '/api/chat/history': { sessions: [] },
+      '/api/chat/sessions': { sessions: [] },
       '/api/chat/session': { session_id: 's-new', profile: body.profile, title: '' },
       '/api/chat/resume': { session_id: 's-old', profile: body.profile, title: '지난' },
       '/api/chat/send': { ok: true },
@@ -607,4 +609,252 @@ describe('ChatStore — 채팅 링크', () => {
       { profile: 'main', pod: 'a' },
     ]);
   });
+});
+
+// Session-centric chat: several sessions per agent run in parallel and show their state in one list
+describe('ChatStore — parallel sessions', () => {
+  const seq = () => {
+    let n = 0;
+    return (b: Record<string, unknown>) => ({ session_id: `s${++n}`, profile: b.profile, title: '' });
+  };
+
+  it('a new session keeps the previous one open and streaming', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    await s.send('first task');
+    const first = s.currentId!;
+    await s.startNew('ma');
+    expect(s.currentId).not.toBe(first);
+    expect(Object.keys(s.sessions)).toHaveLength(2);
+    expect(FakeES.all.filter((e) => !e.closed)).toHaveLength(2); // both still receive events
+  });
+
+  it('lists sessions waiting > running > recent, and hides empty sessions that are not shown', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma'); // s1: finishes after I moved on -> done (unread)
+    FakeES.all[0].emit('aas.user', { text: 'quick one' });
+    await s.startNew('ma'); // s2: running
+    FakeES.all[1].emit('aas.user', { text: 'long job' });
+    FakeES.all[0].emit('message.complete', { text: 'ok' });
+    await s.startNew('ops'); // s3: waiting for my answer
+    FakeES.all[2].emit('aas.user', { text: 'needs approval' });
+    FakeES.all[2].emit('approval.request', { request_id: 'r1', command: 'rm x', choices: ['once', 'deny'] });
+    await s.startNew('ma'); // s4: empty and current
+    await s.startNew('ops'); // s5: empty and current, s4 now hidden
+    const rows = s.sessionRows();
+    expect(rows.slice(0, 2).map((r) => [r.id, r.state])).toEqual([
+      ['s3', 'waiting'],
+      ['s2', 'running'],
+    ]);
+    expect(rows.slice(2).map((r) => `${r.id}:${r.state}`).sort()).toEqual(['s1:done', 's5:idle']);
+    expect(rows.map((r) => r.id)).not.toContain('s4');
+    expect(rows.find((r) => r.id === 's1')?.unread).toBe(1); // finished while not shown
+    expect(rows.find((r) => r.id === 's3')?.profile).toBe('ops');
+  });
+
+  it('focus switches to another session and clears its unread count', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ops');
+    FakeES.all[0].emit('message.complete', { text: 'done' });
+    expect(s.sessions.s1.unread).toBe(1);
+    expect(await s.focus('s1')).toBe(true);
+    expect(s.currentId).toBe('s1');
+    expect(s.profile).toBe('ma');
+    expect(s.sessions.s1.unread).toBe(0);
+  });
+
+  it('interrupt and answers go to the given session, not only the one shown', async () => {
+    const a = api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    await s.startNew('ma');
+    await s.interrupt('s1');
+    expect(a.posted('/api/chat/interrupt')).toEqual([{ session_id: 's1' }]);
+  });
+
+  it('keeps a separate draft per session', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    s.stashDraft('s1', s.status?.pod, 'ma', 'half written');
+    await s.startNew('ma');
+    expect(s.draft).toBe('');
+    await s.focus('s1');
+    expect(s.draft).toBe('half written');
+  });
+
+  it('dismissMany hides on the server per agent and drops the rows here', async () => {
+    const a = api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ops');
+    FakeES.all[1].emit('aas.user', { text: 'b' });
+    s.liveRows = [{ session_id: 'far', pod: 'other', profile: 'x', title: 'from my phone', state: 'idle', last_at: 1 }];
+    s.dismissMany(['s1', 's2', 'far']);
+    await Promise.resolve();
+    const hidden = a.posted('/api/chat/sessions/hide');
+    expect(hidden).toContainEqual({ ids: ['far'], pod: 'other' });
+    expect(hidden.flatMap((b) => b.ids as string[]).sort()).toEqual(['far', 's1', 's2']);
+    expect(s.sessionRows()).toEqual([]);
+    expect(FakeES.all.every((e) => e.closed)).toBe(true);
+  });
+
+  it('dismissFinished keeps running, waiting, pinned and the shown session', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma'); // s1 done
+    FakeES.all[0].emit('aas.user', { text: 'done one' });
+    FakeES.all[0].emit('message.complete', { text: 'ok' });
+    await s.startNew('ma'); // s2 running
+    FakeES.all[1].emit('aas.user', { text: 'long' });
+    await s.startNew('ma'); // s3 waiting
+    FakeES.all[2].emit('aas.user', { text: 'ask' });
+    FakeES.all[2].emit('approval.request', { request_id: 'r', command: 'x', choices: ['once'] });
+    await s.startNew('ma'); // s4 done + pinned
+    FakeES.all[3].emit('aas.user', { text: 'keep me' });
+    FakeES.all[3].emit('message.complete', { text: 'ok' });
+    s.togglePin('s4');
+    await s.startNew('ma'); // s5 current, done
+    FakeES.all[4].emit('aas.user', { text: 'current' });
+    FakeES.all[4].emit('message.complete', { text: 'ok' });
+    expect(s.dismissFinished()).toBe(1);
+    expect(s.sessionRows().map((r) => r.id).sort()).toEqual(['s2', 's3', 's4', 's5']);
+    expect(s.sessionRows().find((r) => r.id === 's4')?.pinned).toBe(true);
+  });
+
+  it('countsByAgent counts running and waiting sessions per agent', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ma');
+    FakeES.all[1].emit('aas.user', { text: 'b' });
+    FakeES.all[1].emit('clarify.request', { request_id: 'c', question: 'which?' });
+    const c = s.countsByAgent()[`${s.status?.pod ?? ''}|ma`];
+    expect(c).toMatchObject({ running: 1, waiting: 1, total: 2 });
+  });
+
+  it('dismiss closes the stream and removes the session from the list', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    s.dismiss('s1');
+    expect(FakeES.all[0].closed).toBe(true);
+    expect(s.sessionRows()).toEqual([]);
+    expect(s.currentId).toBeNull();
+  });
+
+  it('Hermes auto-title after the first turn becomes the session title', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'please summarise the weekly report and send it' });
+    FakeES.all[0].emit('session.title', { session_id: 'stored-1', title: 'Weekly report summary' });
+    expect(s.sessions.s1.title).toBe('Weekly report summary');
+    expect(s.sessions.s1.storedId).toBe('stored-1');
+  });
+
+  it('server-only sessions (opened in another tab) appear in the list and can be opened', async () => {
+    const a = api({
+      '/api/chat/sessions': { sessions: [{ session_id: 'x9', pod: '', profile: 'ops', title: 'From another tab', stored_id: 'st9', state: 'running', last_at: 100 }] },
+      '/api/chat/resume': { session_id: 'x9', profile: 'ops', title: 'From another tab', reused: true },
+    });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    expect(s.sessionRows().map((r) => [r.id, r.state, r.remote])).toEqual([['x9', 'running', true]]);
+    expect(await s.focus('x9')).toBe(true);
+    expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ops', stored_id: 'st9' }]);
+    expect(s.currentId).toBe('x9');
+  });
+});
+
+describe('ChatStore — 에이전트를 고르면 열린 세션으로(스펙 2026-11-05-005 D1)', () => {
+  const seq = () => {
+    let n = 0;
+    return (b: Record<string, unknown>) => ({ session_id: `s${++n}`, profile: b.profile, title: '' });
+  };
+
+  it('그 에이전트의 열린 세션 중 최근 것을 고르고, 없으면 undefined', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    expect(s.openSessionFor('ma')).toBeUndefined();
+    await s.startNew('ma'); // s1
+    FakeES.all[0].emit('aas.user', { text: 'old task' });
+    await s.startNew('ops'); // s2
+    FakeES.all[1].emit('aas.user', { text: 'ops task' });
+    await s.startNew('ma'); // s3 — 가장 최근
+    FakeES.all[2].emit('aas.user', { text: 'new task' });
+    await s.startNew('ops'); // 지금 보는 것은 ops
+    expect(s.openSessionFor('ma')?.id).toBe('s3');
+    expect(s.openSessionFor('ops')?.profile).toBe('ops');
+    expect(s.openSessionFor('nobody')).toBeUndefined();
+  });
+
+  it('닫은(숨긴) 세션은 열린 세션으로 보지 않는다', async () => {
+    api({ '/api/chat/session': seq(), '/api/chat/sessions/hide': () => ({ ok: true }) });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'task' });
+    await s.startNew('ops');
+    s.dismiss('s1');
+    expect(s.openSessionFor('ma')).toBeUndefined();
+  });
+
+  it('다른 기기에서 숨긴 세션은 이 탭에서 열고 있어도 목록에서 빠진다', async () => {
+    api({
+      '/api/chat/session': seq(),
+      '/api/chat/sessions': () => ({ sessions: [], hidden: ['s1'] }),
+    });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'closed on my phone' });
+    await s.startNew('ops');
+    FakeES.all[1].emit('aas.user', { text: 'still here' });
+    expect(s.sessionRows().map((r) => r.id).sort()).toEqual(['s1', 's2']);
+    await s.loadSessions();
+    expect(s.sessionRows().map((r) => r.id)).toEqual(['s2']);
+  });
+});
+
+describe('ChatStore — 회귀 계약 ②: 세션마다 각자 다시 연다(스펙 2026-11-05-005 RQ4)', () => {
+  it('두 세션이 함께 끊기면 각자 자기 저장 대화로 resume 한다(서버가 바뀌어도 이어진다, §5-1 U4)', async () => {
+    let n = 0;
+    const a = api({
+      '/api/chat/session': (b: Record<string, unknown>) => ({ session_id: `s${++n}`, profile: b.profile, title: '' }),
+      '/api/chat/resume': (b: Record<string, unknown>) => ({ session_id: `re-${String(b.stored_id)}`, profile: 'ma', reused: false, history: true }),
+    });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('session.title', { session_id: 'st-1' });
+    FakeES.all[0].emit('aas.user', { text: 'one' });
+    await s.startNew('ma');
+    FakeES.all[1].emit('session.title', { session_id: 'st-2' });
+    FakeES.all[1].emit('aas.user', { text: 'two' });
+    FakeES.all[0].emit('aas.disconnected', { code: 'hub_disconnected', text: 'x' });
+    FakeES.all[1].emit('aas.disconnected', { code: 'hub_disconnected', text: 'x' });
+    await vi.waitFor(() => expect(a.posted('/api/chat/resume')).toHaveLength(2));
+    expect(a.posted('/api/chat/resume').map((b) => b.stored_id).sort()).toEqual(['st-1', 'st-2']);
+    await vi.waitFor(() => expect(Object.keys(s.sessions).sort()).toEqual(['re-st-1', 're-st-2']));
+  });
+});
+
+describe('cleanTitle', () => {
+  it.each([
+    ['"G:\\공유 드라이브\\영업\\계약.pdf" 요약해줘', '계약.pdf 요약해줘'],
+    ['"G:\\공유 드라이브\\영업', '영업'],
+    ['G:\\공유 드라이브\\a b\\보고서.docx 읽어줘', '보고서.docx 읽어줘'],
+    ['/opt/data/home/report.md 확인', 'report.md 확인'],
+    ['https://wiki.example.com/s/team/p/abc 실행해', 'wiki.example.com/…/abc 실행해'],
+    ['뭐 해먹지', '뭐 해먹지'],
+    ['and/or 비교', 'and/or 비교'],
+  ])('%s', (raw, want) => expect(cleanTitle(raw)).toBe(want));
+  it('cuts long titles at 60 characters', () => expect(cleanTitle('가'.repeat(80))).toHaveLength(60));
 });

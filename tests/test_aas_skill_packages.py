@@ -18,7 +18,7 @@ from aas.market import skill_bundle
 
 ROOT = skill_bundle.PACKAGES_DIR
 # aas-help 는 화면 빌드(ui/src/lib/helpSkill.ts)가 만든다(스펙 2026-10-29-001 §10-9)
-NAMES = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "markdown-to-doc", "ocr-to-markdown")
+NAMES = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "korean-business-writing", "markdown-to-doc", "ocr-to-markdown")
 # Hermes 가 함께 싣는 스킬 이름 — 같은 이름이면 프로파일에서 어느 쪽이 쓰일지 모른다(옛 이미지 빌드 확인 줄의 이름 겹침 검사)
 HERMES_BUNDLED = {"docx", "pdf", "xlsx", "powerpoint", "pptx"}
 NO_OPENPYXL = "import sys\nclass B:\n    def find_spec(self, name, *a):\n        if name.split('.')[0] == 'openpyxl':\n            raise ImportError('no openpyxl')\nsys.meta_path.insert(0, B())\n"
@@ -34,7 +34,7 @@ def _run(script: Path, *args, env=None, block_openpyxl=False, cwd=None):
 
 
 class PackagesTest(unittest.TestCase):
-    def test_exactly_the_six_packages_with_matching_name_and_version(self):
+    def test_exactly_the_seven_packages_with_matching_name_and_version(self):
         self.assertEqual(tuple(skill_bundle.names()), NAMES)
         for name in NAMES:
             front = skill_bundle.front(name)
@@ -44,6 +44,15 @@ class PackagesTest(unittest.TestCase):
             self.assertRegex(front["description"], " / [A-Z]")
             self.assertLessEqual(len(front["description"]), 400)
             self.assertNotIn(name, HERMES_BUNDLED)
+
+    def test_writing_skill_is_picked_from_the_first_60_characters(self):
+        # Hermes 는 시스템 프롬프트의 스킬 목록에 description 을 60자(57자 + "...")만 넣는다
+        # (agent/skill_utils.py SKILL_PROMPT_DESC_LIMIT @ d923a5eb48). 2026-11-05 OKE 시험에서 뒤쪽 단서가 잘려
+        # 「hwpx 보고서」 요청이 markdown-to-doc·docx 로 갔다 — 고르는 단서는 앞 57자 안에 둔다(스펙 2026-11-04-002 §8-1)
+        writing = skill_bundle.front("korean-business-writing")["description"][:57]
+        for word in ("보고서", "기안문", "업무 문서", "hwpx"):
+            self.assertIn(word, writing)
+        self.assertIn("korean-business-writing", skill_bundle.front("markdown-to-doc")["description"][:57])
 
     def test_no_fixed_image_path_and_the_skill_folder_is_explained(self):
         for name in NAMES:

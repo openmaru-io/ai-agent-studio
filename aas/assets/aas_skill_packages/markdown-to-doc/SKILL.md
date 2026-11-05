@@ -1,14 +1,14 @@
 ---
 name: markdown-to-doc
-description: "Markdown 글을 hwpx(한글)·docx·pptx·xlsx·pdf·odt·html 파일로 만든다. 공문서 모양 hwpx(기안문·보고서 등)와 한글 서식 빈칸 채우기도 한다. / Turn Markdown into HWPX (Korean Hancom), DOCX, PPTX, XLSX, PDF, ODT or HTML files, including Korean official-document HWPX and form filling."
-version: 1.1.1
+description: "hwpx·docx·pdf 만들기. 업무 문서 쓰기는 korean-business-writing 먼저. Markdown 글을 hwpx(한글)·docx·pptx·xlsx·pdf·odt·html 파일로 만들고, 공문서 모양 hwpx 와 한글 서식 빈칸 채우기도 한다. / Turn Markdown into HWPX (Korean Hancom), DOCX, PPTX, XLSX, PDF, ODT or HTML files, including Korean official-document HWPX and form filling."
+version: 1.2.0
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
   hermes:
     tags: [markdown, hwpx, docx, pptx, xlsx, pdf, pandoc, kordoc, korean, convert]
     category: productivity
-    related_skills: [hwp-to-markdown, doc-to-markdown, docx, xlsx, powerpoint, pdf]
+    related_skills: [korean-business-writing, hwp-to-markdown, doc-to-markdown, docx, xlsx, powerpoint, pdf]
 ---
 
 # Markdown → 문서 파일
@@ -19,6 +19,7 @@ metadata:
 
 - 사용자가 「hwpx 로 만들어 줘」「워드(docx)로 줘」「PDF 로 뽑아 줘」「엑셀로 정리해 줘」「발표 자료(pptx)로」라고 할 때.
 - 먼저 내용을 Markdown 으로 쓰고(제목 `#`, 목록, 표, 코드 블록) 이 스킬로 파일을 만든다.
+- **한국어 업무 문서(기안문·보고서·계획서·통지·회의록·업무보고·보도자료)를 새로 쓸 때는 `korean-business-writing` 스킬을 먼저 쓴다.** 그 스킬이 종류별 틀·작성 규칙·검토를 맡고, 파일은 이 스킬로 만든다.
 - 이미 있는 docx·xlsx·pptx 를 세밀하게 **고치는** 일(서식·변경 내용 추적·메모)은 번들 스킬 `docx`·`xlsx`·`powerpoint` 가 낫다.
 
 ## 파일 위치 (AAS)
@@ -42,7 +43,7 @@ cd /opt/data/workspace
 | pdf(글·표·코드) | `pandoc .tmp/글.md -o output/결과.pdf --pdf-engine=xelatex -V mainfont='Noto Sans KR' -V monofont=NanumGothicCoding -V geometry:margin=2cm` |
 | pdf(서식이 중요한 문서) | docx 를 만든 뒤 `soffice --headless --convert-to pdf --outdir output output/결과.docx` |
 | hwpx(일반 문서) | `pypandoc-hwpx .tmp/글.md -o output/결과.hwpx` (서식: `--reference-doc 서식.hwpx`) |
-| hwpx(공문서 모양) | `kordoc generate .tmp/글.md -o output/결과.hwpx --preset 보고서` — 프리셋: 기안문·보고서·계획서·통지·회의록·개조식·업무보고·보도자료. 부서 견본이 있으면 `--template 견본.hwpx` |
+| hwpx(공문서 모양) | `kordoc generate .tmp/글.md -o output/결과.hwpx --preset 보고서` — 프리셋: 기안문·보고서·계획서·통지·회의록·개조식·업무보고·보도자료(`업무보고` 는 중앙부처 업무보고 양식이다. 팀 주간 보고는 `보고서`). 부서 견본이 있으면 `--template 견본.hwpx` |
 | hwpx 서식 빈칸 채우기 | 먼저 `kordoc fill 서식.hwpx --dry-run` 으로 칸 이름을 보고 `kordoc fill 서식.hwpx -f '성명=홍길동,전화=010-1234-5678' -o output/결과.hwpx`. 값이 많으면 `-j 값.json`. 같은 이름 칸이 여럿이면 `--require-unique` 로 잘못 채우기를 막는다. 내장 기안문은 `kordoc fill --template gian -f … -o …` |
 | xlsx(표) | `python <스킬폴더>/scripts/md_to_xlsx.py .tmp/글.md output/결과.xlsx` — 표마다 시트 하나(GFM 표와 HTML 표 모두, HTML 표의 병합 칸은 엑셀 병합 칸), 시트 이름은 표 위 제목 |
 

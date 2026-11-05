@@ -200,6 +200,7 @@ export const GUIDES: Guide[] = [
       { id: 'read', to: chatMine, spot: 'chat.composer' },
       { id: 'scan', to: chatMine, spot: 'chat.composer' },
       { id: 'make', to: chatMine, spot: 'chat.composer' },
+      { id: 'write', to: chatMine, spot: 'chat.composer' },
       { id: 'cards', to: chatMine, spot: 'chat.composer' },
       { id: 'help', to: chatMine, spot: 'chat.composer' },
     ],

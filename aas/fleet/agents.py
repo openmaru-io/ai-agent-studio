@@ -398,7 +398,7 @@ def size_differs(item: dict, want: dict, install: dict | None) -> bool:
 
 # ---- 남은 자리(§4-5). 오퍼레이터가 ConfigMap aas-capacity 에 노드별 재료를 쓰고 서버가 센다 ----
 CAPACITY_CM, CAPACITY_KEY, QUOTA_NAME = "aas-capacity", "capacity.json", "agents-quota"
-STALE_SECONDS = 120                                          # checkedAt 이 2분 넘게 그대로면 오래된 값(§4-5 6)
+STALE_SECONDS = 660                                          # checkedAt 이 11분 넘게 그대로면 오래된 값(§4-5 6). 오퍼레이터는 내용이 같으면 5분(최대 5분 30초)마다만 checkedAt 을 고친다 — 두 번 놓친 시간(2026-11-04, 2분이던 때는 정상에도 경고)
 _CAP_TTL = 15.0
 _cap: dict = {"at": -1e9, "value": None, "busy": False}
 _cap_lock = threading.Lock()

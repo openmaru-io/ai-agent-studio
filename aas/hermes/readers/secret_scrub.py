@@ -6,7 +6,7 @@
 HMAC 이라 디스크·화면으로 나가지 않고, 프로세스가 끝나면 되돌릴 방법이 없다. 같은 값이면 같은 지문이라
 자격증명 현황표의 「같은 값」 묶기와 JWT 만료 표시는 그대로 된다(`inventory._Share`·`_jwt_exp`).
 
-- `.env`: `KEY=토큰` 줄만 남긴다(`export ` 는 그대로)(주석·빈 줄·값 없는 줄의 값은 버린다). 이름만 보는 곳(채널·스킬)은 그대로 동작한다.
+- `.env`(`.env.*`·`.envrc`·`*.env` 포함): `KEY=토큰` 줄만 남긴다(`export ` 는 그대로)(주석·빈 줄·값 없는 줄의 값은 버린다). 이름만 보는 곳(채널·스킬)은 그대로 동작한다.
 - JSON: 모양과 키는 두고 문자열·숫자 값을 토큰으로 바꾼다. `url`·`base_url` 은 scheme://host/path 만 남긴다.
 - 그 밖(`*.pem`·`*.key` 등): 파일 전체를 토큰 하나로 바꾼다.
 compose(로컬) 모드는 파일을 직접 읽으므로 원문 그대로다. 그래도 `digest` 가 원문·토큰을 같은 지문으로 바꿔 결과가 같다.
@@ -40,13 +40,19 @@ CREDENTIAL_FILES = frozenset({
 CREDENTIAL_DIRS = frozenset({"secrets", "mcp-tokens"})
 
 
+def _is_env_name(name: str) -> bool:
+    """KEY=VALUE 형식으로 읽을 자격증명 파일 이름인가(소문자). `.env`·`.env.*`·`.envrc`, 그리고 사용자 스킬이 흔히 쓰는
+    `*.env`(`.docmost-work-log.env`·`.calendar.env` 등) — 빠져 있어 원문이 공용 내용 저장소에 들어갔다."""
+    return name == ".envrc" or name.startswith(".env.") or name.endswith(".env")
+
+
 def is_credential(rel: str) -> bool:
     """데이터 폴더 기준 경로 rel 이 자격증명 파일인가. 이름만 본다(대소문자 무시)."""
     parts = [p.lower() for p in rel.split("/") if p]
     if not parts:
         return False
     name = parts[-1]
-    return (name in (".env", ".envrc") or name.startswith(".env.") or name.startswith(".cred-") or name in CREDENTIAL_FILES
+    return (_is_env_name(name) or name.startswith(".cred-") or name in CREDENTIAL_FILES
             or name.endswith((".pem", ".key")) or any(p in CREDENTIAL_DIRS for p in parts[:-1]))
 
 
@@ -122,7 +128,7 @@ def scrub(rel: str, data: bytes) -> bytes:
         return data
     name = posixpath.basename(rel).lower()
     text = data.decode("utf-8", "replace")
-    if name in (".env", ".envrc", ".op.env") or name.startswith(".env."):
+    if _is_env_name(name):
         return _env(text).encode()
     if name.endswith(".json") or ".json." in name:
         try:

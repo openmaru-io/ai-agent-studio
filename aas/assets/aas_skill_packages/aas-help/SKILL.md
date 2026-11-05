@@ -1,7 +1,7 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.6
+version: 1.0.9
 author: OPENMARU, Inc.
 ---
 
@@ -210,20 +210,21 @@ AI 에이전트가 어떤 말투와 역할로 답할지 정합니다.
 
 #### AAS 기본 제공 스킬 사용하기
 
-문서 읽기·만들기, 사진 글자 읽기, 명함 정리, 사용법 묻기를 말로 시킵니다.
+문서 읽기·쓰기·만들기, 사진 글자 읽기, 명함 정리, 사용법 묻기를 말로 시킵니다.
 
-AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습니다. 문서 읽기(doc-to-markdown), 한글 문서 읽기(hwp-to-markdown), 사진·스캔 글자 읽기(ocr-to-markdown), 문서 만들기(markdown-to-doc), 명함 정리(business-card-ocr), 사용법 묻기(aas-help)입니다. 스킬 이름을 외울 필요는 없습니다. 하고 싶은 일을 평소 말로 적으면 AI 에이전트가 알맞은 스킬을 고릅니다.
+AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습니다. 문서 읽기(doc-to-markdown), 한글 문서 읽기(hwp-to-markdown), 사진·스캔 글자 읽기(ocr-to-markdown), 문서 만들기(markdown-to-doc), 한국어 업무 문서 쓰기(korean-business-writing), 명함 정리(business-card-ocr), 사용법 묻기(aas-help)입니다. 스킬 이름을 외울 필요는 없습니다. 하고 싶은 일을 평소 말로 적으면 AI 에이전트가 알맞은 스킬을 고릅니다.
 
-언제 쓰나: 올린 문서를 요약하거나 표를 뽑을 때, 한글·Word·PDF 문서를 새로 만들 때, 명함 사진을 목록으로 정리할 때, AAS 사용법이 궁금할 때 씁니다.
+언제 쓰나: 올린 문서를 요약하거나 표를 뽑을 때, 보고서·기안문·회의록 같은 업무 문서를 쓸 때, 한글·Word·PDF 문서를 새로 만들 때, 명함 사진을 목록으로 정리할 때, AAS 사용법이 궁금할 때 씁니다.
 
 단계:
 
-1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「내 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
+1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「내 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
 2. 문서 읽고 요약하기 — 문서를 올리고 「이 문서를 요약해 줘」「표만 뽑아 줘」「Markdown 으로 바꿔 줘」라고 적습니다. Word·Excel·PowerPoint·PDF 와 한글(hwp·hwpx) 문서를 읽을 수 있습니다. 결과 파일은 답 아래에 나타나고 「파일」에서 받습니다. 읽기만 하며 원본은 고치지 않습니다.
 3. 사진·스캔 문서의 글자 읽기 — 사진, 캡처, 스캔한 공문을 올리고 「글자를 읽어 줘」라고 적습니다. 한국어와 영어 글자를 읽고, 손으로 쓴 글씨와 표도 읽습니다. 한자·일본어는 거의 읽지 못합니다. 읽은 결과가 맞는지는 반드시 원본과 견주어 확인합니다.
 4. 문서 파일 만들기 — 「이 내용을 한글(hwpx) 보고서로 만들어 줘」「Word 로 줘」「PDF 로 뽑아 줘」「엑셀로 정리해 줘」「발표 자료로 만들어 줘」처럼 원하는 파일 종류를 적습니다. 공문서 모양(기안문·보고서·회의록 등)도 만들 수 있고, 한글 서식의 빈칸도 채웁니다. 만든 파일은 답 아래에서 받습니다.
-5. 명함 사진을 목록으로 정리하기 — 명함 사진을 올리고 「명함 등록해 줘」라고 적습니다. 이름·회사·전화·이메일을 읽어 내 명함 목록에 쌓습니다. 이름이나 연락처가 잘 읽히지 않으면 등록하기 전에 먼저 묻습니다. 「A사 사람 찾아 줘」로 찾고, 「명함 목록 엑셀로 줘」로 엑셀 파일을 받습니다. 명함 목록은 AI 에이전트(프로파일)마다 따로 쌓입니다.
-6. AAS 사용법 물어보기 — 「채팅 화면에서 파일은 어떻게 올려?」「예약 작업은 어디서 만들어?」처럼 AI 에이전트에게 물어보면 aas-help 스킬로 화면 이름과 순서를 알려 줍니다. 관리자가 해야 하는 일은 관리자에게 요청하라고 안내합니다.
+5. 보고서·기안문 같은 업무 문서 쓰기 — 보고서·기안문·계획서·통지·회의록·업무보고·보도자료는 korean-business-writing 스킬이 종류에 맞는 틀로 씁니다. ① 종류와 받는 사람·목적을 함께 적습니다: 「CTO 에게 올릴 결제 장애 보고서 써 줘」. ② 메모·숫자를 그대로 붙이거나 파일을 올립니다. 자료에 없는 값은 지어내지 않고 「[확인 필요]」로 남깁니다. ③ 파일 종류를 적습니다: 「hwpx 로」「Word 로」「PDF 로」. ④ 기안문은 받는 곳·기관 이름·기안자·예산·붙임을 함께 주면 다시 묻지 않습니다. ⑤ 업무보고는 「주간 업무보고」면 팀 보고 양식, 「부처 업무보고 양식으로」라고 하면 중앙부처 양식으로 씁니다. ⑥ 초안을 보지 않고 바로 파일을 받으려면 「초안 확인은 생략하고 바로 파일로 만들어 줘」라고 적습니다(「확인 없이」「검토 없이」는 짧은 요청에서 보안 검사에 막힐 수 있습니다). ⑦ 회사 서식이 있으면 견본 hwpx 를 올리고 「이 서식으로」라고 적습니다. 다른 스킬이 골라지면 입력칸에 / 를 치고 korean-business-writing 을 골라 시킵니다.
+6. 명함 사진을 목록으로 정리하기 — 명함 사진을 올리고 「명함 등록해 줘」라고 적습니다. 이름·회사·전화·이메일을 읽어 내 명함 목록에 쌓습니다. 이름이나 연락처가 잘 읽히지 않으면 등록하기 전에 먼저 묻습니다. 「A사 사람 찾아 줘」로 찾고, 「명함 목록 엑셀로 줘」로 엑셀 파일을 받습니다. 명함 목록은 AI 에이전트(프로파일)마다 따로 쌓입니다.
+7. AAS 사용법 물어보기 — 「채팅 화면에서 파일은 어떻게 올려?」「예약 작업은 어디서 만들어?」처럼 AI 에이전트에게 물어보면 aas-help 스킬로 화면 이름과 순서를 알려 줍니다. 관리자가 해야 하는 일은 관리자에게 요청하라고 안내합니다.
 
 #### 나만의 스킬 만들기
 
@@ -554,20 +555,21 @@ Steps:
 
 #### Use the skills AAS provides
 
-Ask in plain words to read or make documents, read text in photos, organize business cards or learn how to use AAS.
+Ask in plain words to read, write or make documents, read text in photos, organize business cards or learn how to use AAS.
 
-AAS includes built-in skills that every AI Agent has from the start: reading documents (doc-to-markdown), reading Hancom documents (hwp-to-markdown), reading text in photos and scans (ocr-to-markdown), making documents (markdown-to-doc), organizing business cards (business-card-ocr) and asking how to use AAS (aas-help). You do not need to remember skill names. Describe the job in everyday words and the AI Agent picks the right skill.
+AAS includes built-in skills that every AI Agent has from the start: reading documents (doc-to-markdown), reading Hancom documents (hwp-to-markdown), reading text in photos and scans (ocr-to-markdown), making documents (markdown-to-doc), writing Korean business documents (korean-business-writing), organizing business cards (business-card-ocr) and asking how to use AAS (aas-help). You do not need to remember skill names. Describe the job in everyday words and the AI Agent picks the right skill.
 
-When to use: Use them to summarize an uploaded document or pull out its tables, to create a Hancom, Word or PDF document, to turn business card photos into a list, or when you wonder how AAS works.
+When to use: Use them to summarize an uploaded document or pull out its tables, to write business documents such as reports, drafts or minutes, to create a Hancom, Word or PDF document, to turn business card photos into a list, or when you wonder how AAS works.
 
 Steps:
 
-1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, business-card-ocr and aas-help in the "My skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
+1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, korean-business-writing, business-card-ocr and aas-help in the "My skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
 2. Read and summarize a document — Upload a document and write "Summarize this document", "Pull out only the tables" or "Convert it to Markdown". It reads Word, Excel, PowerPoint, PDF and Hancom (hwp, hwpx) files. The result file appears under the answer and can be downloaded from "Files". It only reads and does not change the original.
 3. Read text in photos and scans — Upload a photo, a screenshot or a scanned official document and write "Read the text". It reads Korean and English text, including handwriting and tables. It can hardly read Chinese characters or Japanese. Always compare the result with the original.
 4. Make a document file — Write the file type you want, for example "Make this a Hancom (hwpx) report", "Give me Word", "Make a PDF", "Organize it in Excel" or "Make slides". It can also produce official-document layouts (drafts, reports, minutes) and fill the blanks of a Hancom form. Download the file under the answer.
-5. Organize business card photos into a list — Upload a business card photo and write "Register this business card". It reads the name, company, phone and email and adds them to your card list. If the name or contact cannot be read well, it asks you before registering. Find people with "Find people from company A" and get an Excel file with "Give me the card list in Excel". The card list is kept separately for each AI Agent (profile).
-6. Ask how to use AAS — Ask the AI Agent, for example "How do I upload a file in chat?" or "Where do I create a scheduled job?" and it answers with screen names and steps using the aas-help skill. For work only administrators can do, it tells you to ask an administrator.
+5. Write business documents such as reports and drafts — The korean-business-writing skill writes reports, drafts for approval, plans, notices, minutes, work reports and press releases with a template for each type. 1) Name the type, the reader and the purpose: "Write the payment incident report for the CTO". 2) Paste your notes and numbers or upload a file. Values missing from your material are marked as needing checking instead of being made up. 3) Name the file type: "as hwpx", "as Word", "as PDF". 4) For a draft for approval, give the recipient, organization, drafter, budget and attachments so it does not need to ask. 5) "Weekly work report" uses the team report layout; "in the ministry work report layout" uses the central government layout. 6) To get the file without reviewing the draft first, write "Skip the draft review and make the file". Short requests with "without checking" or "without review" may be stopped by the safety check. 7) If your company has a layout, upload a sample hwpx and write "use this layout". If another skill is picked, type / in the message box and choose korean-business-writing.
+6. Organize business card photos into a list — Upload a business card photo and write "Register this business card". It reads the name, company, phone and email and adds them to your card list. If the name or contact cannot be read well, it asks you before registering. Find people with "Find people from company A" and get an Excel file with "Give me the card list in Excel". The card list is kept separately for each AI Agent (profile).
+7. Ask how to use AAS — Ask the AI Agent, for example "How do I upload a file in chat?" or "Where do I create a scheduled job?" and it answers with screen names and steps using the aas-help skill. For work only administrators can do, it tells you to ask an administrator.
 
 #### Create your own skill
 

@@ -226,13 +226,16 @@ def has_admin_session(email: str) -> bool:
 class Auth:
     def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or settings()
-        self._pending: dict[str, dict] = {}
         self._tries: dict[str, list[float]] = {}
         self._lock = threading.Lock()
         self._discovery: dict | None = None
         self.on_login = None                    # 로그인에 성공한 신원(dict)을 받는 함수. 첫 로그인 등록에 쓴다(서버가 정한다)
         self.on_change = None                   # 세션을 지웠거나 관리자 여부가 바뀐 이메일을 받는 함수. 웹소켓을 바로 다시 검사한다(서버가 정한다)
         with store.connect() as conn:
+            # 로그인 진행 상태(state → nonce·PKCE verifier·돌아갈 곳). 서버 메모리가 아니라 DB 라 서버가 둘이어도 콜백을 어느 서버가
+            # 받든 된다 — 로그인 전 서버 고정(쿠키)이 필요 없다(스펙 2026-11-05-005 §5-1 U7, 2026-11-05 메모리에서 옮김).
+            ddl = "CREATE TABLE IF NOT EXISTS auth_pending (state TEXT PRIMARY KEY, data TEXT NOT NULL, exp REAL NOT NULL)"
+            conn.execute(db.to_pg(ddl) if db.is_pg(conn) else ddl)
             conn.execute("CREATE TABLE IF NOT EXISTS auth_sessions (hash TEXT PRIMARY KEY, email TEXT NOT NULL, "
                          "name TEXT, created REAL NOT NULL, expires REAL NOT NULL)")
             cols = db.columns(conn, "auth_sessions")
@@ -388,11 +391,11 @@ class Auth:
         verifier = secrets.token_urlsafe(48)       # RFC 7636: 43~128자. 짧으면 Keycloak 이 invalid_code_verifier 로 거절한다
         if not next_path.startswith("/") or next_path.startswith("//"):
             next_path = "/"
-        with self._lock:
-            now = time.time()
-            self._pending = {k: v for k, v in self._pending.items() if v["exp"] > now}
-            self._pending[state] = {"nonce": nonce, "verifier": verifier, "next": next_path,
-                                    "base": base, "popup": bool(popup), "exp": now + PENDING_TTL}
+        now = time.time()
+        pend = {"nonce": nonce, "verifier": verifier, "next": next_path, "base": base, "popup": bool(popup)}
+        with store.connect() as conn:
+            conn.execute("DELETE FROM auth_pending WHERE exp < ?", (now,))
+            conn.execute("INSERT INTO auth_pending (state, data, exp) VALUES (?,?,?)", (state, json.dumps(pend), now + PENDING_TTL))
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         q = {"response_type": "code", "client_id": self.cfg["client_id"],
              "redirect_uri": base + "/auth/callback", "scope": "openid email profile",
@@ -403,11 +406,20 @@ class Auth:
                 q["hd"] = self.cfg["domain"]      # 구글: 계정 선택 화면을 이 도메인으로 좁힌다(검증은 아래에서 따로)
         return d["authorization_endpoint"] + "?" + urllib.parse.urlencode(q)
 
+    def _take_pending(self, state: str) -> dict | None:
+        """로그인 진행 상태를 한 번만 꺼낸다(지우면서 읽는다 — 같은 state 를 두 번 쓰지 못한다). 없거나 만료면 None."""
+        if not state:
+            return None
+        with store.connect() as conn:
+            row = conn.execute("DELETE FROM auth_pending WHERE state=? RETURNING data, exp", (state,)).fetchone()
+        if not row or row[1] < time.time():
+            return None
+        return json.loads(row[0])
+
     def finish(self, code: str, state: str, with_popup: bool = False):
         """(세션 토큰, 돌아갈 경로). with_popup 이면 (세션 토큰, 돌아갈 경로, 팝업 여부). 실패하면 AuthError."""
-        with self._lock:
-            pend = self._pending.pop(state, None)
-        if not pend or pend["exp"] < time.time():
+        pend = self._take_pending(state)
+        if not pend:
             raise AuthError(tr("로그인 요청이 만료됐거나 알 수 없는 요청입니다. 다시 시도하세요.", "The login request expired or is unknown. Try again."))
         d = self.discovery()
         body = urllib.parse.urlencode({

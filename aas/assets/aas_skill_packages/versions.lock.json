@@ -1,7 +1,7 @@
 {
   "aas-help": {
-    "sha256": "2d44379416cd1f1d6e2ff2eec691a10f1521c7674b98b481b3f8bf7d2c6befbe",
-    "version": "1.0.6"
+    "sha256": "f81992c1f8d9879e58cfab110fa4355a27fc0264a9c23298583d9bfca4719e5e",
+    "version": "1.0.9"
   },
   "business-card-ocr": {
     "sha256": "11997f65c9bb7844bd9ed8581e3d04c41f15e6c57f2b2698e5287f762c331fdc",
@@ -15,9 +15,13 @@
     "sha256": "0557f90d913558932eb00e26d0820e94a2a8ea94567a71db1d3f16a7e48a92e6",
     "version": "1.1.0"
   },
+  "korean-business-writing": {
+    "sha256": "4a1ad2e4a52972903327c0c49530ae0dde3485d790722be370373e8f2d34af03",
+    "version": "1.0.2"
+  },
   "markdown-to-doc": {
-    "sha256": "026465b2a94bc1a998dc9e7c82f794b9cd9567ae9e7566e423e62703a8a4edff",
-    "version": "1.1.1"
+    "sha256": "eeb2a4cf5cb9816c9581a30e6c4611c35fc9ac255f0713f1216b463da1fb757c",
+    "version": "1.2.0"
   },
   "ocr-to-markdown": {
     "sha256": "1179257fcba7099723cd769e4e262f1973a7fbf879ffca747779cf96aa1ca57f",
