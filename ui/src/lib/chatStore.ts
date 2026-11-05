@@ -121,8 +121,35 @@ export interface SessionRow {
   /** 이 탭이 아직 받지 않는 서버 세션 */
   remote?: boolean;
   storedId?: string;
+  /** 사용자가 위에 고정한 세션 */
+  pinned?: boolean;
 }
 const DISMISSED_KEY = 'aas-chat-dismissed';
+const PINNED_KEY = 'aas-chat-pinned';
+function readPinned(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(PINNED_KEY) || '[]');
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-100) : []);
+  } catch {
+    return new Set();
+  }
+}
+const lastSegment = (p: string) => p.split(/[\\/]+/).filter(Boolean).pop() ?? p;
+/** 목록에 보일 세션 제목: 따옴표·경로를 덜어 읽기 쉽게. 경로·URL 은 마지막 토막만, 60자.
+ *  예) 「"G:\공유 드라이브\영업\계약.pdf" 요약해줘」 → 「계약.pdf 요약해줘」 */
+export function cleanTitle(raw: string): string {
+  let s = (raw || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/["“'‘]([^"”'’]*[\\/][^"”'’]*)["”'’]/g, (_m, p: string) => lastSegment(p));
+  // 윈도우 경로는 폴더 이름에 빈칸이 있어도 마지막 토막(파일 이름)만. 끝 따옴표가 잘린 제목도 여기서 풀린다
+  s = s.replace(/["“']?[A-Za-z]:\\(?:[^\\\n]*\\)*([^\s\\"”']*)["”']?/g, (_m, f: string) => f);
+  s = s.replace(/\S*[\\/]\S+/g, (tok) => {
+    const url = /^https?:\/\/([^/\s]+)(\/\S*)?$/.exec(tok);
+    if (url) return url[2] && lastSegment(url[2]) ? `${url[1]}/…/${lastSegment(url[2])}` : url[1];
+    return /^[\w.-]+\/[\w.-]+$/.test(tok) && tok.length < 16 ? tok : lastSegment(tok);
+  });
+  if (/^["“].*["”]$/.test(s)) s = s.slice(1, -1);
+  return s.length > 60 ? s.slice(0, 59) + '…' : s;
+}
 function readDismissed(): Set<string> {
   try {
     const v = JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]');
@@ -177,6 +204,8 @@ export class ChatStore {
   liveRows: LiveSessionRow[] = [];
   /** 목록에서 닫은 세션(이 브라우저에만) */
   private dismissed: Set<string> = typeof localStorage === 'undefined' ? new Set() : readDismissed();
+  /** 위에 고정한 세션(이 브라우저에만) */
+  pinned: Set<string> = typeof localStorage === 'undefined' ? new Set() : readPinned();
   /** 세션별 마지막 활동 시각(ms) */
   private lastAt: Record<string, number> = {};
   opening = '';
@@ -815,25 +844,72 @@ export class ChatStore {
   }
   /** 목록에서 세션을 닫는다(받기를 멈추고 목록에서 뺀다). Hermes 의 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다 */
   dismiss(id: string) {
-    const S = this.sessions[id];
-    if (S) {
-      this.stopReconnect(S);
-      this.closeStream(S);
-      delete this.sessions[id];
-      for (const k of Object.keys(this.active)) if (this.active[k] === id) delete this.active[k];
+    this.dismissMany([id]);
+  }
+  /** 여러 세션을 한 번에 닫는다. 서버에도 숨김을 남겨 다른 기기의 목록에서도 빠진다(실패하면 이 브라우저에만) */
+  dismissMany(ids: string[]) {
+    if (!ids.length) return;
+    const byPod = new Map<string, string[]>();
+    for (const id of ids) {
+      const S = this.sessions[id];
+      const pod = S?.pod ?? this.liveRows.find((r) => r.session_id === id)?.pod ?? '';
+      byPod.set(pod, [...(byPod.get(pod) ?? []), id]);
+      if (S) {
+        this.stopReconnect(S);
+        this.closeStream(S);
+        delete this.sessions[id];
+        for (const k of Object.keys(this.active)) if (this.active[k] === id) delete this.active[k];
+      }
+      delete this.drafts[id];
+      this.dismissed.add(id);
+      this.pinned.delete(id);
+      if (this.currentId === id) {
+        this.currentId = null;
+        this.restoreDraft();
+      }
     }
-    delete this.drafts[id];
-    this.dismissed.add(id);
+    const gone = new Set(ids);
+    this.liveRows = this.liveRows.filter((r) => !gone.has(r.session_id));
     try {
-      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...this.dismissed].slice(-200)));
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...this.dismissed].slice(-500)));
+      localStorage.setItem(PINNED_KEY, JSON.stringify([...this.pinned]));
     } catch {
       /* 이번 화면에서만 닫힌다 */
     }
-    if (this.currentId === id) {
-      this.currentId = null;
-      this.restoreDraft();
+    for (const [pod, list] of byPod) {
+      void post('/api/chat/sessions/hide', { ids: list, ...(pod ? { pod } : {}) }).catch(() => undefined);
     }
     this.notify();
+  }
+  /** 끝난 세션(실행 중·내 답 필요·고정 제외)을 모두 닫는다. 닫은 수를 돌려준다 */
+  dismissFinished(): number {
+    const ids = this.sessionRows()
+      .filter((r) => r.state !== 'running' && r.state !== 'waiting' && !r.pinned && r.id !== this.currentId)
+      .map((r) => r.id);
+    this.dismissMany(ids);
+    return ids.length;
+  }
+  /** 세션을 목록 위에 고정하거나 푼다 */
+  togglePin(id: string) {
+    if (this.pinned.has(id)) this.pinned.delete(id);
+    else this.pinned.add(id);
+    try {
+      localStorage.setItem(PINNED_KEY, JSON.stringify([...this.pinned]));
+    } catch {
+      /* 이번 화면에서만 */
+    }
+    this.notify();
+  }
+  /** AI 에이전트(`pod|프로파일`)별 살아 있는 세션 수 — 에이전트 칸의 배지 */
+  countsByAgent(): Record<string, { running: number; waiting: number; total: number }> {
+    const out: Record<string, { running: number; waiting: number; total: number }> = {};
+    for (const r of this.sessionRows()) {
+      const c = (out[key(r.pod, r.profile)] ??= { running: 0, waiting: 0, total: 0 });
+      c.total += 1;
+      if (r.state === 'running') c.running += 1;
+      if (r.state === 'waiting') c.waiting += 1;
+    }
+    return out;
   }
   /** 서버의 내 세션 목록을 다시 읽는다(화면 진입·창 포커스·주기) */
   async loadSessions() {
@@ -861,7 +937,7 @@ export class ChatStore {
       if (this.dismissed.has(S.id) || (!S.items.length && !S.title && S.id !== this.currentId)) continue;
       seen.add(S.id);
       if (S.storedId) seen.add('stored:' + S.storedId);
-      rows.push({ id: S.id, pod: S.pod, profile: S.profile, title: S.title, state: this.stateOf(S), unread: S.unread, at: this.lastAt[S.id] ?? 0, storedId: S.storedId });
+      rows.push({ id: S.id, pod: S.pod, profile: S.profile, title: cleanTitle(S.title), state: this.stateOf(S), unread: S.unread, at: this.lastAt[S.id] ?? 0, storedId: S.storedId, pinned: this.pinned.has(S.id) });
     }
     for (const r of this.liveRows) {
       if (seen.has(r.session_id) || (r.stored_id && seen.has('stored:' + r.stored_id)) || this.dismissed.has(r.session_id) || r.state === 'closed') continue;
@@ -871,8 +947,9 @@ export class ChatStore {
         id: r.session_id,
         pod: r.pod,
         profile: r.profile,
-        title: r.title || '',
+        title: cleanTitle(r.title || ''),
         state: r.state === 'running' || r.state === 'waiting' ? r.state : 'idle',
+        pinned: this.pinned.has(r.session_id),
         unread: 0,
         at: (r.last_at ?? r.created ?? 0) * 1000,
         remote: true,

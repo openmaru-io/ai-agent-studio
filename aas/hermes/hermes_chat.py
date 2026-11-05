@@ -1140,11 +1140,37 @@ class ChatHub:
             return "running"
         return "idle"
 
+    def hide_sessions(self, ids, by: str | None = None) -> list[str]:
+        """세션 목록에서 닫기: 숨김 표시만 한다(스트림·Hermes 대화는 그대로). 다른 기기의 목록에서도 빠진다.
+        by 를 주면 그 사람이 연 세션만 숨긴다. 숨긴 세션 id 를 돌려준다."""
+        done = []
+        with self._lock:
+            for sid in ids or ():
+                m = self.sessions.get(str(sid))
+                if not m or m.get("relay") or (by is not None and m.get("by", "") != by):
+                    continue
+                m["hidden"] = True
+                done.append(str(sid))
+        return done
+
+    def prune(self, ttl: float, now: float | None = None) -> list[str]:
+        """마지막 활동이 ttl 초보다 오래된 세션을 메모리에서 걷어낸다. 답하는 중·사용자 답을 기다리는 세션과 오피스 중계는 남긴다.
+        Hermes 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다."""
+        if ttl <= 0:
+            return []
+        now = time.time() if now is None else now
+        gone = [sid for sid, m in list(self.sessions.items())
+                if not m.get("relay") and self.session_state(sid) not in ("running", "waiting")
+                and now - (m.get("last_at") or m.get("created") or 0) > ttl]
+        for sid in gone:
+            self.forget(sid)
+        return gone
+
     def live_sessions(self, by: str | None = None) -> list[dict]:
-        """이 허브에 열린 대화 세션(오피스 중계 제외). by 를 주면 그 사람이 연 세션만. 최근 활동 순."""
+        """이 허브에 열린 대화 세션(오피스 중계·숨긴 세션 제외). by 를 주면 그 사람이 연 세션만. 최근 활동 순."""
         out = []
         for sid, m in list(self.sessions.items()):
-            if m.get("relay") or (by is not None and m.get("by", "") != by):
+            if m.get("relay") or m.get("hidden") or (by is not None and m.get("by", "") != by):
                 continue
             out.append({"session_id": sid, "profile": m.get("profile") or "default", "title": m.get("title") or "",
                         "stored_id": m.get("stored_id") or "", "created": m.get("created") or 0,

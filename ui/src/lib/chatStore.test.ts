@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ChatStore, groupLabel, PRIMARY, rowTitle, singleProfile, targetTitle } from './chatStore';
+import { ChatStore, cleanTitle, groupLabel, PRIMARY, rowTitle, singleProfile, targetTitle } from './chatStore';
 
 class FakeES {
   static all: FakeES[] = [];
@@ -688,6 +688,58 @@ describe('ChatStore — parallel sessions', () => {
     expect(s.draft).toBe('half written');
   });
 
+  it('dismissMany hides on the server per agent and drops the rows here', async () => {
+    const a = api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ops');
+    FakeES.all[1].emit('aas.user', { text: 'b' });
+    s.liveRows = [{ session_id: 'far', pod: 'other', profile: 'x', title: 'from my phone', state: 'idle', last_at: 1 }];
+    s.dismissMany(['s1', 's2', 'far']);
+    await Promise.resolve();
+    const hidden = a.posted('/api/chat/sessions/hide');
+    expect(hidden).toContainEqual({ ids: ['far'], pod: 'other' });
+    expect(hidden.flatMap((b) => b.ids as string[]).sort()).toEqual(['far', 's1', 's2']);
+    expect(s.sessionRows()).toEqual([]);
+    expect(FakeES.all.every((e) => e.closed)).toBe(true);
+  });
+
+  it('dismissFinished keeps running, waiting, pinned and the shown session', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma'); // s1 done
+    FakeES.all[0].emit('aas.user', { text: 'done one' });
+    FakeES.all[0].emit('message.complete', { text: 'ok' });
+    await s.startNew('ma'); // s2 running
+    FakeES.all[1].emit('aas.user', { text: 'long' });
+    await s.startNew('ma'); // s3 waiting
+    FakeES.all[2].emit('aas.user', { text: 'ask' });
+    FakeES.all[2].emit('approval.request', { request_id: 'r', command: 'x', choices: ['once'] });
+    await s.startNew('ma'); // s4 done + pinned
+    FakeES.all[3].emit('aas.user', { text: 'keep me' });
+    FakeES.all[3].emit('message.complete', { text: 'ok' });
+    s.togglePin('s4');
+    await s.startNew('ma'); // s5 current, done
+    FakeES.all[4].emit('aas.user', { text: 'current' });
+    FakeES.all[4].emit('message.complete', { text: 'ok' });
+    expect(s.dismissFinished()).toBe(1);
+    expect(s.sessionRows().map((r) => r.id).sort()).toEqual(['s2', 's3', 's4', 's5']);
+    expect(s.sessionRows().find((r) => r.id === 's4')?.pinned).toBe(true);
+  });
+
+  it('countsByAgent counts running and waiting sessions per agent', async () => {
+    api({ '/api/chat/session': seq() });
+    const s = new ChatStore();
+    await s.startNew('ma');
+    FakeES.all[0].emit('aas.user', { text: 'a' });
+    await s.startNew('ma');
+    FakeES.all[1].emit('aas.user', { text: 'b' });
+    FakeES.all[1].emit('clarify.request', { request_id: 'c', question: 'which?' });
+    const c = s.countsByAgent()[`${s.status?.pod ?? ''}|ma`];
+    expect(c).toMatchObject({ running: 1, waiting: 1, total: 2 });
+  });
+
   it('dismiss closes the stream and removes the session from the list', async () => {
     api({ '/api/chat/session': seq() });
     const s = new ChatStore();
@@ -722,4 +774,17 @@ describe('ChatStore — parallel sessions', () => {
     expect(a.posted('/api/chat/resume')).toEqual([{ profile: 'ops', stored_id: 'st9' }]);
     expect(s.currentId).toBe('x9');
   });
+});
+
+describe('cleanTitle', () => {
+  it.each([
+    ['"G:\\공유 드라이브\\영업\\계약.pdf" 요약해줘', '계약.pdf 요약해줘'],
+    ['"G:\\공유 드라이브\\영업', '영업'],
+    ['G:\\공유 드라이브\\a b\\보고서.docx 읽어줘', '보고서.docx 읽어줘'],
+    ['/opt/data/home/report.md 확인', 'report.md 확인'],
+    ['https://wiki.example.com/s/team/p/abc 실행해', 'wiki.example.com/…/abc 실행해'],
+    ['뭐 해먹지', '뭐 해먹지'],
+    ['and/or 비교', 'and/or 비교'],
+  ])('%s', (raw, want) => expect(cleanTitle(raw)).toBe(want));
+  it('cuts long titles at 60 characters', () => expect(cleanTitle('가'.repeat(80))).toHaveLength(60));
 });

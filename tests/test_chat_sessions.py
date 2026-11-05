@@ -66,6 +66,30 @@ class LiveSessionsTest(unittest.TestCase):
         self.hub._on_frame(ev("old", "message.delta", {"text": "hi"}))
         self.assertEqual([r["session_id"] for r in self.hub.live_sessions()], ["old", "new"])
 
+    def test_hide_only_my_sessions_and_drop_from_list(self):
+        self.hub.sessions["m"] = {"profile": "p", "created": 1.0, "title": "", "by": "me@example.com"}
+        self.hub.sessions["o"] = {"profile": "p", "created": 1.0, "title": "", "by": "other@example.com"}
+        self.assertEqual(self.hub.hide_sessions(["m", "o", "missing"], "me@example.com"), ["m"])
+        self.assertEqual(self.hub.live_sessions("me@example.com"), [])
+        self.assertEqual([r["session_id"] for r in self.hub.live_sessions("other@example.com")], ["o"])
+        self.assertIn("m", self.hub.sessions)                       # 숨김일 뿐 대화는 남는다
+        self.assertEqual(self.hub.hide_sessions(["o"], None), ["o"])  # 로그인이 꺼져 있으면 누구 것이든
+
+    def test_prune_keeps_running_and_waiting(self):
+        now = 100000.0
+        self.hub.sessions.update({
+            "old": {"profile": "p", "created": 1.0, "title": "", "last_at": 10.0},
+            "oldrun": {"profile": "p", "created": 1.0, "title": "", "last_at": 10.0, "turn_open": True},
+            "oldwait": {"profile": "p", "created": 1.0, "title": "", "last_at": 10.0, "requests": {"r": {"method": "approval"}}},
+            "relay": {"profile": "p", "created": 1.0, "title": "", "last_at": 10.0, "relay": True},
+            "fresh": {"profile": "p", "created": 1.0, "title": "", "last_at": now - 60},
+        })
+        self.hub._events["old"] = None
+        self.assertEqual(self.hub.prune(3600, now), ["old"])
+        self.assertEqual(set(self.hub.sessions), {"oldrun", "oldwait", "relay", "fresh"})
+        self.assertNotIn("old", self.hub._events)
+        self.assertEqual(self.hub.prune(0, now), [])                  # 0 이면 끔
+
 
 class ChatSessionsRouteTest(unittest.TestCase):
     """GET /api/chat/sessions body: my sessions across my agents, newest activity first."""
@@ -84,7 +108,8 @@ class ChatSessionsRouteTest(unittest.TestCase):
         hub_b.sessions["b1"] = {"profile": "ops", "created": 3.0, "title": "mine new", "by": "me@example.com", "last_at": 20.0}
         pods = [SimpleNamespace(id="a"), SimpleNamespace(id="b"), SimpleNamespace(id="c")]   # c has no hub yet: skipped, no new connection
         with mock.patch.object(server, "_my_agent_pods", return_value=(pods, {"a": "Agent A", "b": "Agent B"}, None)), \
-                mock.patch.dict(server._hubs, {"a": hub_a, "b": hub_b}, clear=True):
+                mock.patch.dict(server._hubs, {"a": hub_a, "b": hub_b}, clear=True), \
+                mock.patch.dict("os.environ", {"AAS_CHAT_SESSION_TTL_HOURS": "0"}):
             rows = server._chat_sessions(None, {"email": "me@example.com"}, True, pods[0])
             everyone = server._chat_sessions(None, None, False, pods[0])
         self.assertEqual([(r["session_id"], r["pod"], r["agent_name"]) for r in rows], [("b1", "b", "Agent B"), ("a1", "a", "Agent A")])

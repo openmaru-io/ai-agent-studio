@@ -4301,16 +4301,26 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
     return groups + [{**g, "agents": [], "sessions": [], "configured": False} for g in _offline_agent_groups(reg, user)]
 
 
+def _chat_session_ttl() -> float:
+    """세션 목록 자동 정리 기준(초). AAS_CHAT_SESSION_TTL_HOURS(기본 24, 0 이면 끔)."""
+    try:
+        return max(0.0, float(os.environ.get("AAS_CHAT_SESSION_TTL_HOURS", "24"))) * 3600
+    except ValueError:
+        return 24 * 3600
+
+
 def _chat_sessions(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[dict]:
     """채팅 세션 목록: 채팅 묶음과 같은 범위의 에이전트마다 이 서버에 열린 대화 세션(오피스 중계 제외).
     로그인이 켜져 있으면 내가 연 세션만. 상태(waiting·running·idle·closed)는 메모리에서 바로 읽어 Hermes 를 부르지 않는다."""
     pods, names, _mine = _my_agent_pods(reg, user, auth_enabled, current)
     by = str((user or {}).get("email") or "") if auth_enabled else None
+    ttl = _chat_session_ttl()
     out = []
     for pod in pods:
         h = _hubs.get(pod.id)                              # 허브를 아직 만들지 않은 에이전트는 열린 세션이 없다(연결을 새로 열지 않는다)
         if h is None:
             continue
+        h.prune(ttl)                                       # 오래 쉬던 세션은 메모리에서 걷어낸다(답하는 중·답 대기는 남긴다)
         for row in h.live_sessions(by):
             out.append({**row, "pod": pod.id, "agent_name": names.get(pod.id, "")})
     out.sort(key=lambda r: -r["last_at"])
@@ -6885,6 +6895,12 @@ class Handler(BaseHTTPRequestHandler):
                                                               lambda: h.clarify(sid, rid, body.get("answer"), qid))})
             elif path == "/api/chat/interrupt":
                 self._json({"ok": True, "result": h.interrupt(sid)})
+            elif path == "/api/chat/sessions/hide":          # 세션 목록에서 닫기(여러 개). 내가 연 세션만, 다른 기기에서도 빠진다
+                ids = body.get("ids") or []
+                if not isinstance(ids, list):
+                    raise ValueError("ids")
+                self._json({"ok": True, "hidden": h.hide_sessions([str(x) for x in ids][:500],
+                                                                  str((user or {}).get("email") or "") if a.enabled else None)})
             else:
                 self._json({"error": "not found"}, 404)
         except ChatNotFound as exc:                 # Hermes 에 대화가 없다 — 화면은 다시 열기를 멈춘다(스펙 2026-10-20-030 R9)
