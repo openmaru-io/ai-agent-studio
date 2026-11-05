@@ -484,6 +484,10 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
             f"Internal addresses or private IPs found ({len(refs)}). It cannot go to a public namespace"))
 
     u = usage or {}
+    outside = [str(x) for x in u.get("external_scripts") or []]
+    if outside:                                                    # SKILL.md 가 부르는 폴더 밖 스크립트는 묶음에 들어가지 않는다 — 받는 쪽에서는 없다
+        add("outside", "warn", tr(f"스킬 폴더 밖 스크립트 {len(outside)}개는 묶음에 들어가지 않습니다({', '.join(outside[:3])}) — 스킬 폴더 안으로 옮겨야 받는 쪽에서 동작합니다",
+                                  f"{len(outside)} scripts outside the skill folder are not in the package ({', '.join(outside[:3])}). Move them into the skill folder so the skill works where it is installed"))
     failed = [c for c in u.get("cron") or [] if str(c.get("last_status") or "") not in ("", "ok", "success")]
     if failed:
         add("works", "warn", tr(f"이 스킬을 부르는 예약 작업이 최근에 실패했습니다: {', '.join(str(c.get('job')) for c in failed[:3])}",

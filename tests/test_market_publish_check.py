@@ -88,6 +88,12 @@ class CheckTest(unittest.TestCase):
             self.assertEqual(self.level(self.check(admin=True, version="1.1.0"), "version"), "fail")
             self.assertEqual(self.level(self.check(), "hub_name"), "fail")              # 남이 올린 같은 이름
 
+    def test_scripts_outside_the_folder_are_warned(self):
+        out = self.check(usage={"uses": 3, "cron": [], "external_scripts": ["/opt/data/scripts/digest.py"]})
+        self.assertEqual(self.level(out, "outside"), "warn")
+        self.assertIn("/opt/data/scripts/digest.py", next(c["message"] for c in out["checks"] if c["id"] == "outside"))
+        self.assertTrue(out["ok"])                                                       # 경고일 뿐 막지는 않는다(문서만인 스킬도 있다)
+
     def test_builtin_is_refused(self):
         put(self.root, {"skills/.bundled_manifest": "weekly-report:\n"})
         self.assertEqual(self.level(self.check(), "origin"), "fail")

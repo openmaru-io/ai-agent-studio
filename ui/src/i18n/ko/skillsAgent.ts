@@ -16,7 +16,7 @@ export default {
   'skillsAgent.resizeAgents': 'AI 에이전트 칸 폭',
   'skillsAgent.resizeList': '스킬 칸 폭',
   'skillsAgent.pickSkill': '가운데에서 스킬을 고르면 어떻게 동작하는지, 무엇이 필요한지 보입니다.',
-  'skillsAgent.skillsOf': '{name} 의 스킬',
+  'skillsAgent.skillsOf': '{name}의 스킬',
   'skillsAgent.summary': '켜짐 {on}/{n} · 예약 작업이 부르는 스킬 {cron} · 최근 14일 실행 {runs}회',
   'skillsAgent.lastUsed': '마지막 사용 {at}',
   'skillsAgent.search': '스킬 이름·설명 찾기',

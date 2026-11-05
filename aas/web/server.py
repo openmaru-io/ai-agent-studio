@@ -6600,7 +6600,7 @@ class Handler(BaseHTTPRequestHandler):
                 sid = str(body.get("id") or "") or f"{prof}:{rel if prof == 'default' else f'profiles/{prof}/{rel}'}"   # id: 공용 스킬은 쓰는 에이전트의 줄로 사용 기록을 본다
                 row = next((s for s in _skills(pod)["skills"] if s["id"] == sid), None)
                 try:
-                    usage = {**_skill_states(pod)[0].get(sid, {}), "cron": (row or {}).get("cron") or []}
+                    usage = {**_skill_states(pod)[0].get(sid, {}), "cron": (row or {}).get("cron") or [], "external_scripts": (row or {}).get("external_scripts") or []}
                 except Exception:
                     usage = None
                 try:
