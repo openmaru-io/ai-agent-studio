@@ -123,6 +123,17 @@ def _root_gateway(home) -> dict:
         return {}
 
 
+# 멀티플렉스(Hermes 0.22)에서 이름 있는 프로파일의 채널이 루트에서 돌 수 없을 때 Hermes 가 남기는 이유(gateway/run_adapters.py).
+# 연결이 끊긴 것이 아니라 설정을 고칠 일이라 주의(warn)로 보이고 메신저 수의 분모에서 뺀다(스펙 2026-11-06-001 R4·R5, E5·E6)
+def _unserved_text(name: str, code: str, profile: str, error: str) -> str:
+    if code == "multiplex_shared_ingress":
+        return tr(f"{name} 은 이 구조에서 이 프로파일이 받지 않음 — 루트(default) 프로파일에서 켜야 함",
+                  f"{name} is not served for this profile under multiplex — enable it on the root (default) profile")
+    if code == "whatsapp_unpaired":
+        return tr(f"WhatsApp 이 페어링되지 않음 — hermes -p {profile} whatsapp", f"WhatsApp is not paired — run hermes -p {profile} whatsapp")
+    return tr(f"{name} 은 이 구조에서 돌지 않음: ", f"{name} does not run in this setup: ") + (error or code)
+
+
 def collect(home=None, container: str | None = None) -> dict:
     services = service_status(container)
     profiles = hr.profiles(home)
@@ -134,17 +145,30 @@ def collect(home=None, container: str | None = None) -> dict:
     root = _json_or(texts[0], {})
     if not isinstance(root, dict):
         root = {}
-    # 루트가 실행 중일 때만 함께 도는 프로파일로 친다. served_profiles 가 없는 옛 Hermes 는 빈 집합이라 예전 판정 그대로다
-    served = {str(n) for n in (root.get("served_profiles") or [])} if root.get("gateway_state") == "running" else set()
+    # 루트 파일의 served_profiles 에 있는 프로파일은 루트 게이트웨이가 돌린다(멀티플렉스). served_profiles 가 없는 옛 Hermes 는
+    # 빈 집합이라 예전 판정 그대로다. 켜짐은 루트가 running 일 때만 참이다(OMAI-1164)
+    served = {str(n) for n in (root.get("served_profiles") or [])}
+    root_running = root.get("gateway_state") == "running"
+    root_home = home or hr.hermes_home()
+    root_platforms = root.get("platforms") if isinstance(root.get("platforms"), dict) else {}
     rows = []
     for i, prof in enumerate(profiles):
         state_text, cfg_text, env_text, jobs_text = texts[1 + i * len(files):1 + (i + 1) * len(files)]
         state = _json_or(state_text, {})
         if not isinstance(state, dict):
             state = {}
-        shared = not state and prof.name in served             # 자기 상태 파일이 있으면 그것을 쓴다
-        if shared:                                              # 상태·버전·시각은 루트 것을 보인다. 채널(platforms)은 루트에 속해 여기에 얹지 않는다
-            state = {k: root.get(k) for k in ("gateway_state", "updated_at", "code_version")}
+        is_root = prof.path == root_home                         # 루트 행은 이름이 아니라 경로로 알아본다
+        shared = not is_root and prof.name in served
+        if shared:
+            # 루트가 돌리는 프로파일: 프로파일 폴더의 gateway_state.json 은 멀티플렉스 전 게이트웨이가 남긴 것이라 루트 상태와
+            # 상관없이 무시한다(공개 이슈 #3, 스펙 2026-11-06-001 R1·E1·E3). 채널은 루트 파일의 "<이름>:<채널>" 키에서 읽고,
+            # 옛 기록 판정의 기준 pid 는 루트 pid 다(R2)
+            prefix = prof.name + ":"
+            state = {k: root.get(k) for k in ("gateway_state", "updated_at", "code_version", "pid")}
+            state["platforms"] = {k[len(prefix):]: v for k, v in root_platforms.items() if k.startswith(prefix)}
+        elif is_root and isinstance(state.get("platforms"), dict):
+            # 루트 행에는 다른 프로파일의 "<이름>:<채널>" 키를 섞지 않는다(R3)
+            state = {**state, "platforms": {k: v for k, v in state["platforms"].items() if ":" not in k}}
         jobs = _jobs(jobs_text)
         svc = services.get(prof.name)
         configured = _configured(prof, cfg_text, env_text)
@@ -158,7 +182,8 @@ def collect(home=None, container: str | None = None) -> dict:
                                                                                  and rt.get("state") != "connected"))
             if not rt and configured.get(name) is False:
                 continue                      # 꺼 둔 채널이고 런타임 기록도 없으면 보여 줄 것이 없다
-            platforms.append({"name": name, "configured": configured.get(name),
+            unserved = (shared and rt.get("state") == "disabled" and rt.get("error_code")) or ""
+            platforms.append({"name": name, "configured": configured.get(name), "unserved": str(unserved),
                               "state": rt.get("state") or (tr("설정만 있음", "Configured only") if configured.get(name) else ""),
                               "error": redact(rt.get("error_message") or rt.get("error_code") or "", 160),
                               "needs_attention": bool(rt.get("needs_attention")),
@@ -166,7 +191,7 @@ def collect(home=None, container: str | None = None) -> dict:
                               "stale": stale, "runtime": bool(rt)})
         if svc:
             running = svc["up"]
-        elif shared:                                     # 루트 게이트웨이가 이 프로파일의 크론·채널을 맡아 돌고 있다
+        elif shared and root_running:                    # 루트 게이트웨이가 이 프로파일의 크론·채널을 맡아 돌고 있다
             running = True
         elif services:                                   # 서비스 목록은 읽었는데 이 프로파일 것이 없다
             running = None
@@ -184,6 +209,9 @@ def collect(home=None, container: str | None = None) -> dict:
                                                                  "The gateway is off (no active scheduled jobs). Messages from channels are not received")})
         for p in platforms:
             if p["stale"] or running is False:     # 게이트웨이가 꺼져 있으면 채널 끊김은 그 결과일 뿐이다
+                continue
+            if p["unserved"]:                      # 멀티플렉스에서 이 프로파일이 받지 않는 채널 — 설정을 고칠 일(R4)
+                issues.append({"level": "warn", "text": _unserved_text(p["name"], p["unserved"], prof.name, p["error"])})
                 continue
             # 설정에 켜져 있거나, 게이트웨이가 이 채널을 띄우려 한 기록이 있으면 대상이다
             if (p["configured"] or p["runtime"]) and p["state"] not in ("connected", "") and p["name"] != "api_server":
@@ -216,7 +244,9 @@ def collect(home=None, container: str | None = None) -> dict:
                        # 메신저(텔레그램·슬랙 등) 연결 수. 옛 기록(stale)과 api_server(Hermes 자신의 API)는 뺀다 — 대시보드의 「메신저 연결」 칸(2026-10-18)
                        "messengers_connected": sum(1 for r in rows for p in r["platforms"]
                                                    if p["name"] != "api_server" and p["state"] == "connected" and not p["stale"]),
-                       "messengers_total": sum(1 for r in rows for p in r["platforms"] if p["name"] != "api_server" and not p["stale"]),
+                       # 멀티플렉스에서 일부러 돌지 않는 채널(unserved)은 끊긴 것이 아니라 분모에서도 뺀다(스펙 2026-11-06-001 R5)
+                       "messengers_total": sum(1 for r in rows for p in r["platforms"]
+                                               if p["name"] != "api_server" and not p["stale"] and not p["unserved"]),
                        "channels_connected": sum(1 for r in rows for p in r["platforms"]
                                                  if p["state"] == "connected" and not p["stale"]),
                        "needs_attention": sum(1 for r in rows for p in r["platforms"]
