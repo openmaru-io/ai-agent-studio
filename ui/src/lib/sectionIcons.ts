@@ -160,6 +160,12 @@ export const SECTION_ICONS: Record<string, SvgIconComponent> = {
   'skills.publishTitle': FileUploadOutlinedIcon,
   'skills.otherSkills': ExtensionOutlinedIcon,
   'skills.envTitle': VpnKeyOutlinedIcon,         // 스킬이 선언한 필요한 비밀값(스펙 2026-10-16-010 2단계): 자격증명과 같은 열쇠
+  // 스킬 — 에이전트 중심 보기(screens/skills/AgentSkills.tsx)
+  'skillsAgent.folderFiles': FolderOutlinedIcon,
+  'skillsAgent.checks': FactCheckOutlinedIcon,
+  'skillsAgent.packageFiles': ChecklistOutlinedIcon,
+  'skillsAgent.headerPreview': DescriptionOutlinedIcon,
+  'skillsAgent.publishHistory': HistoryOutlinedIcon,
   // 사용자
   'users.changeRole': ManageAccountsOutlinedIcon,
   'account.sectionAccount': BadgeOutlinedIcon, // 내 정보 서랍(스펙 2026-10-14-017)

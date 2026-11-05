@@ -68,7 +68,7 @@ import { calmAlertSx, capWhy, mayManage, PaneUnreadable, useProfileAct } from '.
 import { isMySkill, skillOriginLabel } from './skillOrigin';
 import { useProfileSpot } from './spot';
 import type { EnvVar, McpItem, ProfileDetailData, SkillItem, ToolsetItem } from './types';
-function Toggle({
+export function Toggle({
   on,
   label,
   done,
