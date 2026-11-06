@@ -380,6 +380,66 @@ describe('2차 인식(스펙 2026-11-01-001 D12~D20·D27)', () => {
   });
 });
 
+describe('녹음 중 마이크 단추(2026-11-06)', () => {
+  // 녹음·받아쓰는 동안 띠가 ✕ 취소·✓ 끝내기를 맡는다. 마이크 자리가 같은 회색 마이크·「말로 입력」 툴팁인 채
+  // 「녹음 끝내기」로 동작해 시작 단추처럼 보였고, 같은 이름 단추가 둘이었다(스펙 2026-10-22-005 §8-9)
+  it('녹음 중에는 마이크 단추가 없고 「녹음 끝내기」는 띠의 하나뿐이다. 끝나면 마이크가 다시 보인다', async () => {
+    render(<Harness />);
+    await ready();
+    expect(screen.queryByRole('button', { name: '말로 입력' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: '녹음 끝내기' })).toHaveLength(1);
+    fireEvent.click(finishBtn());
+    sock().msg({ type: 'final', text: '끝' });
+    sock().msg({ type: 'done' });
+    expect(await screen.findByRole('button', { name: '말로 입력' })).toBeInTheDocument();
+  });
+
+  it('키보드로 마이크를 눌러 시작하면 초점이 띠의 「녹음 끝내기」로 가고, 끝나면 마이크로 돌아온다', async () => {
+    render(<Harness />);
+    mic().focus();
+    fireEvent.click(mic());
+    await screen.findByText(/0:00 \/ 5:00/);
+    await waitFor(() => {
+      const finish = screen.getAllByRole('button', { name: '녹음 끝내기' });
+      expect(finish).toHaveLength(1); // 마이크 자리가 아니라 띠의 ✓
+      expect(document.activeElement).toBe(finish[0]);
+    });
+    sock().open();
+    sock().msg({ type: 'ready', session: 's1', max_seconds: 300 });
+    fireEvent.click(finishBtn());
+    sock().msg({ type: 'final', text: '끝' });
+    sock().msg({ type: 'done' });
+    await waitFor(() => expect(document.activeElement).toBe(mic()));
+  });
+
+  it('입력칸에서 녹음을 시작했으면 초점은 입력칸에 그대로 둔다', async () => {
+    render(<Harness />);
+    box().focus();
+    await startStream();
+    expect(document.activeElement).toBe(box());
+  });
+});
+
+describe('녹음 중 입력칸 높이 고정(D20)', () => {
+  it('큰 입력 카드에서 높이 고정은 보이는 입력칸에만 걸고 MUI 의 숨은 측정용 입력칸에는 걸지 않는다', async () => {
+    // 숨은 입력칸에도 min-height 가 걸리면 MUI 가 「한 줄 높이」를 고정 높이로 재고 minRows=2 로 두 배를 잡아,
+    // 다시 잴 때마다 높이가 두 배로 늘어 입력칸이 화면을 채웠다(2026-11-06, 채팅 화면 녹음 중)
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, pseudo?: string | null) => {
+      const cs = real(el, pseudo);
+      if (el instanceof HTMLTextAreaElement && !el.hasAttribute('aria-hidden')) {
+        return new Proxy(cs, { get: (t, k) => (k === 'height' ? '80px' : Reflect.get(t, k)) }) as CSSStyleDeclaration;
+      }
+      return cs;
+    });
+    render(<Harness variant="prominent" />);
+    await startStream();
+    const shadow = document.querySelector('textarea[aria-hidden]') as HTMLTextAreaElement;
+    await waitFor(() => expect(real(box()).minHeight).toBe('80px'));
+    expect(real(shadow).minHeight).not.toBe('80px');
+  });
+});
+
 describe('일괄 경로 폴백', () => {
   it('ready 전에 busy 면 녹음을 이어 가고 끝낸 뒤 PCM 을 WAV 로 일괄 받아쓴다', async () => {
     const fn = stubApi({ '/api/chat/transcribe': { transcript: '일괄 글' } });

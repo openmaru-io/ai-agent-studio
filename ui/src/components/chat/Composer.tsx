@@ -499,7 +499,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           fontSize: big ? 15 : chatType.body,
           lineHeight: chatType.bodyLine,
           color: tk.text,
-          ...(frozenH ? { '& textarea': { minHeight: `${frozenH}px` } } : {}),
+          // 보이는 입력칸에만 건다. MUI 의 숨은 측정용 입력칸(aria-hidden)에도 걸리면 「한 줄 높이」가 고정 높이로 재어져
+          // 큰 입력 카드(minRows 2)가 그 두 배를 잡고, 다시 잴 때마다 두 배로 늘어 입력칸이 화면을 채웠다(2026-11-06)
+          ...(frozenH ? { '& textarea:not([aria-hidden])': { minHeight: `${frozenH}px` } } : {}),
         }}
       />
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: big ? 1.25 : 1, pb: big ? 1.25 : 1, pt: 0.25 }}>

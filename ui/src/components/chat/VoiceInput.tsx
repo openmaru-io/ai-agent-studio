@@ -976,6 +976,8 @@ export function VoiceButton({
   const mineActive = mine && ACTIVE.includes(s.phase);
   const other = !mine && ACTIVE.includes(s.phase);
   const blocked = !!voice.blockedReason;
+  const btn = useRef<HTMLButtonElement>(null);
+  const bandFocus = useRef(false); // 키보드로 이 단추를 눌러 녹음을 시작했다 — 초점을 띠로 옮기고 끝나면 돌려놓는다
 
   // 대화를 바꾸거나(대상·같은 프로파일의 대화가 바뀜) 창을 닫거나 화면을 옮기면(언마운트) 버린다(21A)
   useEffect(() => () => voiceRecorder.discard(owner), [owner, voice.pod, voice.profile, voice.conversation]);
@@ -1001,7 +1003,23 @@ export function VoiceButton({
     return () => window.removeEventListener('keydown', onKey, true);
   }, [mineActive, owner, rootRef]);
 
+  // 녹음·받아쓰는 동안은 띠가 ✕ 취소·✓ 끝내기를 맡아 마이크 단추를 그리지 않는다. 같은 회색 마이크·「말로 입력」 툴팁인 채
+  // 「녹음 끝내기」로 동작해 시작 단추처럼 보였고 같은 이름 단추가 둘이었다(2026-11-06, 스펙 2026-10-22-005 §8-9).
+  // 키보드로 마이크를 눌러 시작했으면 초점을 띠의 단추로 옮기고, 끝나면 마이크로 돌려놓는다(초점이 사라지지 않게)
+  useEffect(() => {
+    if (mineActive && bandFocus.current) {
+      const want = rootRef.current?.querySelector<HTMLElement>(s.phase === 'transcribing' ? '[data-voice-cancel]' : '[data-voice-finish]');
+      const inBand = !!document.activeElement?.closest?.('[data-voice-band]');
+      if (want && !inBand) want.focus();
+    } else if (!mineActive && bandFocus.current) {
+      bandFocus.current = false;
+      const at = document.activeElement;
+      if (!at || at === document.body) btn.current?.focus();
+    }
+  }, [mineActive, s.phase, rootRef]);
+
   if (voice.stt !== true || !supported) return null; // stt 값이 온 뒤 한 번에 그린다(23A), 브라우저 조건(§3-10)
+  if (mineActive) return null;
 
   const reason = other ? t('voice.otherWindow') : !mineActive && blocked ? voice.blockedReason : '';
   const tip = voice.sttStream
@@ -1014,6 +1032,7 @@ export function VoiceButton({
       ? t('voice.cancelTranscribe')
       : t('voice.label');
   const press = () => {
+    bandFocus.current = document.activeElement === btn.current;
     if (reason) {
       voice.refresh?.(); // 막힌 마이크를 누르면 연결 상태를 다시 읽는다(M3)
       return;
@@ -1040,6 +1059,7 @@ export function VoiceButton({
   return (
     <Tooltip title={reason || tip}>
       <IconButton
+        ref={btn}
         aria-label={label}
         data-guide="chat.voice"
         aria-disabled={reason ? true : undefined}
@@ -1086,6 +1106,7 @@ export function VoiceBand({
     <Tooltip title={label}>
       <IconButton
         aria-label={label}
+        data-voice-cancel=""
         size="small"
         onPointerDown={keepFocus}
         onClick={() => voiceRecorder.cancel(owner)}
@@ -1130,6 +1151,7 @@ export function VoiceBand({
             variant="outlined"
             color="inherit"
             aria-label={t('voice.finishLabel')}
+            data-voice-finish=""
             aria-disabled={s.phase === 'asking' ? true : undefined}
             onPointerDown={keepFocus}
             onClick={() => voiceRecorder.finish(owner)}
@@ -1205,7 +1227,7 @@ export function VoiceBand({
   if (!body) return null;
   // 짧은 상태 문구는 띠 자리에 role=status 로(4A). 할 일이 있는 긴 안내는 VoiceLine 이 띠 아래에 보인다(R14)
   return (
-    <Box id={id} sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
+    <Box id={id} data-voice-band="" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
       {body}
     </Box>
   );
