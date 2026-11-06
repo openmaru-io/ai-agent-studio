@@ -1287,7 +1287,7 @@ describe('Profiles 상세: 스킬·도구·크론', () => {
         ],
       },
     });
-    const box = await screen.findByRole('checkbox', { name: '내 스킬만 (5)' });
+    const box = await screen.findByRole('checkbox', { name: '직접 만든 스킬만 (5)' });
     expect(box).not.toBeChecked();                                                     // 처음엔 꺼짐
     expect(screen.getByText('s-bundled')).toBeInTheDocument();
     await user.click(box);
@@ -1302,10 +1302,10 @@ describe('Profiles 상세: 스킬·도구·크론', () => {
     const user = userEvent.setup();
     let release: (v: unknown) => void = () => {};
     mount('/profiles?name=ma&pane=skills', DETAIL(), LIST(), { '/api/skills': () => new Promise((r) => (release = r)) });
-    const box = await screen.findByRole('checkbox', { name: '내 스킬만 (—)' });
+    const box = await screen.findByRole('checkbox', { name: '직접 만든 스킬만 (—)' });
     expect(box).toBeDisabled();
     release({ skills: [{ id: 'ma:report', name: 'report', profile: 'ma', origin: 'bundled' }] });
-    const ready = await screen.findByRole('checkbox', { name: '내 스킬만 (0)' });
+    const ready = await screen.findByRole('checkbox', { name: '직접 만든 스킬만 (0)' });
     await user.click(ready);
     expect(await screen.findByText('이 프로파일에는 내 스킬이 없습니다')).toBeInTheDocument();
   });
