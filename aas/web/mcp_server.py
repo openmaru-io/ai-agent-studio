@@ -604,7 +604,11 @@ async def skill_get(ctx: Ctx, args: dict):
         except ToolError:                                 # 본문을 못 읽어도 정보는 준다
             pass
     if args.get("zip") and isinstance(hit, dict):         # 폴더 zip 받기(스크립트 포함). 권한은 /api/skill/download 가 받을 때 다시 본다
-        url = await _link(ctx, "skill", "down", pid, {"profile": hit.get("profile") or "", "path": hit.get("path") or ""})
+        prof = hit.get("profile") or ""
+        rel = str(hit.get("path") or "")
+        if prof not in ("", "default") and rel.startswith(f"profiles/{prof}/"):
+            rel = rel[len(f"profiles/{prof}/"):]           # 다운로드 API 는 프로파일 기준 경로를 받는다(화면 DownloadSkill 과 같게)
+        url = await _link(ctx, "skill", "down", pid, {"profile": prof, "path": rel})
         hit["download"] = _link_view(url, _down_command(url, f"aas-files/{hit.get('name') or 'skill'}.zip"))
     return hit
 
@@ -1420,7 +1424,8 @@ TOOLS = {t["name"]: t for t in (
           {"pod": POD, "profile": _s("Profile name"), "namespace": _s("Package namespace"), "name": _s("Package name")},
           ("pod", "profile", "namespace", "name")),
     _tool("market_publish", "market", market_publish,
-          "Request publishing a skill folder (path relative to the profile, e.g. skills/uploaded/<name>) to the skill hub. A skill the agent's "
+          "Request publishing a skill folder (path relative to the profile, e.g. skills/uploaded/<name>; the path from skills_list/skill_get, "
+          "profiles/<profile>/skills/..., is also accepted) to the skill hub. A skill the agent's "
           "owner made on this AAS (skill_create, skill_upload, skill_update) and nobody changed since is approved automatically without "
           "admin review; otherwise an admin approves it. Same checks as the screen (name, version, secrets; internal addresses are refused "
           "for public namespaces).",

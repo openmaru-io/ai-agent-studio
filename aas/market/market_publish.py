@@ -261,8 +261,8 @@ def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skil
         raise MarketError(tr("패키지 이름은 소문자·숫자·하이픈으로 2~63자로 적습니다(원본 스킬 이름은 그대로 둡니다)", "Write the package name with lowercase letters, digits, and hyphens (2-63 characters)"))
     if not VERSION.match(version or ""):
         raise MarketError(tr("버전은 1.2.3 꼴이어야 합니다", "The version must look like 1.2.3"))
-    parts = [p for p in str(skill_path or "").split("/") if p]
-    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    parts = skill_keep.profile_rel(profile, skill_path)  # 기록에는 떼어 낸 프로파일 기준 경로가 남는다(화면의 r.path === inRoot 비교)
+    if parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
     rel = "/".join(parts)
     root = skill_keep.profile_root(home, profile)
@@ -393,9 +393,8 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
     def add(cid: str, level: str, message: str) -> None:
         checks.append({"id": cid, "level": level, "message": message})
 
-    parts = [p for p in str(skill_path or "").split("/") if p]
-    if (not marketplace.PROFILE.match(profile or "") and profile != "default") or len(parts) < 2 or parts[0] != "skills" \
-            or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    parts = skill_keep.profile_rel(profile, skill_path)
+    if (not marketplace.PROFILE.match(profile or "") and profile != "default") or parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
     rel = "/".join(parts)
     root = skill_keep.profile_root(home, profile)
