@@ -14,8 +14,8 @@ def row(pid, name, prof, shared_from=None):
     return r
 
 
-def edge(a, b, kind, conf):
-    return {"from": a, "to": b, "kind": kind, "conf": conf}
+def edge(a, b, kind, conf, text=""):
+    return {"from": a, "to": b, "kind": kind, "conf": conf, "evidence": [{"file": "SKILL.md", "line": 3, "text": text}] if text else []}
 
 
 BASE = row(0, "report", "default")
@@ -44,15 +44,25 @@ class Deps(unittest.TestCase):
         self.assertEqual(skill_deps.summary(ix, SKILLS)[BASE["id"]]["n_block"], 1)
 
     def test_frontmatter_refers_blocks_mention_only_warns(self):
-        ix = index(edge("skill:" + CALLER["id"], "skill:" + BASE["id"], "refers", "doc"),
-                   edge("skill:" + TALKER["id"], "skill:" + BASE["id"], "refers", "mention"))
+        ix = index(edge("skill:" + CALLER["id"], "skill:" + BASE["id"], "refers", "doc", "related_skills: [report]"),
+                   edge("skill:" + TALKER["id"], "skill:" + BASE["id"], "refers", "mention"),
+                   edge("skill:" + LONE["id"], "skill:" + BASE["id"], "refers", "doc", "description: report 와 같은 토큰"))
         d = skill_deps.dependents(ix, SKILLS, BASE)
         self.assertEqual([x["label"] for x in d["block"]], ["caller"])
-        self.assertEqual([x["label"] for x in d["warn"]], ["talker"])
+        self.assertEqual(sorted(x["label"] for x in d["warn"]), ["lone", "talker"])   # description 에 이름만 나온 것은 막지 않는다
 
     def test_edges_between_copies_do_not_count(self):
         ix = index(edge("skill:" + COPY["id"], "skill:" + BASE["id"], "refers", "doc"))
         self.assertEqual(skill_deps.dependents(ix, SKILLS, BASE)["block"], [])
+
+    def test_copies_of_one_caller_count_once(self):
+        caller_copy = row(0, "caller", "ops", shared_from="default")
+        skills = SKILLS + [caller_copy]
+        ix = index(edge("skill:" + CALLER["id"], "skill:" + BASE["id"], "refers", "doc", "related_skills: [report]"),
+                   edge("skill:" + caller_copy["id"], "skill:" + COPY["id"], "refers", "doc", "related_skills: [report]"))
+        d = skill_deps.dependents(ix, skills, BASE)
+        self.assertEqual([(x["label"], x["profile"]) for x in d["block"]], [("caller", "default")])
+        self.assertEqual(skill_deps.summary(ix, skills)[BASE["id"]]["n_block"], 1)
 
     def test_no_index_means_not_checked(self):
         d = skill_deps.dependents(None, SKILLS, LONE)
