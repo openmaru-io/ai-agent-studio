@@ -158,6 +158,14 @@ class ChatHubTest(unittest.TestCase):
         self.assertEqual([(a["request_id"], a["question_id"]) for a in answered], [("srq-9", "q0"), ("srq-9", "q1")])
         self.assertNotIn("clarify.respond", [f.get("method") for f in self.ws.sent])
 
+    def test_history_gives_a_lower_bound_of_last_activity(self):
+        """Hermes 는 마지막 활동 순으로 주지만 그 시각은 없다. 아래 줄들의 시작 시각으로 하한을 매긴다(세션 칸 「어제까지」)."""
+        from unittest import mock
+        rows = [{"id": "a", "started_at": 100}, {"id": "b", "started_at": 300}, {"id": "c", "started_at": 200}, {"id": "d", "started_at": None}]
+        with mock.patch.object(self.hub, "request", return_value={"sessions": rows}):
+            got = self.hub.history("ma")
+        self.assertEqual([(r["id"], r["active_at"]) for r in got], [("a", 300), ("b", 300), ("c", 200), ("d", 0)])
+
     def test_history_and_resume_replay_past_messages(self):
         rows = self.hub.history("ma")
         self.assertEqual((rows[0]["id"], rows[0]["source"], rows[0]["live_session_id"]), ("st1", "buzz", None))
@@ -170,7 +178,12 @@ class ChatHubTest(unittest.TestCase):
         self.assertNotIn("args", msgs[1])                                              # 도구 인자는 싣지 않는다
         self.assertEqual(msgs[1]["guard"], "recursive delete of Hermes data (/opt/data)")  # 안전장치 차단 이유는 싣는다(스펙 2026-10-24-004 6절)
         self.assertNotIn("guard", msgs[0])
-        self.assertTrue(self.hub.resume("ma", "st1")["reused"])                        # 두 번 열지 않는다
+        again = self.hub.resume("ma", "st1")
+        self.assertTrue(again["reused"])                                               # 두 번 열지 않는다
+        # 처음부터 받는 화면이 여기까지 모아서 한 번에 그린다 — 지난 답이 토큰마다 다시 흘렀다
+        self.assertEqual(again["seq"], self.hub.seq("s1"))
+        self.assertEqual(out["seq"], ev[-1]["seq"])
+        self.assertEqual([r["seq"] for r in self.hub.live_sessions() if r["session_id"] == "s1"], [self.hub.seq("s1")])
         self.assertEqual([f["method"] for f in self.ws.sent].count("session.resume"), 1)
         self.assertEqual(self.hub.history("ma")[0]["live_session_id"], "s1")
         # resume 이 뒤에서 보내는 session.control.read 가 끝나기를 기다린다. send 뒤에 도착하면 마지막 프레임이 바뀌어

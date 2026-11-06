@@ -131,6 +131,32 @@ class HttpTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in out["sessions"]], ["st-mine", "st-1on1"])      # 1:1 오피스 대화는 남는다
         self.assertEqual(seen["limit"], 200)
 
+    def test_history_excludes_hidden_only_when_asked_and_resume_unhides(self):
+        """세션 칸 「완료」만 닫은 대화를 뺀다(exclude_hidden=1). 「지난 대화」 서랍은 그대로 보이고, 다시 열면 숨김이 풀린다(스펙 2026-11-06-002 E2·E3)."""
+        from aas.ops import chat_hidden
+        rows = [{"id": "st-closed"}, {"id": "st-open"}]
+        chat_hidden.hide("", "t", ["st-closed"])                          # 로그인이 꺼진 설치는 email ''
+        try:
+            with mock.patch.object(FakeHub, "history", lambda self, profile, limit=80: rows):
+                done = [r["id"] for r in self.req("GET", "/api/chat/history?profile=main&exclude_hidden=1")[1]["sessions"]]
+                drawer = [r["id"] for r in self.req("GET", "/api/chat/history?profile=main")[1]["sessions"]]
+                self.assertEqual(self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "st-closed"})[0], 200)
+                again = [r["id"] for r in self.req("GET", "/api/chat/history?profile=main&exclude_hidden=1")[1]["sessions"]]
+        finally:
+            chat_hidden.unhide("", "t", "st-closed")
+        self.assertEqual(done, ["st-open"])
+        self.assertEqual(drawer, ["st-closed", "st-open"])
+        self.assertEqual(again, ["st-closed", "st-open"])
+
+    def test_history_limit_is_capped(self):
+        """세션 칸의 「1주일」은 limit=200 으로 묻는다. 기본은 80, 상한 200, 잘못된 값은 기본(스펙 2026-11-06 세션 칸)."""
+        rows = [{"id": f"st-{i}"} for i in range(250)]
+        with mock.patch.object(FakeHub, "history", lambda self, profile, limit=80: rows):
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main")[1]["sessions"]), 80)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=200")[1]["sessions"]), 200)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=999")[1]["sessions"]), 200)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=x")[1]["sessions"]), 80)
+
     def test_other_unknown_names_are_still_refused(self):
         self.assertEqual(self.req("GET", "/api/chat/history?profile=ghost")[0], 400)
         self.assertEqual(self.req("POST", "/api/chat/session", {"profile": "ghost"})[0], 400)

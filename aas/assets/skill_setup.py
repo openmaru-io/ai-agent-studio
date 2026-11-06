@@ -79,8 +79,15 @@ def set_names(*env_files) -> set[str]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for line in text.splitlines():
-            m = _ENV_LINE.match(line)
-            if m and m.group(2).strip().strip("\"'"):
-                names.add(m.group(1))
+        names |= names_of(text)
+    return names
+
+
+def names_of(text: str) -> set[str]:
+    """`.env` 글에서 값이 있는 변수 이름만. 여러 파일을 한 번에 읽은 쪽이 쓴다(스펙 2026-11-06-002 D3)."""
+    names: set[str] = set()
+    for line in (text or "").splitlines():
+        m = _ENV_LINE.match(line)
+        if m and m.group(2).strip().strip("\"'"):
+            names.add(m.group(1))
     return names

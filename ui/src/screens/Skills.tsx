@@ -42,6 +42,7 @@ import { useIsAdmin, useMe } from '@/lib/data';
 import { profileName } from '@/lib/format';
 import { cleanSkillBody } from '@/lib/skillTemplate';
 import { isMySkill } from '@/screens/profiles/skillOrigin';
+import { agentOrder, AgentSkills, type AgentSkillsData } from '@/screens/skills/AgentSkills';
 import { useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
 
@@ -81,6 +82,8 @@ interface SkillsData {
   can_upload?: boolean;
   /** 최근 7일 안에 서버가 되돌린 가려진 기본 스킬(스펙 2026-10-27-011 D14) */
   bundled_repaired?: BundledRepair[];
+  /** 에이전트(프로파일)별 요약 — 에이전트 중심 보기의 왼쪽 칸. 옛 서버면 없다 */
+  agents?: AgentSkillsData['agents'];
 }
 interface SkillOne {
   name: string;
@@ -1076,7 +1079,59 @@ function NewFromParam({ value, canUpload, open }: { value: string | null; canUpl
   return null;
 }
 
+/** 표 보기로 여는 주소 값. 옛 북마크·다른 화면의 링크(호출 대상·태그·보기·서랍)는 지금처럼 표로 연다 */
+const TABLE_PARAMS = ['view', 'lens', 'tab', 'chip', 'tag', 'open', 'new'];
+
+/**
+ * 스킬 화면. 기본은 에이전트 중심 3칸(AI 에이전트 | 그 에이전트의 스킬 | 동작·필요한 것·파일·게시)이고,
+ * 「전체 표」(?view=table 또는 위의 주소 값)는 POD 전체 스킬 표다. 상태 값이 없는 옛 서버면 표로 연다.
+ */
 export function Skills() {
+  const [params, setParams] = useSearchParams();
+  const { openDrawer } = useUi();
+  const q = useQuery<SkillsData>({ queryKey: ['skills'], queryFn: () => get<SkillsData>('/api/skills'), staleTime: 120000 });
+  useMe(); // 표 보기가 붙기 전에 권한 정보를 함께 받아 둔다(관리자 단추가 늦게 뜨지 않게)
+  const table = TABLE_PARAMS.some((k) => params.has(k)) || params.get('profile') === ALL_PROFILES;
+  if (table) return <SkillsTable />;
+  if (!q.data) return <ScreenLoading title={t('skills.title')} error={q.error?.message} />;
+  const g = q.data;
+  if (!g.agents?.length) return <SkillsTable />;
+  const onTable = () =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      ['skill', 'pane', 'f'].forEach((k) => next.delete(k));
+      next.set('view', 'table');
+      next.set('profile', ALL_PROFILES);
+      return next;
+    });
+  const profiles = g.profiles ?? agentOrder(g);
+  const onNew = (profile: string) =>
+    openDrawer({
+      title: t('skills.newSkill'),
+      sub: t('skills.newSkillSub'),
+      body: <CreateSkill profiles={profiles} initialProfile={profiles.includes(profile) ? profile : (profiles[0] ?? 'default')} canUpload={!!g.can_upload} initialTab="write" />,
+    });
+  return <AgentSkills g={g} onTable={onTable} onNew={onNew} />;
+}
+
+/** 에이전트 중심 보기로 돌아가는 단추(표 보기의 도구 줄) */
+function AgentViewButton() {
+  const [params, setParams] = useSearchParams();
+  const back = () =>
+    setParams((prev) => {
+      const next = new URLSearchParams();
+      const p = prev.get('profile');
+      if (p && p !== ALL_PROFILES) next.set('profile', p);
+      return next;
+    });
+  return (
+    <Button size="small" onClick={back} data-agent-view={params.get('profile') ?? ''}>
+      {t('skillsAgent.byAgent')}
+    </Button>
+  );
+}
+
+function SkillsTable() {
   const [params, setParams] = useSearchParams();
   const { openDrawer } = useUi();
   const { enqueueSnackbar } = useSnackbar();
@@ -1353,6 +1408,7 @@ export function Skills() {
                   ))}
               </optgroup>
             </NativeSelect>
+            <AgentViewButton />
             <Button
               size="small"
               data-guide="skills.delegate"

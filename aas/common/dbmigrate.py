@@ -29,10 +29,10 @@ def schema_scripts() -> list[str]:
     from ..market import marketplace, publish_auto
     from ..office import hub_auto, meeting, office
     from . import settings
-    from ..ops import admin_requests, approval_answers, chat_session_meta, cron_done, mutes, pc_import
+    from ..ops import admin_requests, approval_answers, chat_hidden, chat_session_meta, cron_done, mutes, pc_import
     return [store.SCHEMA, office.SCHEMA, hub_auto.SCHEMA, meeting.SCHEMA, marketplace.SCHEMA, mutes.SCHEMA, cron_done.SCHEMA,
             agents.LIMIT_SCHEMA, agents.SIZE_SCHEMA, Registry.GRANT_SCHEMA, Registry.OWNER_SCHEMA, primary.SCHEMA, files.VERSION_SCHEMA, files.VERSION_INDEX, files.ACK_SCHEMA, inventory.REG_SCHEMA, admin_requests.SCHEMA, settings.GOAL_SCHEMA, settings.DEPT_SCHEMA, settings.TEAM_MANAGER_SCHEMA, settings._SCHEMA, retained_volumes.SCHEMA,
-            pc_import.SCHEMA, tokens.SCHEMA, mcp_limits.SCHEMA, mcp_transfers.SCHEMA, approval_answers.SCHEMA, chat_session_meta.SCHEMA, publish_auto.SCHEMA]
+            pc_import.SCHEMA, tokens.SCHEMA, mcp_limits.SCHEMA, mcp_transfers.SCHEMA, approval_answers.SCHEMA, chat_session_meta.SCHEMA, chat_hidden.SCHEMA, publish_auto.SCHEMA]
 
 
 def ensure_schema() -> None:

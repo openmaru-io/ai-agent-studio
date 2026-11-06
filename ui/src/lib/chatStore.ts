@@ -19,6 +19,8 @@ import { wsClient } from './ws';
 type Stream = { close(): void };
 /** 다시 연 뒤 이 시간 안에 또 끊기면 앞의 횟수를 이어서 센다 — 바로 끊기는 일이 되풀이되면 1초마다 다시 열지 않게 */
 const CARRY_MS = 30000;
+/** 지난 이벤트 따라잡기의 안전 시한. 끝 번호가 이 안에 오지 않으면(버퍼가 줄었거나 끊김) 받은 데까지 그린다 */
+const CATCH_UP_MAX_MS = 8000;
 const NO_TOPIC_STATES = ['fallback-http', 'replaced', 'auth-failed'];
 
 export interface AgentInfo {
@@ -80,6 +82,8 @@ export interface StoredSession {
   preview?: string;
   started_at?: number | string;
   message_count?: number;
+  /** 마지막 활동(초)의 하한. 서버가 Hermes 의 최근 활동 순서로 계산한다(옛 서버는 없음 → started_at) */
+  active_at?: number;
   live_session_id?: string | null;
   /** 이 서버가 연 대화의 목표·반복(스펙 2026-10-27-002 R6). 다시 띄운 뒤에는 그 대화를 열어야 보인다 */
   control?: { goal?: { status?: string; turns_used?: number; max_turns?: number } | null; loop?: { status?: string } | null } | null;
@@ -107,6 +111,8 @@ export interface LiveSessionRow {
   last_at?: number;
   state?: 'waiting' | 'running' | 'idle' | 'closed';
   pending?: string[];
+  /** 서버에 쌓인 마지막 이벤트 번호(따라잡기 끝) */
+  seq?: number;
 }
 /** 채팅 왼쪽 세션 목록의 한 줄(이 탭에서 연 세션 + 서버에만 있는 내 세션) */
 export interface SessionRow {
@@ -123,7 +129,21 @@ export interface SessionRow {
   storedId?: string;
   /** 사용자가 위에 고정한 세션 */
   pinned?: boolean;
+  /** Hermes 에 저장된 지난 세션(아직 열지 않음). 누르면 이어서(resume) 연다 */
+  stored?: boolean;
+  /** 저장 세션의 출처(aas·telegram·cli …)와 메시지 수 */
+  source?: string;
+  count?: number;
 }
+/** 세션 칸이 보는 AI 에이전트. null = 모든 AI 에이전트 */
+export interface AgentFilter {
+  pod?: string;
+  profile: string;
+}
+/** 지난 세션 목록을 다시 읽는 간격(ms) */
+const PAST_TTL = 60000;
+/** 일하는 대화만: 크론·Claude Code 스킬 시험은 뺀다(「지난 대화」 서랍의 talk 규칙과 같다) */
+export const isTalk = (r: StoredSession) => r.source !== 'cron' && r.claude?.purpose !== 'skill-test';
 const DISMISSED_KEY = 'aas-chat-dismissed';
 const PINNED_KEY = 'aas-chat-pinned';
 function readPinned(): Set<string> {
@@ -208,6 +228,14 @@ export class ChatStore {
   pinned: Set<string> = typeof localStorage === 'undefined' ? new Set() : readPinned();
   /** 세션별 마지막 활동 시각(ms) */
   private lastAt: Record<string, number> = {};
+  /** 세션 칸이 보는 AI 에이전트(null = 모두). 에이전트 칸에서 고른다 */
+  agentFilter: AgentFilter | null = null;
+  /** `pod|프로파일` → Hermes 에 저장된 지난 세션(60초 보관) */
+  private past: Record<string, { at: number; rows: StoredSession[]; loading?: Promise<void>; error?: boolean }> = {};
+  /** 닫은 대화의 Hermes 저장 번호(서버 chat_hidden 표). 「완료」 줄에서 뺀다(스펙 2026-11-06-002 E1) */
+  private hiddenStored: Set<string> = new Set();
+  /** 닫기를 미룬 세션(되돌리기 알림이 떠 있는 동안). 목록에서는 바로 빠지고, 알림이 닫히면 dismissMany 로 닫는다(스펙 2026-11-06-002 G11) */
+  private hiding: Set<string> = new Set();
   opening = '';
   notice = '';
   version = 0;
@@ -221,6 +249,8 @@ export class ChatStore {
   private loading: Promise<void> | null = null;
   /** 대화 id → 다음 다시 열기 시도 */
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 따라잡기 안전 시한(세션별). 끝 번호가 오지 않아도 이 시간이 지나면 그린다 */
+  private catchUpTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 대화 id → 마지막으로 다시 연 때의 횟수(CARRY_MS) */
   private recent = new Map<string, { tries: number; since: number; at: number }>();
   private connTimer: ReturnType<typeof setTimeout> | null = null;
@@ -239,6 +269,8 @@ export class ChatStore {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') this.wakeReconnects();
       });
+      // 되돌리기 알림이 떠 있는 채로 창을 닫으면 미뤄 둔 닫기를 서버에 남긴다(G11)
+      window.addEventListener('pagehide', () => this.dismissMany([...this.hiding]));
     }
   }
   /** 에이전트를 바꿀 때마다 오른다. 바꾸기 전에 나간 상태 요청의 늦은 응답을 버린다(2026-10-19-001 R1) */
@@ -453,6 +485,8 @@ export class ChatStore {
     }
     if (!S) {
       S = this.sessions[info.session_id] = { ...newSession(info), pod, ...(storedId ? { storedId } : {}) };
+      // 이미 이벤트가 쌓인 세션을 처음부터 받는다 — 끝 번호까지는 그리지 않고 모은다
+      if ((info.seq ?? 0) > 0) this.startCatchUp(S, info.seq!);
       // 웹소켓이 켜져 있으면 토픽 pod:<대화의 pod>:chat:<세션> 으로, 아니면 SSE 로 받는다(OMAI-1100). 이벤트 모양은 같다.
       // 묶음에 pod 가 없는 옛 서버 응답이면 웹소켓이 붙은 지금 에이전트로 본다
       this.listen(S, this.topicFor(S));
@@ -460,6 +494,11 @@ export class ChatStore {
     this.active[key(S.pod, S.profile)] = S.id;
     this.lastAt[S.id] ??= Date.now();
     this.dismissed.delete(S.id);
+    if (S.storedId) {
+      // 닫았던 대화를 다시 열면 「완료」에도 돌아온다(서버도 숨김을 푼다, 스펙 2026-11-06-002 E3)
+      this.dismissed.delete('stored:' + S.storedId);
+      this.hiddenStored.delete(S.storedId);
+    }
     if (S.profile === this.profile && S.pod === this.status?.pod) {
       this.currentId = S.id;
       S.unread = 0;
@@ -705,7 +744,47 @@ export class ChatStore {
     await this.openAgent(profile, this.status?.pod);
   }
 
+  private startCatchUp(S: Session, upto: number) {
+    S.catchUp = upto;
+    const old = this.catchUpTimers.get(S.id);
+    if (old) clearTimeout(old);
+    this.catchUpTimers.set(
+      S.id,
+      setTimeout(() => this.endCatchUp(S, true), CATCH_UP_MAX_MS)
+    );
+  }
+
+  /** timedOut: 안전 시한이 지났다. 끝 번호에 못 닿았으면 「일부만 불러왔습니다」를 보이도록 그 번호를 남긴다(G10) */
+  private endCatchUp(S: Session, timedOut = false) {
+    const timer = this.catchUpTimers.get(S.id);
+    if (timer) clearTimeout(timer);
+    this.catchUpTimers.delete(S.id);
+    if (!S.catchUp) return;
+    if (timedOut && (S.lastSeq ?? 0) < S.catchUp) S.partial = S.catchUp;
+    S.catchUp = undefined;
+    this.notify();
+  }
+
+  /** 「다시 불러오기」(G10): 받은 이벤트를 비우고 처음부터 다시 받는다. 끝 번호까지는 그리지 않고 모은다(PR #9 와 같은 길) */
+  reloadPartial(S: Session) {
+    const upto = S.partial;
+    if (!upto || this.sessions[S.id] !== S) return;
+    this.closeStream(S);
+    Object.assign(S, newSession({ session_id: S.id, profile: S.profile, title: S.title }), { lastSeq: 0, partial: undefined });
+    this.startCatchUp(S, upto);
+    this.listen(S, this.topicFor(S));
+    this.notify();
+  }
+
   private onEvent(S: Session, ev: ChatEvent) {
+    // 시한 뒤에 늦게 끝 번호까지 왔으면 「일부만」 줄을 내린다
+    if (S.partial && (S.lastSeq ?? 0) >= S.partial) S.partial = undefined;
+    if (S.catchUp && ev.type !== 'aas.disconnected') {
+      // 지난 이벤트를 따라잡는 중: 반영만 하고 그리지 않는다. 끝 번호에 닿으면 한 번 그린다
+      applyEvent(S, ev); // 마지막 활동 시각은 건드리지 않는다 — 지난 이벤트라 목록 순서가 바뀌면 안 된다
+      if ((S.lastSeq ?? 0) >= S.catchUp) this.endCatchUp(S);
+      return;
+    }
     if (ev.type === 'aas.disconnected') {
       // 서버와 Hermes 대시보드 사이가 끊겼다. 서버가 스스로 다시 붙으므로 기다리지 않고 다시 연다(R6·D6)
       this.reconnect(S, ev.payload?.code === 'hub_disconnected' ? 'hub' : 'aas');
@@ -735,6 +814,7 @@ export class ChatStore {
     this.profile = name;
     this.draft = '';
     this.notice = '';
+    this.follow();
     const live = this.sessionOf(name);
     this.currentId = live && (!live.closed || live.reconnect) ? live.id : null;
     if (live) live.unread = 0;
@@ -794,6 +874,7 @@ export class ChatStore {
       this.currentId = null;
       this.notice = '';
       this.restoreDraft();
+      this.follow();
       this.notify();
       return this.status?.configured ? this.startSession() : Promise.resolve(null);
     };
@@ -822,6 +903,7 @@ export class ChatStore {
       S.unread = 0;
       this.notice = '';
       this.restoreDraft();
+      this.follow();
       this.notify();
       if (S.closed && !S.reconnect) this.reopenNow(S);
       return true;
@@ -832,13 +914,14 @@ export class ChatStore {
     this.profile = row.profile;
     this.currentId = null;
     this.notice = '';
+    this.follow();
     this.opening = row.profile;
     this.notify();
     try {
       // 저장 id 가 있으면 resume(서버가 열린 세션을 그대로 돌려준다), 없으면 그 세션의 이벤트를 처음부터 받는다
       const info = row.stored_id
         ? await post<SessionInfo>('/api/chat/resume', { profile: row.profile, stored_id: row.stored_id, ...(row.pod ? { pod: row.pod } : {}) })
-        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running' };
+        : { session_id: row.session_id, profile: row.profile, title: row.title, running: row.state === 'running', seq: row.seq };
       const T = this.openSession(info, row.pod, row.stored_id || undefined);
       if (!T.title && row.title) T.title = row.title;
       this.lastAt[T.id] = (row.last_at ?? 0) * 1000 || Date.now();
@@ -862,9 +945,14 @@ export class ChatStore {
     if (!ids.length) return;
     const byPod = new Map<string, string[]>();
     for (const id of ids) {
+      this.hiding.delete(id);
       const S = this.sessions[id];
-      const pod = S?.pod ?? this.liveRows.find((r) => r.session_id === id)?.pod ?? '';
+      const row = this.liveRows.find((r) => r.session_id === id);
+      const pod = S?.pod ?? row?.pod ?? '';
       byPod.set(pod, [...(byPod.get(pod) ?? []), id]);
+      // 같은 대화의 저장 세션 줄도 「완료」에서 뺀다 — 서버 표에 남기 전(정리 전)에도 바로 빠지게(스펙 2026-11-06-002 E1)
+      const storedId = S?.storedId || row?.stored_id;
+      if (storedId) this.dismissed.add('stored:' + storedId);
       if (S) {
         this.stopReconnect(S);
         this.closeStream(S);
@@ -891,6 +979,46 @@ export class ChatStore {
       void post('/api/chat/sessions/hide', { ids: list, ...(pod ? { pod } : {}) }).catch(() => undefined);
     }
     this.notify();
+  }
+  /** 되돌릴 수 있게 닫는다(G11): 목록에서는 바로 빼고, 받기 멈춤·서버 숨김(dismissMany)은 commit 때 한다. undo 는 줄을 되살린다.
+   *  화면은 알림이 닫힐 때 commit, 「되돌리기」를 누르면 undo 를 부른다. 둘 다 한 번만 듣는다 */
+  hideSoon(ids: string[]): { commit: () => void; undo: () => void } {
+    const list = ids.filter((id) => !this.hiding.has(id));
+    const wasCurrent = this.currentId && list.includes(this.currentId) ? this.currentId : null;
+    for (const id of list) this.hiding.add(id);
+    if (wasCurrent) {
+      this.currentId = null;
+      this.restoreDraft();
+    }
+    this.notify();
+    let settled = false;
+    return {
+      commit: () => {
+        if (settled) return;
+        settled = true;
+        this.dismissMany(list.filter((id) => this.hiding.has(id)));
+      },
+      undo: () => {
+        if (settled) return;
+        settled = true;
+        for (const id of list) this.hiding.delete(id);
+        // 지금 보던 세션이었으면 다른 세션을 열지 않은 동안만 그 세션으로 돌아간다
+        if (wasCurrent && !this.currentId && this.sessions[wasCurrent]) {
+          this.currentId = wasCurrent;
+          this.restoreDraft();
+        }
+        this.notify();
+      },
+    };
+  }
+  /** 닫기를 미룬 세션의 저장 번호들 — 「완료」에도 그 대화의 저장 세션 줄이 다시 나오지 않게 한다 */
+  private hidingStored(): Set<string> {
+    const out = new Set<string>();
+    for (const id of this.hiding) {
+      const stored = this.sessions[id]?.storedId || this.liveRows.find((r) => r.session_id === id)?.stored_id;
+      if (stored) out.add('stored:' + stored);
+    }
+    return out;
   }
   /** 끝난 세션(실행 중·내 답 필요·고정 제외)을 모두 닫는다. 닫은 수를 돌려준다 */
   dismissFinished(): number {
@@ -922,11 +1050,112 @@ export class ChatStore {
     }
     return out;
   }
+  // ---- AI 에이전트별 세션(에이전트 칸에서 고른다) ----
+  /** 세션 칸이 볼 AI 에이전트를 고른다(null = 모두). 고르기만 하고 새 세션은 만들지 않는다. 그 에이전트의 지난 세션을 읽는다 */
+  setAgentFilter(f: AgentFilter | null) {
+    const same = (this.agentFilter?.pod ?? '') === (f?.pod ?? '') && this.agentFilter?.profile === f?.profile;
+    this.agentFilter = f ? { pod: f.pod || undefined, profile: f.profile } : null;
+    if (!same) this.notify();
+    if (f) void this.loadPast(f.pod, f.profile);
+  }
+  /** 다른 AI 에이전트의 대화를 열면 세션 칸도 그 에이전트로 옮긴다(모두 보기일 때는 그대로) */
+  private follow() {
+    const f = this.agentFilter;
+    if (!f || !this.profile) return;
+    const pod = this.status?.pod ?? '';
+    if (f.profile !== this.profile || (f.pod ?? '') !== pod) this.setAgentFilter({ pod, profile: this.profile });
+  }
+  /** 그 AI 에이전트의 Hermes 저장 세션을 읽는다. 60초 안에 읽었으면 다시 묻지 않는다(force 는 무시하고 읽는다) */
+  loadPast(pod: string | undefined, profile: string, force = false): Promise<void> {
+    const k = key(pod, profile);
+    const c = this.past[k];
+    if (c?.loading) return c.loading;
+    if (c && !force && Date.now() - c.at < PAST_TTL) return Promise.resolve();
+    // exclude_hidden: 닫은 대화는 「완료」에서 뺀다. 「지난 대화」 서랍은 이 인자 없이 읽어 그대로 보인다(스펙 2026-11-06-002 E2)
+    const q = `/api/chat/history?profile=${encodeURIComponent(profile)}&limit=200&exclude_hidden=1${pod ? `&pod=${encodeURIComponent(pod)}` : ''}`;
+    const loading = get<{ sessions: StoredSession[] }>(q)
+      .then((res) => {
+        this.past[k] = { at: Date.now(), rows: res.sessions ?? [] };
+      })
+      .catch(() => {
+        // 실패해도 앞서 읽은 줄은 남긴다. 「이 기간에 끝난 세션이 없습니다」로 보이지 않게 실패를 표시한다(G9)
+        this.past[k] = { at: Date.now(), rows: c?.rows ?? [], error: true };
+      })
+      .finally(() => this.notify());
+    this.past[k] = { at: c?.at ?? 0, rows: c?.rows ?? [], loading };
+    return loading;
+  }
+  /** 지난 세션을 마지막으로 읽을 때 실패했는가(G9). 다시 시도는 loadPast(pod, profile, true) */
+  pastError(pod: string | undefined, profile: string): boolean {
+    const c = this.past[key(pod, profile)];
+    return !!c?.error && !c.loading;
+  }
+  /** 지난 세션을 읽는 중인가(처음 읽기만) */
+  pastLoading(pod: string | undefined, profile: string): boolean {
+    const c = this.past[key(pod, profile)];
+    return !!c?.loading && !c.at;
+  }
+  /** 그 AI 에이전트의 세션 줄: 열린 세션 + 아직 열지 않은 Hermes 저장 세션(일하는 대화만). 같은 저장 id 는 하나로 */
+  agentRows(pod: string | undefined, profile: string): SessionRow[] {
+    const live = this.sessionRows().filter((r) => r.profile === profile && (r.pod ?? '') === (pod ?? ''));
+    const seen = new Set([...live.flatMap((r) => [r.id, ...(r.storedId ? ['stored:' + r.storedId] : [])]), ...this.hidingStored()]);
+    const stored: SessionRow[] = [];
+    for (const r of this.past[key(pod, profile)]?.rows ?? []) {
+      if (!r.id || !isTalk(r) || seen.has('stored:' + r.id) || (r.live_session_id && seen.has(r.live_session_id))) continue;
+      if (this.dismissed.has('stored:' + r.id) || this.hiddenStored.has(r.id)) continue; // 닫은 대화(E1)
+      seen.add('stored:' + r.id);
+      stored.push({
+        id: 'stored:' + r.id,
+        pod,
+        profile,
+        title: cleanTitle(r.title || ''),
+        state: 'idle',
+        unread: 0,
+        at: Number(r.active_at || r.started_at || 0) * 1000,
+        storedId: r.id,
+        stored: true,
+        source: r.source || '',
+        count: r.message_count ?? 0,
+        pinned: this.pinned.has('stored:' + r.id),
+      });
+    }
+    return [...live, ...stored];
+  }
+  /** 저장 세션 줄을 연다: 그 AI 에이전트로 옮기고 이어서(resume) 연다. 이미 열린 같은 대화가 있으면 그 세션으로 간다 */
+  async openPast(r: SessionRow): Promise<boolean> {
+    if (!r.storedId) return false;
+    const open = Object.values(this.sessions).find((S) => S.storedId === r.storedId && (S.pod ?? '') === (r.pod ?? '') && (!S.closed || S.reconnect));
+    if (open) return this.focus(open.id);
+    await this.preload();
+    this.select(r.pod ?? this.currentPod);
+    this.profile = r.profile;
+    this.currentId = null;
+    this.notice = '';
+    this.follow();
+    this.opening = r.profile;
+    this.notify();
+    try {
+      const S = await this.resume(r.storedId);
+      if (!S.title && r.title) S.title = r.title;
+      this.lastAt[S.id] = r.at || Date.now();
+      this.currentId = S.id;
+      this.active[key(S.pod, S.profile)] = S.id;
+      this.restoreDraft();
+      return true;
+    } catch (e) {
+      this.notice = (e as Error).message;
+      return false;
+    } finally {
+      this.opening = '';
+      this.notify();
+    }
+  }
   /** 서버의 내 세션 목록을 다시 읽는다(화면 진입·창 포커스·주기) */
   async loadSessions() {
     try {
-      const res = await get<{ sessions?: LiveSessionRow[]; hidden?: string[] }>('/api/chat/sessions');
+      const res = await get<{ sessions?: LiveSessionRow[]; hidden?: string[]; hidden_stored?: string[] }>('/api/chat/sessions');
       this.liveRows = res.sessions ?? [];
+      this.hiddenStored = new Set(res.hidden_stored ?? []); // 옛 서버는 없다 — 이 탭에서 닫은 것만 빠진다
       // 다른 기기에서 닫은(숨긴) 내 세션: 이 탭이 열고 있어도 목록에서 뺀다. 스트림은 그대로 둔다(스펙 2026-11-05-005 7-6)
       for (const id of res.hidden ?? []) this.dismissed.add(id);
     } catch {
@@ -947,13 +1176,13 @@ export class ChatStore {
     const seen = new Set<string>();
     for (const S of Object.values(this.sessions)) {
       // 말이 없는 세션(에이전트만 고른 새 세션)은 지금 보는 것만 보인다 — 빈 세션이 목록에 쌓이지 않게
-      if (this.dismissed.has(S.id) || (!S.items.length && !S.title && S.id !== this.currentId)) continue;
+      if (this.dismissed.has(S.id) || this.hiding.has(S.id) || (!S.items.length && !S.title && S.id !== this.currentId)) continue;
       seen.add(S.id);
       if (S.storedId) seen.add('stored:' + S.storedId);
       rows.push({ id: S.id, pod: S.pod, profile: S.profile, title: cleanTitle(S.title), state: this.stateOf(S), unread: S.unread, at: this.lastAt[S.id] ?? 0, storedId: S.storedId, pinned: this.pinned.has(S.id) });
     }
     for (const r of this.liveRows) {
-      if (seen.has(r.session_id) || (r.stored_id && seen.has('stored:' + r.stored_id)) || this.dismissed.has(r.session_id) || r.state === 'closed') continue;
+      if (seen.has(r.session_id) || (r.stored_id && seen.has('stored:' + r.stored_id)) || this.dismissed.has(r.session_id) || this.hiding.has(r.session_id) || r.state === 'closed') continue;
       if (!r.title && r.state === 'idle') continue; // 아직 말을 보내지 않은 빈 세션
       if (this.sessions[r.session_id]) continue; // 이 탭이 받는 빈 세션
       rows.push({
@@ -1004,6 +1233,7 @@ export class ChatStore {
     this.profile = name;
     this.draft = '';
     this.notice = '';
+    this.follow();
     const live = this.sessionOf(name);
     const same = live && live.storedId === storedId && (!live.closed || live.reconnect);
     this.currentId = same ? live.id : null;

@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// 세션 목록: 채팅 3칸의 가운데 칸. 에이전트보다 「어느 세션이 지금 어떤 상태인가」가 먼저 보이게 한다.
-// 묶음 순서는 고정 → 내 답 필요 → 실행 중 → 오늘 → 어제 → 이번 주 → 이전. 줄마다 상태 표시·세션 제목·그 세션이 도는 에이전트를 보인다.
-// 세션이 많아져도 다룰 수 있게 상태·AI 에이전트로 거르고, 여러 개를 골라 닫거나 끝난 세션을 한 번에 닫는다.
+// 세션 목록: 채팅 3칸의 가운데 칸. 에이전트 칸에서 AI 에이전트를 고르면 그 에이전트 전용이 된다(2026-11-06).
+// 묶음은 둘뿐이다 — 진행 중(답 필요 → 실행 중 → 열린 세션)과 완료(기본 최근 1주일, 「오늘·어제」로 좁힌다). 고정은 맨 위.
+// 완료에는 이 서버가 연 세션뿐 아니라 Hermes 에 저장된 지난 세션도 든다 — 누르면 그 대화를 이어서 연다.
+// 화면 다듬기(스펙 2026-11-06-002 §8): 폰 에이전트 고르기 G2, 기간 G3·G4, 줄 형식 G7·G8, 읽기 실패 G9, 닫기 되돌리기 G11.
 import AddIcon from '@mui/icons-material/Add';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
@@ -19,12 +20,11 @@ import {
   Badge,
   Box,
   Button,
+  ButtonBase,
   Checkbox,
   Chip,
   CircularProgress,
-  Divider,
   IconButton,
-  ListSubheader,
   Menu,
   MenuItem,
   TextField,
@@ -32,13 +32,14 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
-import { MouseEvent, useEffect, useRef, useState } from 'react';
+import { useSnackbar } from 'notistack';
+import { Fragment, MouseEvent, useEffect, useRef, useState } from 'react';
 
 import { useChatTokens } from '@/components/chat/useChatTokens';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { t } from '@/i18n';
 import { ChatGroup, ChatStore, groupLabel, rowTitle, SessionRow, SessionState } from '@/lib/chatStore';
-import { chatType } from '@/lib/chatTokens';
+import { chatType, coarseTouch } from '@/lib/chatTokens';
 import { fmtClock, zonedDate } from '@/lib/format';
 import { FOCUS_RING, gridTokens } from '@/lib/shellTokens';
 
@@ -62,15 +63,20 @@ const STATE_LABEL: Record<SessionState, string> = {
   idle: 'chat.sessIdle',
   closed: 'chat.sessClosed',
 };
-type Filter = 'all' | 'waiting' | 'running' | 'done';
-const FILTERS: { key: Filter; label: string }[] = [
-  { key: 'all', label: 'chat.sessFilterAll' },
-  { key: 'waiting', label: 'chat.sessFilterWaiting' },
-  { key: 'running', label: 'chat.sessFilterRunning' },
-  { key: 'done', label: 'chat.sessFilterDone' },
-];
+/** 저장 세션의 출처 표시(AAS 가 아닌 것만 보인다) */
+const SOURCE_LABEL: Record<string, string> = { aas: 'chat.srcAas', telegram: 'chat.srcTelegram', buzz: 'chat.srcBuzz' };
+/** 완료 묶음의 기간. 2d = 오늘·어제, 7d = 오늘 포함 7일. 기본은 7d — 지난주에 시작해 어제 쓴 세션이 빠지지 않게(G3) */
+type Range = '2d' | '7d';
+const RANGE_KEY = 'aas-chat-done-range';
+function readRange(): Range {
+  try {
+    return localStorage.getItem(RANGE_KEY) === '2d' ? '2d' : '7d';
+  } catch {
+    return '7d';
+  }
+}
 const live = (s: SessionState) => s === 'waiting' || s === 'running';
-const OLDER_PAGE = 20;
+const DONE_PAGE = 30;
 
 const GROUPS_KEY = 'aas-chat-sess-collapsed';
 function readFolded(): string[] {
@@ -91,6 +97,36 @@ export function agentLabelOf(store: ChatStore, pod: string | undefined, profile:
   return { label: multi ? `${groupLabel(g)} / ${name}` : name, colorKey: g?.name || g?.pod || profile };
 }
 
+/** 고를 수 있는 AI 에이전트(폰 세션 칸 머리의 고르기, G2). 묶음이 여럿이면 묶음마다, 아니면 지금 묶음의 프로파일 */
+export function agentChoices(store: ChatStore): { pod: string; profile: string; label: string; colorKey: string }[] {
+  const list: { pod?: string; a: { name: string } }[] =
+    store.groups.length > 1
+      ? store.groups.flatMap((g) => g.agents.map((a) => ({ pod: g.pod, a })))
+      : (store.status?.agents ?? []).map((a) => ({ pod: store.status?.pod, a }));
+  return list.map(({ pod, a }) => {
+    const p = pod ?? store.currentPod ?? '';
+    return { pod: p, profile: a.name, ...agentLabelOf(store, p || undefined, a.name) };
+  });
+}
+
+/** 둘째 줄의 조각. 빈 조각은 빼고 「·」로 잇는다 — 에이전트 이름을 뺀 보기에서 「· 답 필요」처럼 앞에 점이 남았다(G8) */
+export type MetaPiece = { key: string; text: string; tone?: 'warn' | 'info' };
+export function rowMeta(r: SessionRow, { oneAgent, done }: { oneAgent: boolean; done: boolean }): MetaPiece[] {
+  const out: MetaPiece[] = [];
+  if (done) {
+    // 완료 줄은 한 형식: 채널 · 메시지 n · 마지막 활동. 상태 라벨(대기 등)은 넣지 않는다(G7)
+    const src = r.source || 'aas';
+    out.push({ key: 'src', text: SOURCE_LABEL[src] ? t(SOURCE_LABEL[src]) : src === 'cli' ? 'CLI' : src });
+    if (r.count) out.push({ key: 'count', text: t('chat.sessPastMeta', { n: r.count }) });
+    out.push({ key: 'when', text: whenOf(r.at) });
+  } else if (live(r.state)) {
+    out.push({ key: 'state', text: t(STATE_LABEL[r.state]), tone: r.state === 'waiting' ? 'warn' : 'info' });
+  } else if (oneAgent && !r.stored) {
+    out.push({ key: 'state', text: t(STATE_LABEL[r.state]) });
+  }
+  return out.filter((p) => p.text);
+}
+
 /** 상태 표시: 실행 중은 돌아가는 고리, 답 필요는 주황 물음표, 끝났고 안 봄은 채운 점 */
 export function StateMark({ state }: { state: SessionState }) {
   const theme = useTheme();
@@ -109,6 +145,8 @@ function Row({
   onPick,
   onClose,
   select,
+  oneAgent,
+  done,
 }: {
   store: ChatStore;
   r: SessionRow | null;
@@ -116,6 +154,10 @@ function Row({
   onClose: (ids: string[]) => void;
   /** 선택 모드: 체크칸이 보이고 줄을 누르면 고르기만 한다 */
   select?: { on: boolean; checked: boolean; toggle: (id: string, range: boolean) => void };
+  /** 한 AI 에이전트의 세션만 보는 중 — 줄마다 에이전트 이름을 되풀이하지 않는다 */
+  oneAgent?: boolean;
+  /** 완료 묶음의 줄 — 둘째 줄을 「채널 · 메시지 n · 마지막 활동」으로(G7) */
+  done?: boolean;
 }) {
   const tk = useChatTokens();
   const theme = useTheme();
@@ -146,7 +188,13 @@ function Row({
         data-state={state}
         aria-current={selected}
         aria-pressed={selecting ? select!.checked : undefined}
-        aria-label={selecting ? t('chat.sessSelectRow', { title }) : t('chat.sessAria', { title, agent: label, state: t(STATE_LABEL[state]) })}
+        aria-label={
+          selecting
+            ? t('chat.sessSelectRow', { title })
+            : !draft && r.stored
+              ? t('chat.sessResumeAria', { title })
+              : t('chat.sessAria', { title, agent: label, state: t(STATE_LABEL[state]) })
+        }
         onClick={click}
         sx={{
           all: 'unset',
@@ -156,7 +204,7 @@ function Row({
           width: '100%',
           px: 1.25,
           py: 1,
-          pr: selecting ? 1.25 : 7,
+          pr: selecting || (!draft && r.stored) ? 1.25 : 7,
           cursor: 'pointer',
           alignItems: 'flex-start',
           color: tk.text,
@@ -195,31 +243,44 @@ function Row({
             >
               {title}
             </Box>
-            {!draft && (
+            {/* 완료 줄의 마지막 활동은 둘째 줄 끝으로 옮겼다(G7) */}
+            {!draft && !done && (
               <Typography component="span" sx={{ color: tk.muted, fontSize: chatType.meta, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
                 {whenOf(r.at)}
               </Typography>
             )}
           </Box>
-          {/* 이 세션이 도는 에이전트(아바타·이름)와 상태 글. 세션이 어느 에이전트의 것인지 늘 보이게 */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.5, minWidth: 0 }}>
-            <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />
-            <Typography component="span" noWrap sx={{ color: tk.muted, fontSize: 12, minWidth: 0 }} title={label}>
-              {label}
-            </Typography>
-            {live(state) ? (
-              <Typography
-                component="span"
-                noWrap
-                sx={{ fontSize: 11, flexShrink: 0, fontWeight: 600, color: state === 'waiting' ? theme.palette.warning.main : theme.palette.info.main }}
-              >
-                {'· ' + t(STATE_LABEL[state])}
-              </Typography>
-            ) : null}
+          {/* 모든 AI 에이전트를 볼 때는 세션이 어느 에이전트의 것인지(아바타·이름) 뒤에 조각을 잇는다. 빈 조각은 빼고 「·」로 잇는다(G8) */}
+          <Box data-row-meta="" sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.5, minWidth: 0, color: tk.muted, fontSize: 12 }}>
+            {!oneAgent && <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />}
+            {[...(oneAgent ? [] : [{ key: 'agent', text: label } as MetaPiece]), ...(draft ? [] : rowMeta(r, { oneAgent: !!oneAgent, done: !!done }))].map((p, i) => (
+              <Fragment key={p.key}>
+                {i > 0 && (
+                  <Box component="span" aria-hidden sx={{ flexShrink: 0 }}>
+                    ·
+                  </Box>
+                )}
+                <Typography
+                  component="span"
+                  noWrap
+                  title={p.key === 'agent' ? label : undefined}
+                  sx={{
+                    fontSize: p.tone ? 11 : 12,
+                    fontWeight: p.tone ? 600 : undefined,
+                    color: p.tone === 'warn' ? theme.palette.warning.main : p.tone === 'info' ? theme.palette.info.main : tk.muted,
+                    minWidth: 0,
+                    flexShrink: p.key === 'agent' ? 1 : 0,
+                    fontVariantNumeric: p.key === 'when' ? 'tabular-nums' : undefined,
+                  }}
+                >
+                  {p.text}
+                </Typography>
+              </Fragment>
+            ))}
           </Box>
         </Box>
       </Box>
-      {!draft && !selecting && (
+      {!draft && !selecting && !r.stored && (
         <Box
           className="sess-act"
           sx={{ position: 'absolute', right: 4, top: 6, display: 'flex', opacity: 0, '@media (pointer: coarse)': { opacity: 1 } }}
@@ -271,13 +332,15 @@ export function SessionStrip({ store, onExpand }: { store: ChatStore; onExpand: 
   );
 }
 
-/** 세션 목록. onPick 은 세션을 열고 주소를 맞춘다, onNew 는 AI 에이전트 고르기로 옮긴다, onCollapse 가 있으면 접기 단추를 둔다 */
+/** 세션 목록. onPick 은 세션을 열고(저장 세션이면 이어서) 주소를 맞춘다, onNew 는 새 세션(한 AI 에이전트를 보는 중이면 그 에이전트로),
+ *  onCollapse 가 있으면 접기 단추를 둔다 */
 export function SessionList({
   store,
   onPick,
   onNew,
   onCollapse,
   onCurrentClosed,
+  agentPicker,
 }: {
   store: ChatStore;
   onPick: (r: SessionRow) => void;
@@ -285,62 +348,79 @@ export function SessionList({
   onCollapse?: () => void;
   /** 지금 보던 세션을 닫았다 — 주소의 session 을 지운다(새로 고침 때 닫은 세션이 다시 열리지 않게) */
   onCurrentClosed?: () => void;
+  /** 에이전트 칸이 없는 폭(900px 미만): 머리에 「모든 AI 에이전트 ▾」 고르기를 둔다(G2) */
+  agentPicker?: boolean;
 }) {
   const tk = useChatTokens();
   const gt = gridTokens[useTheme().palette.mode];
   const confirm = useConfirm();
+  const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [q, setQ] = useState('');
-  const [filter, setFilter] = useState<Filter>('all');
-  const [agent, setAgent] = useState(''); // `pod|프로파일`
   const [menu, setMenu] = useState<HTMLElement | null>(null);
+  const [pickMenu, setPickMenu] = useState<HTMLElement | null>(null);
   const [folded, setFolded] = useState<string[]>(readFolded);
-  const [olderShown, setOlderShown] = useState(OLDER_PAGE);
+  const [range, setRangeState] = useState<Range>(readRange);
+  const [doneShown, setDoneShown] = useState(DONE_PAGE);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const anchor = useRef('');
   const needle = q.trim().toLowerCase();
+  const f = store.agentFilter;
+  const fKey = f ? `${f.pod ?? ''}|${f.profile}` : '';
 
-  // 다른 탭·새로 고침 전에 연 내 세션을 서버에서 읽는다. 창을 다시 볼 때와 20초마다 맞춘다
+  // 다른 탭·새로 고침 전에 연 내 세션을 서버에서 읽는다. 창을 다시 볼 때와 20초마다 맞춘다.
+  // 한 AI 에이전트를 보는 중이면 그 에이전트의 지난 세션(Hermes 저장분)도 같이 읽는다(60초 안이면 다시 묻지 않는다)
   useEffect(() => {
-    void store.loadSessions();
-    const timer = window.setInterval(() => void store.loadSessions(), 20000);
-    const onFocus = () => void store.loadSessions();
-    window.addEventListener('focus', onFocus);
+    const tick = () => {
+      void store.loadSessions();
+      const cur = store.agentFilter;
+      if (cur) void store.loadPast(cur.pod, cur.profile);
+    };
+    tick();
+    const timer = window.setInterval(tick, 20000);
+    window.addEventListener('focus', tick);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', tick);
     };
-  }, [store]);
+  }, [store, fKey]);
+  // 다른 AI 에이전트로 옮기면 「더 보기」를 처음으로
+  useEffect(() => setDoneShown(DONE_PAGE), [fKey, range]);
 
-  const all = store.sessionRows();
-  const agentKey = (r: SessionRow) => `${r.pod ?? ''}|${r.profile}`;
-  const rows = all
-    .filter((r) => !needle || `${r.title} ${agentLabelOf(store, r.pod, r.profile).label} ${r.profile}`.toLowerCase().includes(needle))
-    .filter((r) => !agent || agentKey(r) === agent)
-    .filter((r) => filter === 'all' || (filter === 'done' ? !live(r.state) : r.state === filter));
+  const setRange = (r: Range) => {
+    setRangeState(r);
+    try {
+      localStorage.setItem(RANGE_KEY, r);
+    } catch {
+      /* 이번 화면에서만 */
+    }
+  };
 
+  const all = f ? store.agentRows(f.pod, f.profile) : store.sessionRows();
+  const rows = all.filter((r) => !needle || `${r.title} ${agentLabelOf(store, r.pod, r.profile).label} ${r.profile}`.toLowerCase().includes(needle));
   const today = dayIndex(Date.now());
   const ageOf = (r: SessionRow) => (r.at ? today - dayIndex(r.at) : 0);
-  const rest = rows.filter((r) => !r.pinned && !live(r.state));
-  const groups: { key: string; label: string; rows: SessionRow[]; count?: boolean }[] = [
-    { key: 'pinned', label: t('chat.sessGroupPinned'), rows: rows.filter((r) => r.pinned) },
-    { key: 'waiting', label: t('chat.sessGroupWaiting'), rows: rows.filter((r) => !r.pinned && r.state === 'waiting'), count: true },
-    { key: 'running', label: t('chat.sessGroupRunning'), rows: rows.filter((r) => !r.pinned && r.state === 'running'), count: true },
-    { key: 'today', label: t('chat.sessGroupToday'), rows: rest.filter((r) => ageOf(r) <= 0) },
-    { key: 'yesterday', label: t('chat.sessGroupYesterday'), rows: rest.filter((r) => ageOf(r) === 1) },
-    { key: 'week', label: t('chat.sessGroupWeek'), rows: rest.filter((r) => ageOf(r) >= 2 && ageOf(r) < 7) },
-    { key: 'older', label: t('chat.sessGroupOlder'), rows: rest.filter((r) => ageOf(r) >= 7) },
-  ].filter((g) => g.rows.length);
-  const draft = !!store.profile && !store.currentId;
-  const finished = all.filter((r) => !live(r.state) && !r.pinned && r.id !== store.currentId);
-  // 이 목록에 있는 AI 에이전트(거름 메뉴). 세션 수가 많은 순
-  const agents = Object.entries(
-    all.reduce<Record<string, { n: number; r: SessionRow }>>((acc, r) => {
-      const k = agentKey(r);
-      acc[k] = { n: (acc[k]?.n ?? 0) + 1, r };
-      return acc;
-    }, {})
-  ).sort((a, b) => b[1].n - a[1].n);
+  // 모든 AI 에이전트 보기의 완료는 이 서버에서 끝난 세션뿐이라 기간을 따지지 않는다 — 칩도 숨긴다(G4)
+  const inRange = (r: SessionRow) => !f || ageOf(r) < (range === '7d' ? 7 : 2);
+  const pinned = rows.filter((r) => r.pinned);
+  // 진행 중: 답 필요 → 실행 중 → 아직 열려 있는(이 서버가 받고 있는) 세션 중 오늘 활동한 것. 끝난 세션은 완료로
+  const liveRows = rows.filter((r) => !r.pinned && live(r.state));
+  const openToday = rows.filter((r) => !r.pinned && !live(r.state) && !r.stored && r.state !== 'closed' && (r.id === store.currentId || r.state === 'done'));
+  const progress = [...liveRows.filter((r) => r.state === 'waiting'), ...liveRows.filter((r) => r.state === 'running'), ...openToday];
+  const progressIds = new Set(progress.map((r) => r.id));
+  const doneAll = rows.filter((r) => !r.pinned && !progressIds.has(r.id)).sort((a, b) => b.at - a.at);
+  // 찾는 중에는 기간을 따지지 않는다 — 찾는 세션이 1주일 밖에 있으면 안 보였다
+  const done = needle ? doneAll : doneAll.filter(inRange);
+  const beyond = needle || !f || range === '7d' ? 0 : doneAll.filter((r) => ageOf(r) < 7).length - done.length;
+  const draft = !!store.profile && !store.currentId && (!f || (f.profile === store.profile && (f.pod ?? '') === (store.status?.pod ?? '')));
+  const finished = all.filter((r) => !live(r.state) && !r.pinned && !r.stored && r.id !== store.currentId);
+  const loadingPast = !!f && store.pastLoading(f.pod, f.profile);
+  const pastFailed = !!f && !loadingPast && store.pastError(f.pod, f.profile);
+  const groups: { key: string; label: string; rows: SessionRow[]; count?: boolean; range?: boolean }[] = [
+    { key: 'pinned', label: t('chat.sessGroupPinned'), rows: pinned },
+    { key: 'live', label: t('chat.sessGroupLive'), rows: progress, count: true },
+    { key: 'done', label: t('chat.sessGroupDone'), rows: done, range: true },
+  ].filter((g) => g.rows.length || g.key === 'done' || (g.key === 'live' && !!f));
 
   const toggleFold = (key: string) => {
     const next = folded.includes(key) ? folded.filter((x) => x !== key) : [...folded, key];
@@ -351,13 +431,14 @@ export function SessionList({
       /* 이번 화면에서만 */
     }
   };
+  const selectable = (r: SessionRow) => !r.stored;
   // 보이는 줄 순서(Shift 범위 선택의 기준)
-  const visible = groups.flatMap((g) => (folded.includes(g.key) ? [] : g.key === 'older' ? g.rows.slice(0, olderShown) : g.rows));
-  const toggle = (id: string, range: boolean) => {
+  const visible = groups.flatMap((g) => (folded.includes(g.key) ? [] : g.key === 'done' ? g.rows.slice(0, doneShown) : g.rows)).filter(selectable);
+  const toggle = (id: string, shift: boolean) => {
     setPicked((prev) => {
       const next = new Set(prev);
       const ids = visible.map((r) => r.id);
-      if (range && anchor.current && ids.includes(anchor.current)) {
+      if (shift && anchor.current && ids.includes(anchor.current)) {
         const [a, b] = [ids.indexOf(anchor.current), ids.indexOf(id)].sort((x, y) => x - y);
         for (const x of ids.slice(a, b + 1)) next.add(x);
       } else if (next.has(id)) next.delete(id);
@@ -387,22 +468,107 @@ export function SessionList({
     endSelect();
   };
 
+  // 닫기는 되돌릴 수 있게 한다(G11): 줄은 바로 빠지고, 알림이 닫힐 때 서버에 숨김을 남긴다. 「되돌리기」는 줄을 되살린다
   const close = (ids: string[]) => {
+    if (!ids.length) return;
     const current = !!store.currentId && ids.includes(store.currentId);
-    store.dismissMany(ids);
+    const hide = store.hideSoon(ids);
     if (current) onCurrentClosed?.();
+    enqueueSnackbar(ids.length > 1 ? t('chat.sessHiddenN', { n: ids.length }) : t('chat.sessHidden'), {
+      variant: 'info',
+      autoHideDuration: 6000,
+      onClose: () => hide.commit(),
+      action: (key) => (
+        <Button
+          size="small"
+          onClick={() => {
+            hide.undo();
+            closeSnackbar(key);
+          }}
+        >
+          {t('chat.sessUndo')}
+        </Button>
+      ),
+    });
   };
   const searchSx = {
     '& .MuiOutlinedInput-root': { bgcolor: gt.searchBg, fontSize: chatType.name, '& fieldset': { borderColor: gt.searchLine } },
     '& .MuiOutlinedInput-root.Mui-focused fieldset, & .MuiOutlinedInput-root:hover fieldset': { borderColor: gt.searchFocus },
   };
-  const agentChip = agent ? agentLabelOf(store, agent.split('|')[0] || undefined, agent.split('|').slice(1).join('|')).label : '';
+  const head = f ? agentLabelOf(store, f.pod, f.profile) : null;
+  const choices = agentPicker ? agentChoices(store) : [];
+  const rangeChip = (r: Range, label: string) => (
+    <Chip
+      key={r}
+      size="small"
+      label={label}
+      aria-pressed={range === r}
+      variant={range === r ? 'filled' : 'outlined'}
+      onClick={(e) => {
+        e.stopPropagation();
+        setRange(r);
+      }}
+      sx={{ height: 22, fontSize: 11 }}
+    />
+  );
 
   return (
     <Box component="nav" aria-label={t('chat.sessionsLabel')} data-guide="chat.sessions" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
       <Box sx={{ p: 1.25, pb: 0.75, display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {/* 이 칸이 누구의 세션인지. 한 AI 에이전트면 아바타·이름과 「모두 보기」 */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minHeight: 28 }}>
+          {head ? <AgentAvatar name={head.colorKey} label={head.label} size={22} tone="hue" /> : null}
+          {agentPicker ? (
+            // 폰: 에이전트 칸이 없어 머리에서 고른다(G2)
+            <Typography component="h3" sx={{ flex: 1, minWidth: 0, m: 0 }}>
+              {/* 메뉴를 여는 단추라 접고 펼치기(DisclosureButton)가 아니다 — ButtonBase 로 aria-expanded 를 단다 */}
+              <ButtonBase
+                aria-haspopup="menu"
+                aria-expanded={!!pickMenu}
+                aria-label={t('chat.sessPickAgent', { name: head ? head.label : t('chat.allAgentsRow') })}
+                onClick={(e) => setPickMenu(e.currentTarget)}
+                sx={{
+                  maxWidth: '100%',
+                  minHeight: 28,
+                  px: 0.75,
+                  gap: 0.25,
+                  borderRadius: '6px',
+                  color: tk.text,
+                  fontSize: chatType.name,
+                  fontWeight: 600,
+                  '&:hover': { bgcolor: tk.hover },
+                  '&.Mui-focusVisible': { outline: `2px solid ${FOCUS_RING}` },
+                  ...coarseTouch,
+                }}
+              >
+                <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {head ? head.label : t('chat.allAgentsRow')}
+                </Box>
+                <ExpandMoreIcon aria-hidden sx={{ fontSize: 18, color: tk.muted }} />
+              </ButtonBase>
+            </Typography>
+          ) : (
+            <Typography component="h3" noWrap title={head?.label} sx={{ flex: 1, minWidth: 0, fontSize: chatType.name, fontWeight: 600 }}>
+              {head ? t('chat.sessHeadAgent', { name: head.label }) : t('chat.sessHeadAll')}
+            </Typography>
+          )}
+          {head && !agentPicker ? (
+            <Tooltip title={t('chat.sessShowAll')}>
+              <IconButton size="small" aria-label={t('chat.sessShowAll')} onClick={() => store.setAgentFilter(null)} sx={{ color: tk.muted }}>
+                <CloseIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          {onCollapse && (
+            <Tooltip title={t('chat.sessionsCollapse')}>
+              <IconButton aria-label={t('chat.sessionsCollapse')} size="small" onClick={onCollapse} sx={{ color: tk.muted }}>
+                <ChevronLeftIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-          <Tooltip title={t('chat.newSessionTip')}>
+          <Tooltip title={head ? t('chat.agentNewTip', { name: head.label }) : t('chat.newSessionTip')}>
             <Button
               fullWidth
               variant="outlined"
@@ -420,13 +586,6 @@ export function SessionList({
               <MoreHorizIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          {onCollapse && (
-            <Tooltip title={t('chat.sessionsCollapse')}>
-              <IconButton aria-label={t('chat.sessionsCollapse')} size="small" onClick={onCollapse} sx={{ color: tk.muted }}>
-                <ChevronLeftIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          )}
         </Box>
         <TextField
           size="small"
@@ -438,27 +597,34 @@ export function SessionList({
           slotProps={{ htmlInput: { 'aria-label': t('chat.findSessionLabel') } }}
           sx={searchSx}
         />
-        <Box role="group" aria-label={t('chat.sessFilterLabel')} sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-          {FILTERS.map((f) => {
-            const n = f.key === 'all' ? 0 : f.key === 'done' ? 0 : all.filter((r) => r.state === f.key).length;
-            return (
-              <Chip
-                key={f.key}
-                size="small"
-                label={n ? `${t(f.label)} ${n}` : t(f.label)}
-                aria-pressed={filter === f.key}
-                variant={filter === f.key ? 'filled' : 'outlined'}
-                color={filter === f.key ? (f.key === 'waiting' ? 'warning' : f.key === 'running' ? 'info' : 'default') : 'default'}
-                onClick={() => setFilter(f.key)}
-                sx={{ height: 24, fontSize: 12 }}
-              />
-            );
-          })}
-          {agent && (
-            <Chip size="small" label={t('chat.sessFilterAgent', { agent: agentChip })} onDelete={() => setAgent('')} sx={{ height: 24, fontSize: 12, maxWidth: '100%' }} />
-          )}
-        </Box>
       </Box>
+      {agentPicker && (
+        <Menu anchorEl={pickMenu} open={!!pickMenu} onClose={() => setPickMenu(null)}>
+          <MenuItem
+            selected={!f}
+            onClick={() => {
+              setPickMenu(null);
+              store.setAgentFilter(null);
+            }}
+          >
+            {t('chat.allAgentsRow')}
+          </MenuItem>
+          {choices.map((c) => (
+            <MenuItem
+              key={`${c.pod}|${c.profile}`}
+              selected={!!f && f.profile === c.profile && (f.pod ?? '') === c.pod}
+              onClick={() => {
+                setPickMenu(null);
+                store.setAgentFilter({ pod: c.pod, profile: c.profile });
+              }}
+              sx={{ gap: 1 }}
+            >
+              <AgentAvatar name={c.colorKey} label={c.label} size={20} tone="hue" />
+              {c.label}
+            </MenuItem>
+          ))}
+        </Menu>
+      )}
       <Menu anchorEl={menu} open={!!menu} onClose={() => setMenu(null)}>
         <MenuItem
           onClick={() => {
@@ -472,46 +638,22 @@ export function SessionList({
           disabled={!finished.length}
           onClick={() => {
             setMenu(null);
-            store.dismissFinished();
+            close(finished.map((r) => r.id));
           }}
         >
           {t('chat.sessCloseFinished', { n: finished.length })}
         </MenuItem>
-        {agents.length > 1 && <Divider />}
-        {agents.length > 1 && <ListSubheader sx={{ lineHeight: '32px' }}>{t('chat.sessByAgent')}</ListSubheader>}
-        {agents.length > 1 &&
-          agents.map(([k, { n, r }]) => {
-            const { label, colorKey } = agentLabelOf(store, r.pod, r.profile);
-            return (
-              <MenuItem
-                key={k}
-                selected={agent === k}
-                onClick={() => {
-                  setMenu(null);
-                  setAgent(agent === k ? '' : k);
-                }}
-                sx={{ gap: 1 }}
-              >
-                <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />
-                <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {label}
-                </Box>
-                <Typography component="span" sx={{ color: tk.muted, fontSize: 12 }}>
-                  {n}
-                </Typography>
-              </MenuItem>
-            );
-          })}
       </Menu>
       <Box sx={{ px: 0.75, pb: 2, flex: 1, minHeight: 0, overflowY: 'auto' }}>
-        {draft && !needle && !selecting && <Row store={store} r={null} onPick={onPick} onClose={close} />}
+        {draft && !needle && !selecting && <Row store={store} r={null} onPick={onPick} onClose={close} oneAgent={!!f} />}
         {groups.map((g) => {
           const open = !folded.includes(g.key) || !!needle;
-          const shown = g.key === 'older' ? g.rows.slice(0, olderShown) : g.rows;
-          const allPicked = g.rows.every((r) => picked.has(r.id));
+          const list = selecting ? g.rows.filter(selectable) : g.rows;
+          const shown = g.key === 'done' ? list.slice(0, doneShown) : list;
+          const allPicked = list.length > 0 && list.every((r) => picked.has(r.id));
           return (
-            <Box key={g.key} component="section" aria-label={g.label} sx={{ mt: 1 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', pr: 0.5 }}>
+            <Box key={g.key} component="section" aria-label={g.label} data-sess-group={g.key} sx={{ mt: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pr: 0.5 }}>
                 <Box
                   component="button"
                   type="button"
@@ -536,16 +678,23 @@ export function SessionList({
                   <ExpandMoreIcon aria-hidden sx={{ fontSize: 16, transition: 'transform .15s', transform: open ? 'none' : 'rotate(-90deg)' }} />
                   <Box component="h3" sx={{ m: 0, font: 'inherit' }}>
                     {g.label}
-                    {g.count || !open ? ` ${g.rows.length}` : ''}
+                    {g.count || !open || g.range ? ` ${g.rows.length}` : ''}
                   </Box>
                 </Box>
-                {selecting && open && (
+                {/* 완료 기간: 기본 최근 1주일, 오늘·어제로 좁힌다. 찾는 중·모든 AI 에이전트 보기에는 없다(G3·G4) */}
+                {g.range && !!f && !needle && !selecting && (
+                  <Box role="group" aria-label={t('chat.sessRange')} sx={{ display: 'flex', gap: 0.5 }}>
+                    {rangeChip('2d', t('chat.sessRange2d'))}
+                    {rangeChip('7d', t('chat.sessRange7d'))}
+                  </Box>
+                )}
+                {selecting && open && list.length > 0 && (
                   <Button
                     size="small"
                     onClick={() =>
                       setPicked((prev) => {
                         const next = new Set(prev);
-                        for (const r of g.rows) {
+                        for (const r of list) {
                           if (allPicked) next.delete(r.id);
                           else next.add(r.id);
                         }
@@ -560,19 +709,75 @@ export function SessionList({
               </Box>
               {open &&
                 shown.map((r) => (
-                  <Row key={r.id} store={store} r={r} onPick={onPick} onClose={close} select={{ on: selecting, checked: picked.has(r.id), toggle }} />
+                  <Row
+                    key={r.id}
+                    store={store}
+                    r={r}
+                    onPick={onPick}
+                    onClose={close}
+                    oneAgent={!!f}
+                    done={g.key === 'done'}
+                    select={{ on: selecting, checked: picked.has(r.id), toggle }}
+                  />
                 ))}
-              {open && g.key === 'older' && g.rows.length > olderShown && (
-                <Button size="small" onClick={() => setOlderShown((n) => n + OLDER_PAGE)} sx={{ ml: 1, textTransform: 'none', fontSize: 12 }}>
-                  {t('chat.sessMore', { n: Math.min(OLDER_PAGE, g.rows.length - olderShown) })}
+              {open && g.key === 'live' && !g.rows.length && !(draft && !needle) && (
+                <Typography color="text.secondary" sx={{ px: 1.5, py: 0.75, fontSize: 12 }}>
+                  {t('chat.sessNoneAgent')}
+                </Typography>
+              )}
+              {open && g.key === 'done' && list.length > doneShown && (
+                <Button size="small" onClick={() => setDoneShown((n) => n + DONE_PAGE)} sx={{ ml: 1, textTransform: 'none', fontSize: 12 }}>
+                  {t('chat.sessMore', { n: Math.min(DONE_PAGE, list.length - doneShown) })}
                 </Button>
+              )}
+              {open && g.key === 'done' && !needle && (
+                <Box sx={{ px: 1.5, py: 0.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  {loadingPast ? (
+                    <Typography color="text.secondary" role="status" sx={{ fontSize: 12 }}>
+                      {t('chat.sessPastLoading')}
+                    </Typography>
+                  ) : pastFailed && f ? (
+                    // 읽지 못한 것을 「끝난 세션이 없습니다」로 보이지 않는다(G9)
+                    <Box role="alert" data-testid="past-error" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', fontSize: 12, color: 'text.secondary' }}>
+                      <span>{t('chat.sessPastFailed')}</span>
+                      <span aria-hidden>·</span>
+                      <Box
+                        component="button"
+                        type="button"
+                        onClick={() => void store.loadPast(f.pod, f.profile, true)}
+                        sx={{ all: 'unset', cursor: 'pointer', color: 'primary.main', '&:hover': { textDecoration: 'underline' }, '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` } }}
+                      >
+                        {t('chat.sessPastRetry')}
+                      </Box>
+                    </Box>
+                  ) : !g.rows.length ? (
+                    <Typography color="text.secondary" sx={{ fontSize: 12 }}>
+                      {t('chat.sessDoneNone')}
+                    </Typography>
+                  ) : null}
+                  {beyond > 0 && !loadingPast ? (
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => setRange('7d')}
+                      sx={{ all: 'unset', cursor: 'pointer', fontSize: 12, color: 'primary.main', '&:hover': { textDecoration: 'underline' }, '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` } }}
+                    >
+                      {t('chat.sessDoneMore', { n: beyond })}
+                    </Box>
+                  ) : null}
+                  {!f && !agentPicker ? (
+                    <Typography color="text.secondary" sx={{ fontSize: 12 }}>
+                      {t('chat.sessPastHintAll')}
+                    </Typography>
+                  ) : null}
+                </Box>
               )}
             </Box>
           );
         })}
-        {!rows.length && !(draft && !needle) && (
+        {needle && !rows.length && (
           <Typography color="text.secondary" sx={{ p: 2, fontSize: 13 }}>
-            {needle || filter !== 'all' || agent ? t('chat.sessNoMatch') : t('chat.sessNone')}
+            {t('chat.sessNoMatch')}
           </Typography>
         )}
       </Box>

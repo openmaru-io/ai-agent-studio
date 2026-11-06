@@ -5,6 +5,7 @@
 
 // 채팅: 에이전트를 골라 바로 대화. 진행 단계는 접어 두고, 승인·되묻기는 입력창 위에 붙여 둔다.
 // 모양은 스펙 2026-10-15-010: 에이전트 답은 상자 없는 기록, 내 말만 단색 판, 입력은 한 카드.
+import AddIcon from '@mui/icons-material/Add';
 import AddCommentOutlinedIcon from '@mui/icons-material/AddCommentOutlined';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
@@ -14,7 +15,9 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
@@ -50,7 +53,7 @@ import { Composer, ComposerHandle } from '@/components/chat/Composer';
 import { ErrorRow } from '@/components/chat/ErrorRow';
 import { MessageRow } from '@/components/chat/MessageRow';
 import { answerKeys, ReadAloudButton, readPinned, useReadScope, useReadSnap } from '@/components/chat/ReadAloud';
-import { ReconnectRow } from '@/components/chat/ReconnectRow';
+import { ReconnectRow, statusRowSx } from '@/components/chat/ReconnectRow';
 import { planSlash, skillSuggestItems, slashItems, slashSource } from '@/components/chat/skillSuggest';
 import { TypingDots } from '@/components/chat/TypingDots';
 import { useChatTokens } from '@/components/chat/useChatTokens';
@@ -77,7 +80,7 @@ import { useSkillSuggest } from '@/lib/useSkillSuggest';
 import { AnswerMarkdown, FilesBlock, FilesDrawerBody, NoticeLine, PLANS_DIR, UploadRow, UserMessageBody } from './chat/files';
 import { AgentStrip, LIMITS, SESSION_STRIP_W, Splitter, STRIP_W, useChatLayout } from './chat/layout';
 import { AgentAvatar, ApprovalCard, cancelLine, choiceLabel, ClarifyCard, GuardMark, PastBody, Steps } from './chat/parts';
-import { SessionList, SessionStrip, StateMark } from './chat/SessionList';
+import { agentLabelOf, SessionList, SessionStrip, StateMark } from './chat/SessionList';
 
 // 시각은 설정 › 일반의 시간대로 보인다(디자인 리뷰 7-1). 브라우저 로컬 시간을 따로 만들지 않는다.
 const hhmm = (ts: number) => fmtClock(ts);
@@ -163,6 +166,7 @@ const colorKeyOf = (g: ChatStatus | ChatGroup | null | undefined, a: AgentInfo) 
 function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a: AgentInfo; group?: ChatGroup; headless?: boolean; onPicked?: () => void }) {
   const tk = useChatTokens();
   const pick = usePickAgent(store);
+  const newSession = useNewSession(store);
   const { S, wait, text, when } = agentInfo(store, a, group?.pod);
   // 이 AI 에이전트에서 살아 있는 세션 수(세션 중심 채팅). 답 필요가 먼저, 다음 실행 중
   const live = store.countsByAgent()[`${group?.pod ?? store.status?.pod ?? ''}|${a.name}`];
@@ -171,17 +175,26 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
   const one = singleProfile(g);
   const title = rowTitle(g, a);
   const agentName = group && !headless ? groupLabel(group) : '';
-  const selected = a.name === store.profile && (!group || group.pod === store.status?.pod);
+  // 「새 세션」 창(onPicked)에서는 누르면 새 세션, 에이전트 칸에서는 세션 칸을 그 에이전트로 거른다
+  const picker = !!onPicked;
+  const selected = picker ? a.name === store.profile && (!group || group.pod === store.status?.pod) : isFiltered(store, a.name, group?.pod);
+  const nameFor = agentName ? `${agentName} / ${title}` : title;
   // 팀원 에이전트는 지금 에이전트여도(shared 거짓) 이름에 주인을 남긴다(스펙 2026-10-22-001 DD2)
   const owner = headless && (group?.shared || group?.team) ? group.owner_name ?? '' : '';
+  // 「+」 자리: 줄 오른쪽 끝에 칸을 따로 비워 둔다 — 겹쳐 두면 「답 필요」 배지를 덮었다(스펙 2026-11-06-002 G5)
+  const plus = !picker && a.running !== false;
   return (
+    <Box sx={{ position: 'relative', '&:hover .agent-new, &:focus-within .agent-new': { opacity: 1 } }}>
     <Box
       component="button"
       type="button"
       data-chat-row={headless ? group?.pod : undefined}
+      data-agent-row={`${group?.pod ?? ''}|${a.name}`}
       aria-current={selected}
       aria-label={
-        (agentName ? t('chat.chatWithIn', { agent: agentName, name: title }) : t('chat.chatWith', { name: title })) +
+        (picker
+          ? agentName ? t('chat.chatWithIn', { agent: agentName, name: title }) : t('chat.chatWith', { name: title })
+          : agentName ? t('chat.agentPickIn', { agent: agentName, name: title }) : t('chat.agentPick', { name: title })) +
         (headless && group?.current ? `, ${t('chat.currentAgent')}` : '') +
         (headless && group?.team ? `, ${t('chat.myTeam')}` : '') +
         (owner ? `, ${t('chat.ownerOf', { name: owner })}` : '') +
@@ -190,8 +203,10 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
         (S?.unread ? `, ${t('chat.unreadAria', { count: S.unread })}` : '')
       }
       onClick={() => {
-        pick(a.name, group?.pod);
-        onPicked?.();
+        if (picker) {
+          newSession(a.name, group?.pod);
+          onPicked?.();
+        } else pick(a.name, group?.pod);
       }}
       sx={{
         all: 'unset',
@@ -201,6 +216,7 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
         width: '100%',
         minHeight: 60,
         px: 1.5,
+        pr: plus ? 6 : 1.5,
         py: 1,
         cursor: 'pointer',
         alignItems: 'center',
@@ -287,6 +303,83 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
         ) : null}
       </Stack>
     </Box>
+      {/* 그 AI 에이전트로 바로 새 세션. 줄(button) 안에 button 을 둘 수 없어 형제로 줄이 비워 둔 오른쪽 칸에 둔다.
+          마우스를 올리거나 포커스가 오면 보이고, 터치 화면에서는 늘 보인다(G6 — 올릴 마우스가 없다) */}
+      {plus && (
+        <Tooltip title={t('chat.agentNewTip', { name: nameFor })} placement="right">
+          <IconButton
+            className="agent-new"
+            size="small"
+            aria-label={t('chat.agentNewTip', { name: nameFor })}
+            onClick={() => newSession(a.name, group?.pod)}
+            sx={{
+              position: 'absolute',
+              right: 8,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              opacity: 0,
+              bgcolor: tk.rail,
+              border: `1px solid ${tk.line}`,
+              color: tk.text,
+              '&:hover': { bgcolor: tk.hover },
+              '@media (pointer: coarse)': { opacity: 1 },
+            }}
+          >
+            <AddIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+    </Box>
+  );
+}
+
+/** 에이전트 칸 맨 위: 모든 AI 에이전트의 세션을 한 목록으로(세션 칸 거름 풀기) */
+function AllAgentsRow({ store }: { store: ChatStore }) {
+  const tk = useChatTokens();
+  const rows = store.sessionRows();
+  const waiting = rows.filter((r) => r.state === 'waiting').length;
+  const running = rows.filter((r) => r.state === 'running').length;
+  return (
+    <Box
+      component="button"
+      type="button"
+      data-agent-row="all"
+      aria-label={t('chat.allAgentsRow') + (waiting ? `, ${t('chat.agentLiveWaiting', { n: waiting })}` : '')}
+      aria-current={!store.agentFilter}
+      onClick={() => store.setAgentFilter(null)}
+      sx={{
+        all: 'unset',
+        boxSizing: 'border-box',
+        display: 'flex',
+        gap: 1.5,
+        width: '100%',
+        minHeight: 48,
+        px: 1.5,
+        py: 0.75,
+        cursor: 'pointer',
+        alignItems: 'center',
+        color: tk.text,
+        '&:hover': { bgcolor: tk.hover },
+        '&[aria-current=true]': { bgcolor: tk.selected, boxShadow: `inset 2px 0 0 ${tk.selectedAccent}` },
+        '&:focus-visible': { outline: `2px solid ${FOCUS_RING}`, outlineOffset: -2 },
+      }}
+    >
+      <Box aria-hidden sx={{ width: chatMetrics.listAvatar, height: chatMetrics.listAvatar, borderRadius: '50%', bgcolor: tk.monoTile, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <ForumOutlinedIcon sx={{ fontSize: 18, color: tk.muted }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ fontSize: chatType.name, fontWeight: 500 }}>{t('chat.allAgentsRow')}</Box>
+        <Typography variant="body2" noWrap sx={{ color: tk.muted, fontSize: 12 }}>
+          {t('chat.allAgentsSub')}
+        </Typography>
+      </Box>
+      {waiting ? <Tag tone="warn">{t('chat.agentLiveWaiting', { n: waiting })}</Tag> : running ? (
+        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, color: tk.muted, fontSize: chatType.meta }}>
+          <CircularProgress size={10} thickness={6} sx={{ color: 'info.main' }} aria-hidden />
+          {t('chat.agentLiveRunning', { n: running })}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
@@ -327,23 +420,28 @@ function GroupState({ store, g }: { store: ChatStore; g: ChatGroup }) {
   );
 }
 
-/** 목록에서 에이전트를 고른다 = 그 에이전트로 새 세션(세션 중심 채팅). 다른 세션은 닫지 않고 계속 돈다.
- *  store 를 먼저 바꾼 뒤 주소를 agent·pod 로 쓴다 — 주소 맞추기는 이미 같은 대상이라 아무것도 하지 않는다 */
+/** 대화 칸에 메시지 목록을 그리는가. 아니면 새 세션 안내(「무엇을 맡길까요?」)를 보인다.
+ *  열거나(opening) 지난 이벤트를 따라잡는 동안은 새 세션이 아니다 — 메시지 목록이 「지난 대화를 불러오는 중」을 보인다(스펙 2026-11-06-002 G1) */
+export function showConversation(store: ChatStore, S: Session | null, compact?: boolean): boolean {
+  return !!compact || !!store.opening || !!S?.catchUp || !!(S && (S.items.length || S.storedId || S.busy));
+}
+
+/** 세션 칸 거름의 pod. 묶음이 하나여서 줄에 pod 가 없으면 지금 묶음의 pod(세션 줄의 pod 와 같은 값) */
+const filterPod = (store: ChatStore, pod?: string) => pod ?? store.status?.pod ?? store.currentPod ?? '';
+/** 같은 AI 에이전트인가(세션 칸 거름 기준) */
+export const isFiltered = (store: ChatStore, name: string, pod?: string) =>
+  !!store.agentFilter && store.agentFilter.profile === name && (store.agentFilter.pod ?? '') === filterPod(store, pod);
+
+/** 에이전트 칸에서 AI 에이전트를 고른다 = 가운데 세션 칸이 그 에이전트 전용이 된다(진행 중·완료·새 세션).
+ *  고르기만 하고 새 세션을 만들지 않는다 — 누를 때마다 세션이 생기거나 엉뚱한 세션이 열려 헷갈렸다(사용자 결정 2026-11-06) */
 function usePickAgent(store: ChatStore) {
+  return (name: string, pod?: string) => store.setAgentFilter({ pod: filterPod(store, pod), profile: name });
+}
+
+/** 그 AI 에이전트로 새 세션을 연다. 다른 세션은 닫지 않고 계속 돈다. store 를 먼저 바꾼 뒤 주소를 agent·pod 로 쓴다 */
+function useNewSession(store: ChatStore) {
   const [, setParams] = useSearchParams();
   return (name: string, pod?: string) => {
-    // 그 에이전트에 열린 세션이 있으면 그 세션으로 가고, 없을 때만 새 세션을 연다(사용자 결정 D1, 스펙 2026-11-05-005).
-    // 새 세션은 「새 세션」 단추로 연다
-    const open = store.openSessionFor(name, pod);
-    if (open) {
-      void store.focus(open.id).then((ok) => {
-        if (!ok) return;
-        focusComposer();
-        const stored = store.current()?.storedId || open.storedId;
-        setParams({ agent: open.profile, ...(open.pod ? { pod: open.pod } : {}), ...(stored ? { session: stored } : {}) });
-      });
-      return;
-    }
     void store.startNew(name, pod).then(focusComposer);
     setParams(pod ? { agent: name, pod } : { agent: name });
     focusComposer();
@@ -359,7 +457,8 @@ function focusComposer() {
 function usePickSession(store: ChatStore) {
   const [, setParams] = useSearchParams();
   return async (r: SessionRow) => {
-    if (!(await store.focus(r.id))) return;
+    // Hermes 에 저장된 지난 세션은 이어서(resume) 연다. 열린 세션은 그 세션으로 간다
+    if (!(await (r.stored ? store.openPast(r) : store.focus(r.id)))) return;
     focusComposer();
     const S = store.current();
     const stored = S?.storedId || r.storedId;
@@ -662,6 +761,11 @@ function AgentList({
         </Alert>
       )}
       <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
+        {!onPicked && !needle && (
+          <li>
+            <AllAgentsRow store={store} />
+          </li>
+        )}
         {!multi &&
           single.map(({ a }) => (
             <li key={a.name}>
@@ -830,7 +934,9 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
     prev.current = { id: S?.id, busy };
   });
 
-  const blocks = S ? groupItems(S) : [];
+  // 지난 이벤트를 따라잡는 동안은 반쯤 쌓인 대화를 그리지 않는다 — 다른 세션 때문에 다시 그려져도 끝난 뒤 한 번에 보인다
+  const catching = !!S?.catchUp;
+  const blocks = S && !catching ? groupItems(S) : [];
   // 안전장치가 막은 단계 바로 뒤의 첫 에이전트 답에 빨간 표시(스펙 2026-10-24-004). 사용자 글이 오면 끊는다
   const guardOf: Record<number, string> = {};
   {
@@ -883,12 +989,13 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
           {live.text + (live.n % 2 ? ' ' : '')}
         </Box>
         <Box sx={{ maxWidth: chatColumn, mx: 'auto' }}>
-          {!S && (
+          {/* 다른 세션을 여는 중이면 지금 세션이 비어 있어도 불러오는 중으로 보인다(G1) */}
+          {(!S || catching || (!!store.opening && !S.items.length)) && (
             <Stack alignItems="center" spacing={1.5} sx={{ mt: 6 }}>
               <AgentAvatar name={color} label={title} size={chatMetrics.emptyAvatar} />
               <Typography sx={{ fontWeight: 700 }}>{title}</Typography>
               <Typography sx={{ ...small, fontSize: chatType.name }} align="center">
-                {store.opening ? t('chat.loadingPast') : t('chat.startHint')}
+                {store.opening || catching ? t('chat.loadingPast') : t('chat.startHint')}
               </Typography>
             </Stack>
           )}
@@ -1457,7 +1564,7 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
         </Menu>
       </Stack>
       {store.notice && <Alert severity="error">{store.notice}</Alert>}
-      {compact || (S && (S.items.length || S.storedId || S.busy)) ? (
+      {showConversation(store, S, compact) ? (
         <Messages S={S} store={store} profile={profile} onPanel={panel} />
       ) : (
         // 아직 보내지 않은 새 세션: 가운데 큰 안내 + 아래 큰 입력 카드(Claude·Gemini 첫 화면처럼)
@@ -1501,6 +1608,16 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
             {S && store.announceFor === S.id ? store.announce + (store.announceSeq % 2 ? ' ' : '') : ''}
           </Box>
           {teamOwner && <TeamStatusRow text={t('chat.sendingToTeam', { owner: teamOwner })} />}
+          {/* 지난 이벤트를 8초 안에 다 받지 못해 받은 데까지만 그렸다(G10). 「다시 여는 중」 줄과 같은 회색 줄 — 기다리는 중이 아니라 돌림 표시 대신 안내 아이콘 */}
+          {S?.partial && !view ? (
+            <Box data-testid="partial-row" sx={statusRowSx(tk)}>
+              <InfoOutlinedIcon aria-hidden sx={{ fontSize: 14, color: tk.muted, flexShrink: 0 }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>{t('chat.partialLoaded')}</Box>
+              <Button size="small" variant="outlined" color="inherit" onClick={() => store.reloadPartial(S)} sx={[tier2 as object, coarseTouch, { ml: 'auto' }]}>
+                {t('chat.partialReload')}
+              </Button>
+            </Box>
+          ) : null}
           {view && (
             <Box
               onFocusCapture={() => {
@@ -1646,6 +1763,11 @@ export function Chat({ store = chatStore }: { store?: ChatStore }) {
   useChat(store);
   const pickSession = usePickSession(store);
   const pickAgent = usePickAgent(store);
+  const newSession = useNewSession(store);
+  // 세션 칸이 한 AI 에이전트를 보고 있으면 「새 세션」은 고르기 없이 바로 그 에이전트로 연다
+  const filter = store.agentFilter;
+  const newInFilter = filter ? () => newSession(filter.profile, store.groups.length > 1 ? filter.pod : undefined) : null;
+  const filterName = filter ? agentLabelOf(store, filter.pod, filter.profile).label : '';
   const [, setParams] = useSearchParams();
   const agentSearch = useRef<HTMLInputElement>(null);
   const pickSearch = useRef<HTMLInputElement>(null);
@@ -1741,10 +1863,12 @@ export function Chat({ store = chatStore }: { store?: ChatStore }) {
         store={store}
         onPick={(r) => void pickSession(r)}
         onNew={() => {
-          if (!narrow && !agentsStrip && agentSearch.current) agentSearch.current.focus();
+          if (newInFilter) newInFilter();
+          else if (!narrow && !agentsStrip && agentSearch.current) agentSearch.current.focus();
           else setPicking(true);
         }}
         onCollapse={narrow ? undefined : () => update({ sessionsCollapsed: true })}
+        agentPicker={narrow}
         onCurrentClosed={() =>
           setParams(
             (prev) => {
@@ -1762,7 +1886,12 @@ export function Chat({ store = chatStore }: { store?: ChatStore }) {
     <Conversation key={`${store.status?.pod ?? ''}|${store.profile}`} store={store} onBack={back} onPanel={openPanel} />
   ) : (
     <Box sx={{ mt: 8, px: 3, textAlign: 'center' }}>
-      <Typography sx={{ color: tk.muted }}>{narrow ? t('chat.pickSession') : t('chat.pickAgentHint')}</Typography>
+      <Typography sx={{ color: tk.muted }}>{narrow ? t('chat.pickSession') : filter ? t('chat.pickInAgent') : t('chat.pickAgentHint')}</Typography>
+      {newInFilter && (
+        <Button variant="outlined" color="inherit" startIcon={<AddIcon />} onClick={newInFilter} sx={{ mt: 2, textTransform: 'none', borderRadius: '10px' }}>
+          {t('chat.newSessionButton', { name: filterName })}
+        </Button>
+      )}
     </Box>
   );
   return (

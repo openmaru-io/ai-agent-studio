@@ -25,11 +25,11 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-from ..ops import activity, admin_requests, bundled_repair, changes, channels, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, shared_skills, slogan, card_brief, tts
+from ..ops import activity, admin_requests, bundled_repair, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, shared_skills, slogan, card_brief, tts
 from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
-from ..assets import credentials, explain, files, flow, inventory, skill_graph, skill_header, skill_setup
+from ..assets import agent_skills, credentials, explain, files, flow, inventory, skill_graph, skill_header, skill_setup
 from ..office import hub_auto, inbox, meeting, meeting_files, office, office_access, office_changed, office_state, presence, relay, shared
 from ..auth import keycloak
 from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, tags as market_tags, updates as market_updates
@@ -600,6 +600,46 @@ def _flow(pod: Pod):
 
 def _observed(pod: Pod):
     return _cached(f"{pod.id}:observed", 300, lambda: observed.collect(pod.hermes_home))
+
+
+_observed_warming: set[str] = set()
+
+
+def _observed_ready(pod: Pod):
+    """세션 기록 집계가 이미 있으면 그 값, 없으면 None 을 바로 돌려주고 뒤에서 만든다(스펙 2026-11-06-002 E5).
+    집계는 최근 세션 기록을 모두 읽어 처음 한 번이 수 초 걸린다 — 스킬 목록이 그만큼 기다렸다. 다 만들면 스킬 상태를 버려 다음 읽기에 관측 횟수가 붙는다."""
+    with _lock:
+        ready = _lang_key(f"{pod.id}:observed") in _cache
+        start = not ready and pod.id not in _observed_warming
+        if start:
+            _observed_warming.add(pod.id)
+    if ready:
+        return _observed(pod)
+
+    def warm():
+        try:
+            _observed(pod)
+            with _lock:
+                _cache.pop(_lang_key(f"{pod.id}:skill_states", False), None)
+        except Exception as exc:
+            print(f"세션 기록 집계 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        finally:
+            with _lock:
+                _observed_warming.discard(pod.id)
+    if start:
+        threading.Thread(target=contextvars.copy_context().run, args=(warm,), daemon=True, name="aas-observed-warm").start()
+    return None
+
+
+def _skill_states(pod: Pod) -> tuple[dict, list]:
+    """에이전트(프로파일)별 스킬 상태(켜짐·사용 기록·설정 필요·동작 형태)와 왼쪽 칸 요약. 프로파일을 바꾸면(_forget) 다시 읽는다."""
+    def build():
+        try:
+            obs = _observed_ready(pod)
+        except Exception:                                      # 세션 기록을 못 읽어도 목록은 보인다 — 관측 횟수만 빈다
+            obs = None
+        return agent_skills.annotate(pod.hermes_home, hermes_reader.profiles(pod.hermes_home), _skills(pod)["skills"], obs)
+    return _cached(f"{pod.id}:skill_states", 60, build, per_lang=False)
 
 
 HUB_ADMIN_WRITES = ("/api/market/publish/upload", "/api/market/publish/direct", "/api/market/publish/retry", "/api/market/hub/hide", "/api/market/hub/show")   # 관리자 직접 게시·허브에서 숨기기(스펙 2026-10-29-002)
@@ -4331,9 +4371,12 @@ def _chat_sessions(reg: Registry, user, auth_enabled: bool, current: Pod) -> lis
     return out
 
 
-def _chat_hidden(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[str]:
-    """내가 목록에서 닫은(숨긴) 세션 id. 다른 기기에서 닫은 세션을 그 세션을 열고 있는 탭도 목록에서 빼게 한다(스펙 2026-11-05-005 7-6).
-    로그인이 꺼져 있으면 모두. 사용자 단위 서버 고정(aas_u)이라 한 사용자의 세션은 이 서버 허브에 있다."""
+def _chat_hidden(reg: Registry, user, auth_enabled: bool, current: Pod) -> tuple[list[str], list[str]]:
+    """(내가 목록에서 닫은 세션 id, 닫은 대화의 Hermes 저장 번호).
+    세션 id: 다른 기기에서 닫은 세션을 그 세션을 열고 있는 탭도 목록에서 빼게 한다(스펙 2026-11-05-005 7-6).
+    저장 번호: 세션 칸 「완료」가 Hermes 저장 세션에서 거른다(스펙 2026-11-06-002 D2·E1). 정리·재시작 뒤에도 남도록 chat_hidden 표에서 읽는다.
+    닫을 때 저장 번호를 아직 몰랐던 세션(첫 제목 전)은 여기서 알게 되면 그때 표에 쓴다.
+    로그인이 꺼져 있으면 모두(표는 email ''). 사용자 단위 서버 고정(aas_u)이라 한 사용자의 세션은 이 서버 허브에 있다."""
     pods, _names, _mine = _my_agent_pods(reg, user, auth_enabled, current)
     by = str((user or {}).get("email") or "") if auth_enabled else None
     out = []
@@ -4341,9 +4384,17 @@ def _chat_hidden(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
         h = _hubs.get(pod.id)
         if h is None:
             continue
-        out += [sid for sid, m in list(h.sessions.items())
-                if m.get("hidden") and not m.get("relay") and (by is None or m.get("by", "") == by)]
-    return out
+        late = []
+        for sid, m in list(h.sessions.items()):
+            if m.get("hidden") and not m.get("relay") and (by is None or m.get("by", "") == by):
+                out.append(sid)
+                if m.get("stored_id") and not m.get("hidden_saved"):
+                    late.append(m["stored_id"])
+                    m["hidden_saved"] = True
+        if late:
+            chat_hidden.hide(by or "", pod.id, late)
+    stored = chat_hidden.stored_ids(by or "", [p.id for p in pods])
+    return out, sorted({i for ids in stored.values() for i in ids})
 
 
 def _sticky_attrs(secure: bool) -> str:
@@ -5400,6 +5451,11 @@ class Handler(BaseHTTPRequestHandler):
                          "delete_block": skill_delete_block(s, g["skills"])}     # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3)
                         for s in g["skills"]]
                 slim = skill_desc.apply(slim, 240)              # 태그는 원문으로 찾은 뒤에 번역을 붙인다(스펙 2026-10-19-017 P5)
+                try:
+                    states, agents = _skill_states(pod)         # 에이전트 중심 보기: 줄마다 그 프로파일 기준 상태
+                except Exception:
+                    states, agents = {}, []
+                slim = [{**row, **states.get(row["id"], {})} for row in slim]
                 if may_use_market("/api/market/install", pod, user, a.enabled, registry().is_admin(user)):   # 스킬 줄의 「새 버전 v…」(D15). 올릴 수 있는 사람에게만(R7)
                     newer = {(r["profile"], r["skill"]): r["latest"] for r in market_updates.alerts(_market_updates_peek(pod)) if r["kind"] == "skill"}
                     paths = {x["id"]: str(x.get("path") or "") for x in g["skills"]}
@@ -5412,6 +5468,7 @@ class Handler(BaseHTTPRequestHandler):
                             "by_mcp": g["by_mcp"], "by_host": g["by_host"],
                             "mcp_configured": g["mcp_configured"],
                             "profiles": _skill_targets(pod), "primary": primary.primary_of(pod.id),
+                            "agents": agents,
                             "can_upload": _may_upload(a, user, pod)})
             elif path == "/api/skill/download":               # 스킬 폴더를 zip 으로(OMAI-1195). 보기 권한이 있으면 받을 수 있다
                 try:
@@ -5777,8 +5834,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._json(_chat_status(pod))
             elif path == "/api/chat/sessions":                 # 세션 목록(모든 내 에이전트의 열린 대화와 상태)
+                hidden, hidden_stored = _chat_hidden(registry(), user, a.enabled, pod)
                 self._json({"pod": pod.id, "sessions": _chat_sessions(registry(), user, a.enabled, pod),
-                            "hidden": _chat_hidden(registry(), user, a.enabled, pod)})
+                            "hidden": hidden, "hidden_stored": hidden_stored})
             elif path == "/api/chat/history":
                 profile = _chat_profile(pod, query.get("profile", [""])[0])
                 if profile not in {p.name for p in cron_health.hr.profiles(pod.hermes_home)}:
@@ -5786,7 +5844,14 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # 회의가 만든 세션(오피스 등록부의 meeting-*)은 뺀다 — 새 대화마다 에이전트별로 늘어 주인의 대화를 밀어낸다(스펙 2026-10-20-027 R11)
                 hidden = office.meeting_stored_ids()
-                rows = [r for r in hub(pod).history(profile, limit=200) if r.get("id") not in hidden][:80]
+                if query.get("exclude_hidden", [""])[0] == "1":  # 세션 칸 「완료」만 닫은 대화를 뺀다 — 「지난 대화」 서랍에는 보인다(스펙 2026-11-06-002 E2)
+                    hidden = set(hidden) | chat_hidden.stored_ids(str((user or {}).get("email") or "") if a.enabled else "", [pod.id])[pod.id]
+                # 보일 줄 수(기본 80, 세션 칸의 「1주일」은 200). 회의 세션을 거른 뒤 자른다
+                try:
+                    want = max(1, min(200, int(query.get("limit", ["80"])[0] or 80)))
+                except ValueError:
+                    want = 80
+                rows = [r for r in hub(pod).history(profile, limit=max(200, want)) if r.get("id") not in hidden][:want]
                 # Claude Code 가 연 대화: 목록 Tag·「스킬 시험」 거름·쓰는 중 띠(스펙 2026-10-28-001 §3-7 ⑤)
                 meta = chat_session_meta.for_stored(pod.id, [str(r.get("id") or "") for r in rows])
                 for r in rows:
@@ -6121,7 +6186,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/auth/password":
                 self._password_login()
                 return
-            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, "/api/market/install", "/api/market/grant", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/decide", "/api/market/publish/auto", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel")):
+            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, "/api/market/install", "/api/market/grant", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/check", "/api/market/publish/decide", "/api/market/publish/auto", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel")):
                 self._json({"error": "not found"}, 404)
                 return
             if not self._same_origin():
@@ -6574,6 +6639,26 @@ class Handler(BaseHTTPRequestHandler):
                 _forget_market_catalog()                         # 게시·숨기기가 허브 목록을 바꾼다(R15)
                 self._json(out)
                 return
+            if path == "/api/market/publish/check":            # 게시 전 점검 — 쓰지 않는다. 요청할 수 있는 사람에게만(같은 권한)
+                is_admin = not a.enabled or registry().is_admin(user)
+                if not may_use_market("/api/market/install", pod, user, a.enabled, is_admin):
+                    self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 게시를 요청할 수 있습니다", "Only admins or the owner of this AI Agent Workspace can publish")}, 403)
+                    return
+                prof, rel = str(body.get("profile") or ""), str(body.get("path") or "")
+                sid = str(body.get("id") or "") or f"{prof}:{rel if prof == 'default' else f'profiles/{prof}/{rel}'}"   # id: 공용 스킬은 쓰는 에이전트의 줄로 사용 기록을 본다
+                row = next((s for s in _skills(pod)["skills"] if s["id"] == sid), None)
+                try:
+                    usage = {**_skill_states(pod)[0].get(sid, {}), "cron": (row or {}).get("cron") or [], "external_scripts": (row or {}).get("external_scripts") or []}
+                except Exception:
+                    usage = None
+                try:
+                    out = market_publish.check_publish(pod.id, pod.hermes_home, (user or {}).get("email", "local"), is_admin, prof, rel,
+                                                       str(body.get("name") or ""), str(body.get("version") or ""), usage)
+                except (marketplace.MarketError, OSError) as exc:
+                    self._json(_error_body(exc), getattr(exc, "code", 400))
+                    return
+                self._json(out)
+                return
             if path in ("/api/market/publish", "/api/market/publish/decide"):   # 내 스킬 올리기: 요청은 관리자나 주인, 승인·반려는 관리자만(스펙 2026-10-14-015 T5)
                 is_admin = not a.enabled or registry().is_admin(user)
                 if path.endswith("/decide") and not is_admin:
@@ -6586,7 +6671,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if path == "/api/market/publish":
                         row = market_publish.request_publish(pod.id, pod.hermes_home, who, is_admin, str(body.get("profile") or ""), str(body.get("path") or ""),
-                                                             str(body.get("name") or ""), str(body.get("version") or ""), str(body.get("namespace") or ""))
+                                                             str(body.get("name") or ""), str(body.get("version") or ""), str(body.get("namespace") or ""),
+                                                             [str(x) for x in body.get("declare_env") or [] if isinstance(x, str)][:20])
                         store.log_usage("market_publish_request", f"{who} {row['name']}@{row['version']} ← {pod.id}/{row['profile']} req={row['id']}", pod=pod.id)
                         row = _maybe_auto_publish(pod, row, _owns_pod(pod, user, a.enabled), is_admin)
                     elif body.get("approve"):
@@ -6901,7 +6987,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("잘못된 요청", "Invalid request")}, 400)
                     return
                 store.log_usage("chat_resume", profile)
-                self._json(h.resume(profile, stored, by=str((user or {}).get("email") or "")))
+                out = h.resume(profile, stored, by=str((user or {}).get("email") or ""))
+                chat_hidden.unhide(str((user or {}).get("email") or "") if a.enabled else "", pod.id, stored)   # 다시 열면 숨김을 푼다(스펙 2026-11-06-002 E3)
+                self._json(out)
             elif path == "/api/chat/send":
                 text = str(body.get("text") or "").strip()
                 files_in = body.get("files") or []
@@ -6955,8 +7043,11 @@ class Handler(BaseHTTPRequestHandler):
                 ids = body.get("ids") or []
                 if not isinstance(ids, list):
                     raise ValueError("ids")
-                self._json({"ok": True, "hidden": h.hide_sessions([str(x) for x in ids][:500],
-                                                                  str((user or {}).get("email") or "") if a.enabled else None)})
+                by = str((user or {}).get("email") or "") if a.enabled else None
+                done = h.hide_sessions([str(x) for x in ids][:500], by)
+                # 저장 번호를 아는 세션은 바로 표에 남긴다 — 정리·재시작 뒤에도 「완료」에 다시 나오지 않게(스펙 2026-11-06-002 E1)
+                chat_hidden.hide(by or "", pod.id, h.mark_hidden_saved(done))
+                self._json({"ok": True, "hidden": done})
             else:
                 self._json({"error": "not found"}, 404)
         except ChatNotFound as exc:                 # Hermes 에 대화가 없다 — 화면은 다시 열기를 멈춘다(스펙 2026-10-20-030 R9)

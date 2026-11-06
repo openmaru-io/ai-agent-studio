@@ -58,6 +58,8 @@ const CLAUDE_ROWS = [
   { id: 'h4', source: 'aas', title: 'Claude 작업', preview: 'w', started_at: 1760000300, message_count: 2, claude: { purpose: '', active: true } },
 ];
 let extraHistory: unknown[] = [];
+/** 참이면 「완료」용 지난 세션 읽기(exclude_hidden)가 실패한다(G9) */
+let historyFail = false;
 
 let store: ChatStore;
 beforeEach(() => {
@@ -65,6 +67,7 @@ beforeEach(() => {
   vi.stubGlobal('EventSource', FakeES);
   store = new ChatStore();
   extraHistory = [];
+  historyFail = false;
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -72,7 +75,10 @@ function mount(initial = '/chat', status: unknown = STATUS(), me?: unknown, extr
   const fn = stubApi({
     ...(me ? { '/api/me': me } : {}),
     '/api/chat/status': status,
-    '/api/chat/history': () => ({ sessions: [...HISTORY.sessions, ...extraHistory] }),
+    '/api/chat/history': (u: string) =>
+      historyFail && u.includes('exclude_hidden')
+        ? new Response(JSON.stringify({ error: 'down' }), { status: 502 })
+        : { sessions: [...HISTORY.sessions, ...extraHistory] },
     '/api/chat/session': (_u: string, b: Record<string, unknown>) => ({
       session_id: 's-' + b.profile,
       profile: b.profile,
@@ -100,10 +106,17 @@ function mount(initial = '/chat', status: unknown = STATUS(), me?: unknown, extr
 }
 const emit = (i: number, type: string, payload: Record<string, unknown> = {}) =>
   act(() => FakeES.all[i].emit(type, payload));
+/** 에이전트 칸에서 AI 에이전트를 고르고(세션 칸 거름) 세션 칸의 「새 세션」으로 대화를 연다(2026-11-06 — 줄을 누르면 고르기만 한다) */
+const openRow = async (user: ReturnType<typeof userEvent.setup>, name: RegExp, hidden = false) => {
+  await user.click(await screen.findByRole('button', { name, hidden }));
+  const btn = document.querySelector<HTMLElement>('[data-guide="chat.newSession"]');
+  if (!btn) throw new Error('no new-session button');
+  await user.click(btn);
+};
 const open = async (name = '마케팅') => {
   const user = userEvent.setup();
   const fn = mount();
-  await user.click(await screen.findByRole('button', { name: new RegExp(`^${name} 와 대화`) }));
+  await openRow(user, new RegExp(`^${name} 세션 보기`));
   await screen.findByRole('textbox', { name: /에게 보낼 메시지/ });
   return { user, fn };
 };
@@ -126,7 +139,7 @@ describe('Chat: 에이전트 목록', () => {
     // 상태를 받기 전: 제목 아래 진행 막대(다른 화면의 ScreenLoading 과 같다)
     expect(screen.getByRole('heading', { level: 1, name: '채팅' })).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).toBeInTheDocument();
-    await screen.findByText('왼쪽에서 AI 에이전트를 고르면 새 세션이 열립니다. 세션은 가운데 목록에서 오갑니다.');
+    await screen.findByText('가운데 목록에서 세션을 고르거나, 왼쪽에서 AI 에이전트를 골라 그 AI 에이전트의 세션을 보세요. + 를 누르면 바로 새 세션입니다.');
     expect(screen.getByRole('heading', { level: 1, name: '채팅' })).toBeInTheDocument();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
     act(() => {
@@ -156,9 +169,9 @@ describe('Chat: 에이전트 목록', () => {
 
   it('에이전트마다 제목·이름·상태·마지막 글을 보인다. 왼쪽에서 고르라는 안내가 있다', async () => {
     mount();
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 새 세션이 열립니다. 세션은 가운데 목록에서 오갑니다.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^마케팅 와 대화/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^ops 와 대화, 게이트웨이 중지됨/ })).toBeInTheDocument();
+    expect(await screen.findByText('가운데 목록에서 세션을 고르거나, 왼쪽에서 AI 에이전트를 골라 그 AI 에이전트의 세션을 보세요. + 를 누르면 바로 새 세션입니다.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^마케팅 세션 보기/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^ops 세션 보기, 게이트웨이 중지됨/ })).toBeInTheDocument();
     expect(screen.getByText('실패 2')).toBeInTheDocument();
     expect(screen.getByText('마케팅 담당')).toBeInTheDocument();
   });
@@ -166,7 +179,7 @@ describe('Chat: 에이전트 목록', () => {
   it('검색은 이름·제목·설명으로 거른다', async () => {
     const user = userEvent.setup();
     mount();
-    await screen.findByRole('button', { name: /^마케팅 와 대화/ });
+    await screen.findByRole('button', { name: /^마케팅 세션 보기/ });
     await user.type(screen.getByRole('searchbox', { name: 'AI 에이전트 찾기' }), '운영');
     expect(screen.queryByRole('button', { name: /^마케팅/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^ops/ })).toBeInTheDocument();
@@ -186,7 +199,9 @@ describe('Chat: 에이전트 목록', () => {
     // 세션 중심 채팅: 에이전트를 고르면 새 세션이 열리고, 첫 말 전에는 큰 안내 화면이다
     expect(screen.getByTestId('new-session-hero')).toHaveTextContent('무엇을 맡길까요?');
     await user.click(screen.getByRole('button', { name: 'AI 에이전트 목록으로' }));
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 새 세션이 열립니다. 세션은 가운데 목록에서 오갑니다.')).toBeInTheDocument();
+    // 마케팅을 골라 둔 채라 「그 에이전트의 세션을 고르거나 새 세션」 안내와 바로 새 세션 단추
+    expect(await screen.findByText('가운데에서 이어 갈 세션을 고르거나 새 세션을 시작하세요.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '마케팅 와 새 세션 시작' })).toBeInTheDocument();
   });
 
   it('?agent= 로 들어오면 그 에이전트가 열린다', async () => {
@@ -344,7 +359,7 @@ describe('Chat: 보내기와 답', () => {
       })
     );
     mountScreen(<Chat store={store} />, '/chat');
-    await user.click(await screen.findByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await user.type(await screen.findByRole('textbox', { name: /에게 보낼 메시지/ }), '다시{Enter}');
     expect(await screen.findByRole('alert')).toHaveTextContent('보내지 못했습니다: 연결 거부');
     fail = false;
@@ -370,7 +385,7 @@ describe('Chat: 보내기와 답', () => {
     });
     vi.stubGlobal('fetch', fn);
     mountScreen(<Chat store={store} />, '/chat');
-    await user.click(await screen.findByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await waitFor(() => expect(FakeES.all.length).toBeGreaterThan(0));
     const resumes = () => fn.mock.calls.filter(([u]) => String(u).startsWith('/api/chat/resume')).length;
     const before = resumes();
@@ -402,7 +417,7 @@ describe('Chat: 보내기와 답', () => {
     });
     vi.stubGlobal('fetch', fn);
     mountScreen(<Chat store={store} />, '/chat');
-    await user.click(await screen.findByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await waitFor(() => expect(FakeES.all.length).toBeGreaterThan(0));
     FakeES.all.at(-1)!.onerror?.();
     expect(await screen.findByRole('alert')).toHaveTextContent('이 대화를 찾을 수 없습니다');
@@ -617,8 +632,8 @@ describe('Chat: 대화 메뉴와 지난 대화', () => {
     await waitFor(() => expect(FakeES.all).toHaveLength(1));
     await user.click(screen.getByRole('button', { name: 'AI 에이전트 목록으로' }));
     await emit(0, 'approval.request', { request_id: 'r9', command: 'x' });
-    const first = (await screen.findAllByRole('button', { name: / 와 대화/ }))[0];
-    expect(first).toHaveAccessibleName(/^마케팅 와 대화.*답을 기다림/);
+    const first = (await screen.findAllByRole('button', { name: / 세션 보기/ }))[0];
+    expect(first).toHaveAccessibleName(/^마케팅 세션 보기.*답을 기다림/);
     expect(within(first).getByText(/^답 필요/)).toBeInTheDocument(); // 살아 있는 세션 수가 붙는다(「답 필요 1」)
   });
 
@@ -667,8 +682,8 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const head = await screen.findByRole('button', { name: /마케팅 도우미/, expanded: true });
     // 프로파일이 하나뿐인 a 는 묶음 머리 없이 에이전트 이름 줄 하나 — 「지금 에이전트」는 줄로 옮겨 낭독 이름에도 들어간다(2026-10-19-013 R3·DD11)
     expect(screen.queryByRole('group', { name: /관리자 AAS/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^관리자 AAS 와 대화, 지금 AI 에이전트 작업공간/ })).toHaveTextContent('지금 AI 에이전트 작업공간');
-    await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 main 와 대화/ }));
+    expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기, 지금 AI 에이전트 작업공간/ })).toHaveTextContent('지금 AI 에이전트 작업공간');
+    await openRow(user, /^마케팅 도우미의 main 세션 보기/);
     // 에이전트를 고르면 그 묶음(pod b)의 main 으로 새 세션
     await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toContainEqual({ profile: 'main', pod: 'b' }));
     expect(await screen.findByText('마케팅 도우미 / main 에서 실행')).toBeInTheDocument(); // 대화 머리(디자인 D4)
@@ -681,22 +696,22 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const head = await screen.findByRole('button', { name: /마케팅 도우미/, expanded: true });
     await user.click(head);
     expect(head).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('button', { name: /^마케팅 도우미의 main 와 대화/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^마케팅 도우미의 main 세션 보기/ })).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem('aas-chat-collapsed') || '[]')).toEqual(['b']);
     await user.type(screen.getByRole('searchbox', { name: 'AI 에이전트 찾기' }), '마케팅');
-    expect(screen.getByRole('button', { name: /^마케팅 도우미의 main 와 대화/ })).toBeInTheDocument(); // 묶음 이름이 맞으면 줄을 모두 보인다(D14)
-    expect(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^관리자 AAS 와 대화/ })).not.toBeInTheDocument(); // 결과가 없는 에이전트는 숨긴다
+    expect(screen.getByRole('button', { name: /^마케팅 도우미의 main 세션 보기/ })).toBeInTheDocument(); // 묶음 이름이 맞으면 줄을 모두 보인다(D14)
+    expect(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 세션 보기/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^관리자 AAS 세션 보기/ })).not.toBeInTheDocument(); // 결과가 없는 에이전트는 숨긴다
   });
 
   // 2026-10-19-013: 프로파일이 하나뿐인 에이전트는 에이전트 이름만
   it('프로파일 1개: 줄·아바타·대화 머리·입력창·답한 사람이 에이전트 이름이고 프로파일은 풍선말에만(DD8·DD12)', async () => {
     const user = userEvent.setup();
     mount('/chat', GROUPS());
-    const row = await screen.findByRole('button', { name: /^관리자 AAS 와 대화/ });
+    const row = await screen.findByRole('button', { name: /^관리자 AAS 세션 보기/ });
     expect(within(row).getByTitle('관리자 AAS · 프로파일 main')).toHaveTextContent('관리자 AAS');
     expect(row).not.toHaveTextContent(/\bmain\b/);
-    await user.click(row);
+    await openRow(user, /^관리자 AAS 세션 보기/);
     const box = await screen.findByRole('textbox', { name: /^관리자 AAS 에게 보낼 메시지/ });
     expect(box).toHaveAttribute('placeholder', '관리자 AAS 에게 보낼 메시지를 입력하세요 (/ 명령·스킬)'); // 「/」 스킬 안내(스펙 2026-10-19-012 DD7)
     const head = screen.getByRole('region', { name: /관리자 AAS/ });
@@ -711,25 +726,25 @@ describe('Chat — 여러 에이전트 묶음', () => {
   it('머리 없는 다른 에이전트의 줄을 누르면 그 에이전트로 연다(C3)', async () => {
     const user = userEvent.setup();
     const fn = mount('/chat', GROUPS([{ pod: 'c', configured: true, name: '영업 도우미', primary: 'main', agents: [{ name: 'main' }], sessions: [] }]));
-    await user.click(await screen.findByRole('button', { name: /^영업 도우미 와 대화/ }));
+    await openRow(user, /^영업 도우미 세션 보기/);
     await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toContainEqual({ profile: 'main', pod: 'c' }));
-    expect(screen.getByRole('button', { name: /^영업 도우미 와 대화/ })).toHaveAttribute('aria-current', 'true');
-    expect(screen.getByRole('button', { name: /^관리자 AAS 와 대화/ })).toHaveAttribute('aria-current', 'false');
+    expect(screen.getByRole('button', { name: /^영업 도우미 세션 보기/ })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기/ })).toHaveAttribute('aria-current', 'false');
   });
 
   it('첫 줄 순서는 이름 → 주인 → 지금 에이전트, 낭독 이름에 주인도 들어간다(DD10·DD11)', async () => {
     mount('/chat', GROUPS([{ pod: 's', current: false, shared: true, owner_name: '홍길동', configured: true, name: '나눠 받은 것', primary: 'main', agents: [{ name: 'main' }], sessions: [] }]));
-    const row = await screen.findByRole('button', { name: /^나눠 받은 것 와 대화, 홍길동님의 AI 에이전트 작업공간/ });
+    const row = await screen.findByRole('button', { name: /^나눠 받은 것 세션 보기, 홍길동님의 AI 에이전트 작업공간/ });
     const line = row.textContent ?? '';
     expect(line.indexOf('나눠 받은 것')).toBeLessThan(line.indexOf('홍길동'));
-    const mine = screen.getByRole('button', { name: /^관리자 AAS 와 대화/ }).textContent ?? '';
+    const mine = screen.getByRole('button', { name: /^관리자 AAS 세션 보기/ }).textContent ?? '';
     expect(mine.indexOf('관리자 AAS')).toBeLessThan(mine.indexOf('지금 AI 에이전트 작업공간'));
   });
 
   it('main 을 만드는 중이면 프로파일이 하나여도 머리와 프로파일 줄을 남긴다(DD3)', async () => {
     mount('/chat', GROUPS([{ pod: 'e', configured: true, name: '새 것', state: 'ok', primary: 'main', primary_ready: false, agents: [{ name: 'default' }], sessions: [] }]));
     expect(await screen.findByRole('button', { name: /새 것/, expanded: true })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^새 것의 default 와 대화/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^새 것의 default 세션 보기/ })).toBeInTheDocument();
   });
 
   it('이름이 없는 묶음은 머리에 id 대신 주 프로파일 이름(DD14), 묶음 머리 이름은 줄 제목과 같은 13px(DD2)', async () => {
@@ -761,10 +776,10 @@ describe('Chat — 여러 에이전트 묶음', () => {
   it('묶음이 하나이고 프로파일도 하나면 에이전트 이름 줄, 「지금 에이전트」는 붙이지 않고 이름으로 찾는다(DD13·C2)', async () => {
     const user = userEvent.setup();
     mount('/chat', { pod: 'a', groups: [{ pod: 'a', current: true, configured: true, name: '관리자 AAS', primary: 'main', agents: [{ name: 'main' }], sessions: [] }] });
-    const row = await screen.findByRole('button', { name: /^관리자 AAS 와 대화/ });
+    const row = await screen.findByRole('button', { name: /^관리자 AAS 세션 보기/ });
     expect(row).not.toHaveTextContent('지금 AI 에이전트 작업공간');
     await user.type(screen.getByRole('searchbox', { name: 'AI 에이전트 찾기' }), '관리자');
-    expect(screen.getByRole('button', { name: /^관리자 AAS 와 대화/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기/ })).toBeInTheDocument();
   });
 
   // 팀 관리자(스펙 2026-10-22-001 DD2·DD5·DD11): 묶음 이름은 그대로, 머리에 「내 팀」, 입력 칸 위 대상 상태 줄
@@ -798,18 +813,18 @@ describe('Chat — 여러 에이전트 묶음', () => {
 
   it('프로파일이 하나인 팀원 에이전트 줄에도 「내 팀」이 있다', async () => {
     mount('/chat', GROUPS([TEAM({ agents: [{ name: 'main' }] })]));
-    const row = await screen.findByRole('button', { name: /^영업 도우미 와 대화/ });
+    const row = await screen.findByRole('button', { name: /^영업 도우미 세션 보기/ });
     expect(within(row).getByText('내 팀')).toBeInTheDocument();
   });
 
   it('팀원 에이전트와 대화할 때만 입력 칸 위에 「<주인>의 에이전트에게 보냅니다」 상태 줄이 있다', async () => {
     const user = userEvent.setup();
     mount('/chat', GROUPS([TEAM()]));
-    await user.click(await screen.findByRole('button', { name: /^영업 도우미의 main 와 대화/ }));
+    await openRow(user, /^영업 도우미의 main 세션 보기/);
     await screen.findByRole('textbox', { name: /보낼 메시지/ });
     const row = await screen.findByText('박팀원의 AI 에이전트에게 보냅니다');
     expect(row.closest('[role="status"]')).not.toBeNull();
-    await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 main 와 대화/ }));
+    await openRow(user, /^마케팅 도우미의 main 세션 보기/);
     await waitFor(() => expect(screen.queryByText('박팀원의 AI 에이전트에게 보냅니다')).toBeNull());
   });
 
@@ -844,7 +859,7 @@ describe('Chat: 말로 입력', () => {
   const openWith = async (over: Record<string, unknown>) => {
     const user = userEvent.setup();
     const fn = mount('/chat', STATUS(over));
-    await user.click(await screen.findByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await screen.findByRole('textbox', { name: /에게 보낼 메시지/ });
     return { user, fn };
   };
@@ -910,10 +925,10 @@ describe('Chat — 딥 링크', () => {
   it('에이전트를 누르면 주소에 agent·pod 가 생기고(push), 대화가 저장되면 session 이 replace 로 붙는다. 뒤로가기는 앞 에이전트로 돌아간다', async () => {
     const user = userEvent.setup();
     mount('/chat', GROUPS, undefined, <Back />);
-    await user.click(await screen.findByRole('button', { name: /^관리자 AAS 와 대화/ }));
+    await openRow(user, /^관리자 AAS 세션 보기/);
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=main&pod=a$/));
     await screen.findByRole('textbox', { name: /^관리자 AAS 에게 보낼 메시지/ });
-    await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
+    await openRow(user, /^마케팅 도우미의 기획 담당 세션 보기/);
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b$/));
     await waitFor(() => expect(store.profile).toBe('plan'));
     await user.type(await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ }), '안녕{Enter}');
@@ -1010,34 +1025,36 @@ describe('Chat — 딥 링크', () => {
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
     await user.click(screen.getByRole('button', { name: 'AI 에이전트 목록으로' }));
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat$/));
-    expect(await screen.findByText('왼쪽에서 AI 에이전트를 고르면 새 세션이 열립니다. 세션은 가운데 목록에서 오갑니다.')).toBeInTheDocument();
+    expect(await screen.findByText('가운데 목록에서 세션을 고르거나, 왼쪽에서 AI 에이전트를 골라 그 AI 에이전트의 세션을 보세요. + 를 누르면 바로 새 세션입니다.')).toBeInTheDocument();
     expect(store.profile).toBe('');
     await user.click(screen.getByRole('button', { name: '브라우저 뒤로' }));
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b$/));
     expect(await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ })).toBeInTheDocument();
   });
 
-  it('주소와 같은 에이전트를 다시 누르면 열린 그 세션에 머문다 — 새 세션을 만들지 않는다(D1, 스펙 2026-11-05-005)', async () => {
+  it('AI 에이전트 줄을 누르면 세션 칸만 그 에이전트로 거른다 — 열린 세션에 머물고 새 세션을 만들지 않는다(2026-11-06)', async () => {
     const user = userEvent.setup();
     const fn = mount('/chat?agent=plan&pod=b&session=y', GROUPS);
     await waitFor(() => expect(store.current()?.id).toBe('r-y'));
     const before = store.current()?.id;
     const spy = vi.spyOn(store, 'startNew');
     const opened = postedTo(fn, '/api/chat/session').length;
-    await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
+    await user.click(await screen.findByRole('button', { name: /^마케팅 도우미의 기획 담당 세션 보기/ }));
+    expect(store.agentFilter).toEqual({ pod: 'b', profile: 'plan' });
+    expect(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 세션 보기/ })).toHaveAttribute('aria-current', 'true');
     await waitFor(() => expect(store.current()?.id).toBe(before));
     expect(spy).not.toHaveBeenCalled();
     expect(postedTo(fn, '/api/chat/session')).toHaveLength(opened);
     spy.mockRestore();
   });
 
-  it('열린 세션이 없는 에이전트를 누르면 새 세션을 연다(D1)', async () => {
+  it('고른 AI 에이전트에서 「새 세션」을 누르면 그 에이전트로 새 세션을 연다', async () => {
     const user = userEvent.setup();
     mount('/chat?agent=plan&pod=b', GROUPS);
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
     const spy = vi.spyOn(store, 'openSessionFor').mockReturnValue(undefined);
     const start = vi.spyOn(store, 'startNew');
-    await user.click(screen.getByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
+    await openRow(user, /^마케팅 도우미의 기획 담당 세션 보기/);
     expect(start).toHaveBeenCalledWith('plan', 'b');
     spy.mockRestore();
     start.mockRestore();
@@ -1050,7 +1067,7 @@ describe('Chat — 딥 링크', () => {
   it('다른 묶음의 에이전트를 눌러도 작업공간 전환 확인이 뜨지 않고 그 묶음의 대화가 열린다(D14)', async () => {
     const user = userEvent.setup();
     mount('/chat', GROUPS, undefined, <LinkPodSwitch me={ME_AB} />);
-    await user.click(await screen.findByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
+    await openRow(user, /^마케팅 도우미의 기획 담당 세션 보기/);
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b$/));
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
     expect(store.status?.pod).toBe('b');
@@ -1072,7 +1089,7 @@ describe('Chat — 딥 링크', () => {
   it('「지난 대화」 단추는 panel=past 를 쌓고(push), 닫으면 그 칸을 되감는다. 뒤로가기 한 번이면 목록 주소로 간다', async () => {
     const user = userEvent.setup();
     mount('/chat', GROUPS, undefined, <Back />);
-    await user.click(await screen.findByRole('button', { name: /^마케팅 도우미의 기획 담당 와 대화/ }));
+    await openRow(user, /^마케팅 도우미의 기획 담당 세션 보기/);
     await screen.findByRole('textbox', { name: /기획 담당 에게 보낼 메시지/ });
     await user.click(screen.getByRole('button', { name: /지난 대화 보기/ }));
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=plan&pod=b&panel=past$/));
@@ -1105,7 +1122,7 @@ describe('Chat — 딥 링크', () => {
     expect(within(dlg).getByText(/기획 담당/)).toBeInTheDocument(); // 부제: 그 대화의 대상
     expect(store.profile).toBe('plan');
     expect(store.status?.pod).toBe('b');
-    await user.click(screen.getByRole('button', { name: /^관리자 AAS 와 대화/, hidden: true }));
+    await openRow(user, /^관리자 AAS 세션 보기/, true);
     await waitFor(() => expect(loc()).toHaveTextContent(/^\/chat\?agent=main&pod=a$/));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
@@ -1155,7 +1172,7 @@ describe('Chat: 읽어 주기', () => {
   const openWith = async (over: Record<string, unknown>) => {
     const user = userEvent.setup();
     const fn = mount('/chat', STATUS(over));
-    await user.click(await screen.findByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await screen.findByRole('textbox', { name: /에게 보낼 메시지/ });
     await user.type(input(), '안녕{Enter}');
     await waitFor(() => expect(FakeES.all).toHaveLength(1));
@@ -1184,7 +1201,7 @@ describe('Chat: 읽어 주기', () => {
     await waitFor(() => expect(postedTo(fn, '/api/chat/speak')).toHaveLength(1));
     expect(postedTo(fn, '/api/chat/speak')[0]).toMatchObject({ profile: 'ma', text: '반가워요', voice: 'v1', part: 0 });
     expect(readAloud.snap.phase).not.toBe('idle');
-    await user.click(screen.getByRole('button', { name: /^Zed 와 대화/ }));
+    await openRow(user, /^Zed 세션 보기/);
     await waitFor(() => expect(readAloud.snap.phase).toBe('idle'));
   });
 });
@@ -1208,11 +1225,12 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
     await waitFor(() => expect(FakeES.all).toHaveLength(1));
     await emit(0, 'aas.user', { text: '첫 일' });
     await emit(0, 'message.complete', { text: '끝' });
-    await user.click(screen.getByRole('button', { name: /^ops 와 대화/ })); // 시험 스텁은 AI 에이전트마다 세션 id 가 하나라 다른 AI 에이전트로
+    await openRow(user, /^ops 세션 보기/); // 시험 스텁은 AI 에이전트마다 세션 id 가 하나라 다른 AI 에이전트로
     await user.type(input(), '둘째 일{Enter}');
     await waitFor(() => expect(FakeES.all).toHaveLength(2));
     await emit(1, 'aas.user', { text: '둘째 일' });
     await emit(1, 'message.start');
+    await user.click(screen.getByRole('button', { name: /^모든 AI 에이전트(,|$)/ })); // 두 AI 에이전트의 세션을 한 목록으로
     return { user, fn };
   };
 
@@ -1233,11 +1251,16 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
     await user.click(await screen.findByRole('button', { name: 'AI 에이전트 목록 접기' }));
     expect(screen.queryByRole('searchbox', { name: 'AI 에이전트 찾기' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'AI 에이전트 목록 펼치기' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '마케팅 와 새 세션' }));
+    // 아바타는 세션 칸을 그 AI 에이전트로 거른다. 「새 세션」은 고른 에이전트로 바로 연다
+    await user.click(screen.getByRole('button', { name: '마케팅 세션 보기' }));
+    expect(screen.getByRole('button', { name: '마케팅 세션 보기' })).toHaveAttribute('aria-current', 'true');
+    await user.click(document.querySelector<HTMLElement>('[data-guide="chat.newSession"]')!);
     expect(await screen.findByRole('textbox', { name: /마케팅 에게 보낼 메시지/ })).toBeInTheDocument();
+    // 모두 보기로 돌아가면 「새 세션」은 고르기 창을 연다
+    await user.click(screen.getByRole('button', { name: '모든 AI 에이전트' }));
     await user.click(screen.getByRole('button', { name: /골라 새 세션을 시작/ }));
     const dlg = await screen.findByRole('dialog', { name: '새 세션 — AI 에이전트 고르기' });
-    await user.click(within(dlg).getByRole('button', { name: /^ops 와 대화/ }));
+    await user.click(within(dlg).getByRole('button', { name: /^ops 와 대화/ })); // 고르기 창에서는 누르면 새 세션
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '새 세션 — AI 에이전트 고르기' })).not.toBeInTheDocument());
     expect(await screen.findByRole('textbox', { name: /ops 에게 보낼 메시지/ })).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem('aas-chat-layout') || '{}')).toMatchObject({ agentsCollapsed: true });
@@ -1252,16 +1275,12 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
     expect(await screen.findByRole('searchbox', { name: '세션 찾기' })).toBeInTheDocument();
   });
 
-  it('상태 칩으로 거른다: 실행 중만, 완료만', async () => {
-    const { user } = await twoSessions();
+  it('세션 칸은 진행 중과 완료 두 묶음이다. 끝난 세션은 완료로 내려간다', async () => {
+    await twoSessions();
     const nav = screen.getByRole('navigation', { name: '세션 목록' });
-    const chips = within(nav).getByRole('group', { name: '세션 상태로 거르기' });
-    await user.click(within(chips).getByRole('button', { name: '실행 중 1' }));
-    expect(within(nav).getAllByRole('button', { name: /둘째 일/ }).length).toBeGreaterThan(0);
-    expect(within(nav).queryByRole('button', { name: /첫 일/ })).not.toBeInTheDocument();
-    await user.click(within(chips).getByRole('button', { name: '완료' }));
-    expect(within(nav).getByRole('button', { name: /첫 일/ })).toBeInTheDocument();
-    expect(within(nav).queryByRole('button', { name: /둘째 일/ })).not.toBeInTheDocument();
+    expect(within(nav).getByRole('region', { name: '진행 중' })).toHaveTextContent('둘째 일');
+    expect(within(nav).getByRole('region', { name: '완료' })).toHaveTextContent('첫 일');
+    expect(within(nav).queryByRole('group', { name: '세션 상태로 거르기' })).toBeNull(); // 묶음과 같은 일을 하던 칩은 뺐다
   });
 
   it('메뉴의 「완료된 세션 모두 닫기」는 실행 중·지금 보는 세션을 남기고 서버에 숨김을 남긴다', async () => {
@@ -1271,6 +1290,9 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
     const nav = screen.getByRole('navigation', { name: '세션 목록' });
     expect(within(nav).queryByRole('button', { name: /첫 일/ })).not.toBeInTheDocument();
     expect(within(nav).getByRole('button', { name: /둘째 일/ })).toBeInTheDocument();
+    // 서버 숨김은 되돌리기 알림이 닫힐 때 남긴다(스펙 2026-11-06-002 G11) — 알림을 닫는다
+    expect(postedTo(fn, '/api/chat/sessions/hide')).toHaveLength(0);
+    await user.click(await screen.findByRole('button', { name: '알림 닫기' }));
     await waitFor(() => expect(postedTo(fn, '/api/chat/sessions/hide')).toHaveLength(1));
     expect(postedTo(fn, '/api/chat/sessions/hide')[0].ids).toHaveLength(1);
   });
@@ -1286,6 +1308,8 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
     const dlg = await screen.findByRole('dialog', { name: '실행 중인 세션 닫기' });
     await user.click(within(dlg).getByRole('button', { name: '멈추고 닫기' }));
     await waitFor(() => expect(postedTo(fn, '/api/chat/interrupt')).toHaveLength(1));
+    // 서버 숨김은 되돌리기 알림이 닫힐 때(G11)
+    fireEvent.click(await screen.findByRole('button', { name: '알림 닫기', hidden: true }));
     await waitFor(() => expect(postedTo(fn, '/api/chat/sessions/hide')).toHaveLength(1));
     expect((postedTo(fn, '/api/chat/sessions/hide')[0].ids as string[]).length).toBe(2);
     expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
@@ -1304,7 +1328,172 @@ describe('Chat — 3칸 배치와 세션 정리', () => {
   it('AI 에이전트를 눌러 새 세션을 열면 입력창에 커서가 간다(같은 AI 에이전트를 다시 눌러도)', async () => {
     const { user } = await open();
     await waitFor(() => expect(document.activeElement).toBe(input()));
-    await user.click(screen.getByRole('button', { name: /^마케팅 와 대화/ }));
+    await openRow(user, /^마케팅 세션 보기/);
     await waitFor(() => expect(document.activeElement).toBe(input()));
+  });
+});
+
+describe('Chat — AI 에이전트별 세션(새·진행 중·완료, 2026-11-06)', () => {
+  beforeEach(() => window.localStorage.clear());
+  const now = () => Math.floor(Date.now() / 1000);
+  const pastRows = () => [
+    { id: 'p-today', source: 'aas', title: '오늘 끝낸 일', started_at: now() - 7200, active_at: now() - 3600, message_count: 6 },
+    { id: 'p-tg', source: 'telegram', title: '텔레그램에서 한 일', started_at: now() - 5000, active_at: now() - 5000, message_count: 2 },
+    { id: 'p-cron', source: 'cron', title: '크론 결과', started_at: now() - 600, active_at: now() - 600, message_count: 2 },
+    { id: 'p-3d', source: 'aas', title: '사흘 전 일', started_at: now() - 3 * 86400, active_at: now() - 3 * 86400, message_count: 9 },
+  ];
+
+  // 기본 기간이 「최근 1주일」로 바뀌었다(스펙 2026-11-06-002 G3·G4) — 「오늘·어제」로 좁혔다가 안내 줄로 다시 넓힌다
+  it('AI 에이전트를 고르면 세션 칸이 그 에이전트 전용이 되고, 완료는 기본 최근 1주일·「오늘·어제」로 좁힌다', async () => {
+    extraHistory = pastRows();
+    const user = userEvent.setup();
+    const fn = mount();
+    await user.click(await screen.findByRole('button', { name: /^마케팅 세션 보기/ }));
+    const nav = screen.getByRole('navigation', { name: '세션 목록' });
+    expect(within(nav).getByRole('heading', { name: '마케팅 의 세션' })).toBeInTheDocument();
+    const done = await within(nav).findByRole('region', { name: '완료' });
+    await waitFor(() => expect(done).toHaveTextContent('오늘 끝낸 일'));
+    expect(done).toHaveTextContent('텔레그램에서 한 일');
+    expect(within(done).getByText('텔레그램')).toBeInTheDocument(); // AAS 가 아닌 출처는 작은 표시
+    expect(done).not.toHaveTextContent('크론 결과'); // 크론은 「지난 대화」 서랍에서
+    expect(done).toHaveTextContent('사흘 전 일'); // 기본 최근 1주일(G3)
+    expect(done).not.toHaveTextContent('텔레그램 대화'); // 1주일 밖(옛 고정값)
+    expect(within(done).getByRole('button', { name: '최근 1주일' })).toHaveAttribute('aria-pressed', 'true');
+    // 고르기만 했다 — 새 세션을 만들지 않는다
+    expect(postedTo(fn, '/api/chat/session')).toHaveLength(0);
+    await user.click(within(done).getByRole('button', { name: '오늘·어제' }));
+    expect(done).not.toHaveTextContent('사흘 전 일');
+    expect(localStorage.getItem('aas-chat-done-range')).toBe('2d');
+    await user.click(within(done).getByRole('button', { name: '「최근 1주일」로 넓히면 1개가 더 있습니다.' }));
+    expect(done).toHaveTextContent('사흘 전 일');
+    expect(localStorage.getItem('aas-chat-done-range')).toBe('7d');
+    expect(fn.mock.calls.some(([u]) => String(u).includes('/api/chat/history?profile=ma&limit=200'))).toBe(true);
+  });
+
+  it('완료의 지난 세션을 누르면 그 대화를 이어서 열고, 목록에는 한 줄만 남는다', async () => {
+    extraHistory = pastRows();
+    const user = userEvent.setup();
+    const fn = mount();
+    await user.click(await screen.findByRole('button', { name: /^마케팅 세션 보기/ }));
+    await user.click(await screen.findByRole('button', { name: '오늘 끝낸 일, 지난 세션, 이어서 열기' }));
+    expect(await screen.findByRole('textbox', { name: /마케팅 에게 보낼 메시지/ })).toBeInTheDocument();
+    expect(postedTo(fn, '/api/chat/resume')).toEqual([expect.objectContaining({ profile: 'ma', stored_id: 'p-today' })]);
+    expect(store.current()?.id).toBe('r-p-today');
+    const nav = screen.getByRole('navigation', { name: '세션 목록' });
+    expect(within(nav).queryByRole('button', { name: '오늘 끝낸 일, 지난 세션, 이어서 열기' })).toBeNull(); // 열린 세션 줄로 바뀌었다
+  });
+
+  it('AI 에이전트 줄의 + 는 그 에이전트로 바로 새 세션을 연다', async () => {
+    const user = userEvent.setup();
+    const fn = mount();
+    await screen.findByRole('button', { name: /^마케팅 세션 보기/ });
+    await user.click(screen.getByRole('button', { name: '마케팅 와 새 세션' }));
+    expect(await screen.findByRole('textbox', { name: /마케팅 에게 보낼 메시지/ })).toBeInTheDocument();
+    await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toEqual([expect.objectContaining({ profile: 'ma' })]));
+    expect(store.agentFilter).toBeNull(); // 모두 보기 중이면 거름은 그대로
+  });
+});
+
+describe('Chat — 화면 다듬기(스펙 2026-11-06-002 G1·G4·G7·G9·G10·G11)', () => {
+  beforeEach(() => window.localStorage.clear());
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it('G1: 세션을 여는 동안·지난 이벤트를 따라잡는 동안은 새 세션 안내 대신 「지난 대화를 불러오는 중」', async () => {
+    await open();
+    expect(screen.getByTestId('new-session-hero')).toBeInTheDocument();
+    act(() => {
+      store.opening = 'ma';
+      store.notify();
+    });
+    expect(screen.queryByTestId('new-session-hero')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('log')).getByText('지난 대화를 불러오는 중…')).toBeInTheDocument();
+    act(() => {
+      store.opening = '';
+      store.current()!.catchUp = 5;
+      store.notify();
+    });
+    expect(screen.queryByTestId('new-session-hero')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('log')).getByText('지난 대화를 불러오는 중…')).toBeInTheDocument();
+    act(() => {
+      store.current()!.catchUp = undefined;
+      store.notify();
+    });
+    expect(screen.getByTestId('new-session-hero')).toBeInTheDocument();
+  });
+
+  it('G4: 모든 AI 에이전트 보기에는 기간 칩이 없고, 에이전트를 고르면 「오늘·어제」·「최근 1주일」 칩이 있다', async () => {
+    const user = userEvent.setup();
+    mount();
+    const nav = await screen.findByRole('navigation', { name: '세션 목록' });
+    expect(within(nav).queryByRole('group', { name: '완료 세션 기간' })).toBeNull();
+    await user.click(await screen.findByRole('button', { name: /^마케팅 세션 보기/ }));
+    const chips = within(nav).getByRole('group', { name: '완료 세션 기간' });
+    expect(within(chips).getAllByRole('button').map((b) => b.textContent)).toEqual(['오늘·어제', '최근 1주일']);
+  });
+
+  it('G7: 완료 줄 둘째 줄은 「채널 · 메시지 n · 마지막 활동」 한 형식이다', async () => {
+    extraHistory = [
+      { id: 'p-today', source: 'aas', title: '오늘 끝낸 일', started_at: now() - 7200, active_at: now() - 3600, message_count: 6 },
+      { id: 'p-tg', source: 'telegram', title: '텔레그램에서 한 일', started_at: now() - 5000, active_at: now() - 5000, message_count: 2 },
+    ];
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: /^마케팅 세션 보기/ }));
+    const done = await screen.findByRole('region', { name: '완료' });
+    const meta = async (title: string) =>
+      (await within(done).findByRole('button', { name: `${title}, 지난 세션, 이어서 열기` })).querySelector('[data-row-meta]')!.textContent;
+    expect(await meta('오늘 끝낸 일')).toMatch(/^AAS·메시지 6·\S+/);
+    expect(await meta('텔레그램에서 한 일')).toMatch(/^텔레그램·메시지 2·\S+/);
+  });
+
+  it('G9: 완료를 못 읽으면 「지난 세션을 읽지 못했습니다 · 다시 시도」, 다시 시도로 다시 읽는다', async () => {
+    historyFail = true;
+    extraHistory = [{ id: 'p-today', source: 'aas', title: '오늘 끝낸 일', started_at: now() - 7200, active_at: now() - 3600, message_count: 6 }];
+    const user = userEvent.setup();
+    const fn = mount();
+    await user.click(await screen.findByRole('button', { name: /^마케팅 세션 보기/ }));
+    const done = await screen.findByRole('region', { name: '완료' });
+    const alert = await within(done).findByTestId('past-error');
+    expect(alert).toHaveTextContent('지난 세션을 읽지 못했습니다');
+    expect(done).not.toHaveTextContent('이 기간에 끝난 세션이 없습니다.');
+    historyFail = false;
+    const before = fn.mock.calls.filter(([u]) => String(u).includes('exclude_hidden')).length;
+    await user.click(within(alert).getByRole('button', { name: '다시 시도' }));
+    await waitFor(() => expect(done).toHaveTextContent('오늘 끝낸 일'));
+    expect(fn.mock.calls.filter(([u]) => String(u).includes('exclude_hidden')).length).toBe(before + 1);
+    expect(within(done).queryByTestId('past-error')).toBeNull();
+  });
+
+  it('G10: 일부만 그린 세션은 입력칸 위 회색 줄 「일부만 불러왔습니다 · 다시 불러오기」', async () => {
+    const { user } = await open();
+    await user.type(input(), '첫 일{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: '첫 일' });
+    const S = store.current()!;
+    act(() => {
+      S.partial = 9;
+      store.notify();
+    });
+    const row = screen.getByTestId('partial-row');
+    expect(row).toHaveTextContent('일부만 불러왔습니다');
+    await user.click(within(row).getByRole('button', { name: '다시 불러오기' }));
+    expect(FakeES.all).toHaveLength(2); // 처음부터 다시 받는다
+    expect(S.catchUp).toBe(9);
+    expect(screen.queryByTestId('partial-row')).not.toBeInTheDocument();
+  });
+
+  it('G11: 세션을 닫으면 알림과 「되돌리기」, 되돌리면 줄이 돌아오고 서버에 숨김을 보내지 않는다', async () => {
+    const { user, fn } = await open();
+    await user.type(input(), '첫 일{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: '첫 일' });
+    const nav = screen.getByRole('navigation', { name: '세션 목록' });
+    await user.click(within(nav).getByRole('button', { name: /^목록에서 닫기/ }));
+    expect(within(nav).queryByRole('button', { name: /첫 일/ })).not.toBeInTheDocument();
+    expect(await screen.findByText('목록에서 숨겼습니다 · 「지난 대화」에서 다시 열 수 있습니다')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '되돌리기' }));
+    expect(await within(nav).findByRole('button', { name: /첫 일/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('목록에서 숨겼습니다 · 「지난 대화」에서 다시 열 수 있습니다')).not.toBeInTheDocument());
+    expect(postedTo(fn, '/api/chat/sessions/hide')).toHaveLength(0);
   });
 });

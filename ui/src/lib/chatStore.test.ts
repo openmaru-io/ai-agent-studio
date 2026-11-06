@@ -824,6 +824,44 @@ describe('ChatStore — 에이전트를 고르면 열린 세션으로(스펙 202
   });
 });
 
+describe('ChatStore — 닫은 대화는 「완료」에서 빠진다(스펙 2026-11-06-002 E1~E3)', () => {
+  const past = { sessions: [
+    { id: 'st-a', source: 'aas', title: 'closed elsewhere', message_count: 3 },
+    { id: 'st-b', source: 'aas', title: 'closed here', message_count: 2 },
+    { id: 'st-c', source: 'aas', title: 'kept', message_count: 1 },
+  ] };
+  it('완료는 exclude_hidden 으로 읽고, 서버 숨김 표·이 탭에서 닫은 세션의 저장 줄을 뺀다', async () => {
+    const a = api({
+      '/api/chat/history': past,
+      '/api/chat/sessions': () => ({ sessions: [{ session_id: 'live-b', profile: 'ma', title: 'closed here', state: 'idle', last_at: 1, stored_id: 'st-b' }],
+        hidden: [], hidden_stored: ['st-a'] }),
+    });
+    const s = new ChatStore();
+    await s.loadSessions();
+    await s.loadPast(undefined, 'ma', true);
+    expect(a.calls.some((c) => c.url.startsWith('/api/chat/history') && c.url.includes('exclude_hidden=1'))).toBe(true);
+    expect(s.agentRows(undefined, 'ma').map((r) => r.id)).toEqual(['live-b', 'stored:st-c']);
+    s.dismiss('live-b');
+    // 표에 남기 전에 서버가 옛 목록을 줘도 바로 빠진다
+    expect(s.agentRows(undefined, 'ma').map((r) => r.id)).toEqual(['stored:st-c']);
+    expect(a.posted('/api/chat/sessions/hide')).toContainEqual({ ids: ['live-b'] });
+  });
+
+  it('닫았던 대화를 다시 열면 완료에 돌아온다', async () => {
+    api({
+      '/api/chat/history': past,
+      '/api/chat/sessions': () => ({ sessions: [], hidden: [], hidden_stored: ['st-a'] }),
+      '/api/chat/resume': { session_id: 's-a', profile: 'ma', title: 'closed elsewhere', stored_id: 'st-a' },
+    });
+    const s = new ChatStore();
+    await s.loadSessions();
+    await s.loadPast(undefined, 'ma', true);
+    expect(s.agentRows(undefined, 'ma').some((r) => r.storedId === 'st-a')).toBe(false);
+    await s.resume('st-a');
+    expect(s.agentRows(undefined, 'ma').some((r) => r.storedId === 'st-a')).toBe(true);
+  });
+});
+
 describe('ChatStore — 회귀 계약 ②: 세션마다 각자 다시 연다(스펙 2026-11-05-005 RQ4)', () => {
   it('두 세션이 함께 끊기면 각자 자기 저장 대화로 resume 한다(서버가 바뀌어도 이어진다, §5-1 U4)', async () => {
     let n = 0;
@@ -857,4 +895,162 @@ describe('cleanTitle', () => {
     ['and/or 비교', 'and/or 비교'],
   ])('%s', (raw, want) => expect(cleanTitle(raw)).toBe(want));
   it('cuts long titles at 60 characters', () => expect(cleanTitle('가'.repeat(80))).toHaveLength(60));
+});
+
+describe('ChatStore — opening a session that already has events (catch-up)', () => {
+  const ROW = { session_id: 'x9', pod: '', profile: 'ops', title: 'Earlier chat', stored_id: 'st9', state: 'idle', last_at: 100 };
+
+  async function openExisting(resume: Record<string, unknown>) {
+    api({ '/api/chat/sessions': { sessions: [ROW] }, '/api/chat/resume': resume });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    expect(await s.focus('x9')).toBe(true);
+    return s;
+  }
+
+  it('replays past events without redrawing per token, then draws once at the server head', async () => {
+    const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true, history: false, seq: 5 });
+    const S = s.sessions.x9;
+    expect(S.catchUp).toBe(5);
+    const es = FakeES.all[0];
+    const v0 = s.version;
+    es.emit('aas.user', { text: 'question' });
+    es.emit('message.start');
+    es.emit('message.delta', { text: 'an' });
+    es.emit('message.delta', { text: 'swer' });
+    expect(s.version).toBe(v0); // nothing redrawn while catching up
+    expect(S.unread).toBe(0);
+    es.emit('message.complete', { text: 'answer' }); // seq 5 = head
+    expect(S.catchUp).toBeUndefined();
+    expect(s.version).toBe(v0 + 1); // one redraw with the whole conversation
+    expect(S.busy).toBe(false);
+    expect(S.items.filter((x) => x.kind === 'assistant').map((x) => x.text)).toEqual(['answer']);
+    es.emit('aas.user', { text: 'next' }); // live events redraw as before
+    expect(s.version).toBe(v0 + 2);
+  });
+
+  it('a session row from the server list passes its head when there is no stored id', async () => {
+    api({ '/api/chat/sessions': { sessions: [{ ...ROW, stored_id: '', seq: 3 }] } });
+    const s = new ChatStore();
+    await s.preload();
+    await s.loadSessions();
+    await s.focus('x9');
+    expect(s.sessions.x9.catchUp).toBe(3);
+  });
+
+  it('older servers without seq keep the previous behaviour', async () => {
+    const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true });
+    expect(s.sessions.x9.catchUp).toBeUndefined();
+    const v0 = s.version;
+    FakeES.all[0].emit('aas.user', { text: 'question' });
+    expect(s.version).toBe(v0 + 1);
+  });
+
+  it('draws what it has if the head never arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await openExisting({ session_id: 'x9', profile: 'ops', title: 'Earlier chat', reused: true, seq: 50 });
+      FakeES.all[0].emit('aas.user', { text: 'question' });
+      expect(s.sessions.x9.catchUp).toBe(50);
+      vi.advanceTimersByTime(8000);
+      expect(s.sessions.x9.catchUp).toBeUndefined();
+      expect(s.sessions.x9.items.some((x) => x.kind === 'user')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ChatStore — 화면 상태(스펙 2026-11-06-002 G9·G10·G11)', () => {
+  it('G9: 지난 세션을 못 읽으면 실패를 표시하고, 다시 시도(force)가 성공하면 지운다', async () => {
+    let fail = true;
+    api({
+      '/api/chat/history': () =>
+        fail ? new Response(JSON.stringify({ error: 'down' }), { status: 502 }) : { sessions: [{ id: 'st-1', source: 'aas', title: 'back', message_count: 2 }] },
+    });
+    const s = new ChatStore();
+    await s.loadPast(undefined, 'ma');
+    expect(s.pastError(undefined, 'ma')).toBe(true);
+    expect(s.agentRows(undefined, 'ma')).toEqual([]);
+    fail = false;
+    await s.loadPast(undefined, 'ma'); // 60초 안이면 다시 묻지 않는다 — 실패도 그대로
+    expect(s.pastError(undefined, 'ma')).toBe(true);
+    await s.loadPast(undefined, 'ma', true);
+    expect(s.pastError(undefined, 'ma')).toBe(false);
+    expect(s.agentRows(undefined, 'ma').map((r) => r.id)).toEqual(['stored:st-1']);
+  });
+
+  it('G10: 안전 시한에 끝 번호까지 못 받으면 partial 을 남기고, 다시 불러오기는 처음부터 다시 받는다', async () => {
+    vi.useFakeTimers();
+    try {
+      api({ '/api/chat/sessions': { sessions: [{ session_id: 'x9', pod: '', profile: 'ops', title: 'Earlier', stored_id: 'st9', state: 'idle', last_at: 1 }] },
+        '/api/chat/resume': { session_id: 'x9', profile: 'ops', title: 'Earlier', reused: true, seq: 50 } });
+      const s = new ChatStore();
+      await s.preload();
+      await s.loadSessions();
+      await s.focus('x9');
+      const S = s.sessions.x9;
+      FakeES.all[0].emit('aas.user', { text: 'question' });
+      vi.advanceTimersByTime(8000);
+      expect(S.catchUp).toBeUndefined();
+      expect(S.partial).toBe(50);
+      s.reloadPartial(S);
+      expect(FakeES.all[0].closed).toBe(true);
+      expect(FakeES.all).toHaveLength(2);
+      expect(FakeES.all[1].url).not.toContain('after='); // 처음부터
+      expect(S.partial).toBeUndefined();
+      expect(S.catchUp).toBe(50);
+      expect(S.items).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('G10: 시한 안에 끝 번호에 닿으면 partial 이 없다', async () => {
+    vi.useFakeTimers();
+    try {
+      api({ '/api/chat/sessions': { sessions: [{ session_id: 'x9', pod: '', profile: 'ops', title: 'Earlier', stored_id: 'st9', state: 'idle', last_at: 1 }] },
+        '/api/chat/resume': { session_id: 'x9', profile: 'ops', title: 'Earlier', reused: true, seq: 1 } });
+      const s = new ChatStore();
+      await s.preload();
+      await s.loadSessions();
+      await s.focus('x9');
+      FakeES.all[0].emit('aas.user', { text: 'question' });
+      vi.advanceTimersByTime(8000);
+      expect(s.sessions.x9.partial).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 앞 시험이 닫은 live-b 는 이 브라우저(localStorage)에 남아 있어 다른 id 를 쓴다
+  const live = { sessions: [{ session_id: 'live-g11', profile: 'ma', title: 'done one', state: 'idle', last_at: 1, stored_id: 'st-g11' }], hidden: [] };
+  const past = { sessions: [{ id: 'st-g11', source: 'aas', title: 'done one', message_count: 2 }, { id: 'st-c', source: 'aas', title: 'kept', message_count: 1 }] };
+
+  it('G11: hideSoon 은 줄을 바로 빼고, 되돌리면 숨김 요청을 보내지 않고 줄을 되살린다', async () => {
+    const a = api({ '/api/chat/sessions': live, '/api/chat/history': past });
+    const s = new ChatStore();
+    await s.loadSessions();
+    await s.loadPast(undefined, 'ma', true);
+    const h = s.hideSoon(['live-g11']);
+    expect(s.sessionRows().map((r) => r.id)).toEqual([]);
+    expect(s.agentRows(undefined, 'ma').map((r) => r.id)).toEqual(['stored:st-c']); // 같은 대화의 저장 줄도 완료에 나오지 않는다
+    h.undo();
+    h.commit(); // 알림이 닫히며 부르는 commit 은 되돌린 뒤라 아무 일도 하지 않는다
+    expect(s.sessionRows().map((r) => r.id)).toEqual(['live-g11']);
+    await Promise.resolve();
+    expect(a.posted('/api/chat/sessions/hide')).toEqual([]);
+  });
+
+  it('G11: 알림이 닫히면(commit) 서버에 숨김을 남긴다', async () => {
+    const a = api({ '/api/chat/sessions': live, '/api/chat/history': past });
+    const s = new ChatStore();
+    await s.loadSessions();
+    const h = s.hideSoon(['live-g11']);
+    expect(a.posted('/api/chat/sessions/hide')).toEqual([]);
+    h.commit();
+    expect(a.posted('/api/chat/sessions/hide')).toEqual([{ ids: ['live-g11'] }]);
+    expect(s.sessionRows()).toEqual([]);
+  });
 });

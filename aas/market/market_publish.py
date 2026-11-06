@@ -248,7 +248,8 @@ def _newer(a: str, b: str) -> bool:
     return marketplace._ver(a) > marketplace._ver(b)
 
 
-def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_path: str, name: str, version: str, namespace: str = "") -> dict:
+def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_path: str, name: str, version: str, namespace: str = "",
+                    declare_env: list[str] | None = None) -> dict:
     """올리기 요청을 검사하고 묶음과 함께 저장한다. 검사에 걸리면 MarketError(저장하지 않는다).
     namespace 는 원하는 곳(자동 승인 때 쓴다, 표시 이름도 받아 slug 로 저장 — 스펙 2026-10-28-010 D7). hash 는 set_header 전 묶음의 해시 — 만든 기록과 견준다(D11)."""
     namespace = marketplace.ns_slug(namespace) if namespace else ""
@@ -292,12 +293,13 @@ def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skil
         if paid:
             raise MarketError(tr("허용이 필요한 패키지를 고친 것은 올릴 수 없습니다", "A modified restricted package cannot be published"))
         derived = f"{have['namespace']}/{have['name']}@{have['version']}"
+    declare = [e for e in dict.fromkeys(str(x) for x in declare_env or []) if ENV_NAME.match(e)][:20]
     with name_lock(name):
-        return _request_locked(pod_id, who, admin, profile, rel, name, version, namespace, origin, derived, files)
+        return _request_locked(pod_id, who, admin, profile, rel, name, version, namespace, origin, derived, files, declare)
 
 
 def _request_locked(pod_id: str, who: str, admin: bool, profile: str, rel: str, name: str, version: str, namespace: str,
-                    origin: str, derived: str, files: list[tuple[str, bytes]]) -> dict:
+                    origin: str, derived: str, files: list[tuple[str, bytes]], declare: list[str] | None = None) -> dict:
     prior = [r for r in requests() if r["name"] == name and r["status"] in ("published", "pending_review")]
     if any(r["status"] in ("requested", "publishing") and not r.get("stale") for r in requests() if r["name"] == name):
         raise MarketError(tr("같은 이름의 게시 요청이 이미 기다리고 있습니다", "A publish request with that name is already waiting"), 409)
@@ -322,6 +324,7 @@ def _request_locked(pod_id: str, who: str, admin: bool, profile: str, rel: str, 
     extra = {"name": name, "version": version}
     if derived:
         extra["derived_from"] = derived
+    extra.update(_declare_fields(md, declare or []))
     files = [(r, set_header(d.decode("utf-8"), **extra).encode("utf-8") if r == "SKILL.md" else d) for r, d in files]
     rid = datetime.now().strftime("%Y%m%d%H%M%S%f") + "-" + secrets.token_hex(3)
     (_dir() / (rid + ".zip")).write_bytes(zip_of(files))
@@ -329,6 +332,188 @@ def _request_locked(pod_id: str, who: str, admin: bool, profile: str, rel: str, 
                    "origin": origin, "derived_from": derived, "description": fm.get("description", "")[:240],
                    "files": [{"path": r, "size": len(d)} for r, d in files], "status": "requested", "message": "",
                    "hash": digest, "want_namespace": namespace, "internal_refs": refs})
+
+
+# ---- 게시 전 점검(쓰지 않는다) -------------------------------------------------------------------------
+# 「점검 → 미리보기 → 게시」: 요청과 같은 검사를 모두 돌려 걸리는 것을 한 번에 보이고, 묶음에 들어갈 파일과
+# SKILL.md 머리말이 어떻게 바뀌는지 보여 준다. 아무것도 저장하지 않는다.
+
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+# 코드가 읽는 환경변수(연결도 flow.py 와 같은 모양). 셸·실행 환경 변수는 비밀값이 아니다
+_ENV_READ = [re.compile(r"os\.environ(?:\.get)?\s*[\[(]\s*[\"']([A-Z][A-Z0-9_]{2,})[\"']"),
+             re.compile(r"os\.getenv\(\s*[\"']([A-Z][A-Z0-9_]{2,})[\"']"),
+             re.compile(r"process\.env\.([A-Z][A-Z0-9_]{2,})"),
+             re.compile(r"\$\{([A-Z][A-Z0-9_]{2,})[}:]")]
+_ENV_NOISE = {"PATH", "HOME", "PWD", "USER", "SHELL", "LANG", "TZ", "IFS", "PYTHONPATH", "TMPDIR", "TERM", "NODE_ENV", "DEBUG", "LOG_LEVEL"}
+_CODE_EXT = (".py", ".sh", ".bash", ".js", ".mjs", ".cjs", ".ts")
+
+
+def env_reads(files: list[tuple[str, bytes]]) -> dict[str, list[str]]:
+    """스크립트가 읽는 환경변수 이름 → 그 파일들. HERMES_* 는 Hermes 가 채우는 값이라 뺀다."""
+    out: dict[str, list[str]] = {}
+    for rel, data in files:
+        if not rel.lower().endswith(_CODE_EXT):
+            continue
+        text = data.decode("utf-8", errors="ignore")
+        for pat in _ENV_READ:
+            for name in pat.findall(text):
+                if name in _ENV_NOISE or name.startswith(("HERMES_", "AAS_")):
+                    continue
+                where = out.setdefault(name, [])
+                if rel not in where:
+                    where.append(rel)
+    return dict(sorted(out.items()))
+
+
+def _declare_fields(md: str, declare: list[str]) -> dict:
+    """빠진 필수 환경변수 선언을 머리말 한 줄로 더한다. 이미 그 키가 있으면(여러 줄 목록일 수 있다) 건드리지 않는다."""
+    if not declare or "required_environment_variables" in header_of(md):
+        return {}
+    from ..assets import skill_setup
+    have = {e["name"] for e in skill_setup.required_env(skill_setup.frontmatter(md))}
+    add = [e for e in declare if e not in have]
+    return {"required_environment_variables": "[" + ", ".join(add) + "]"} if add else {}
+
+
+def _bump(version: str) -> str:
+    parts = (str(version or "0.0.0").split(".") + ["0", "0", "0"])[:3]
+    try:
+        return f"{int(parts[0])}.{int(parts[1])}.{int(parts[2]) + 1}"
+    except ValueError:
+        return "1.0.0"
+
+
+def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_path: str, name: str = "", version: str = "",
+                  usage: dict | None = None, hub: bool = True) -> dict:
+    """게시 요청 전 점검. 반환: {ok, checks:[{id, level(pass|warn|fail), message}], name, version, files, excluded, env, header}.
+    usage 는 그 프로파일 기준 스킬 상태(agent_skills: uses·last_used·readiness·cron 마지막 결과) — 「잘 동작했는가」 근거.
+    hub 가 거짓이면 허브 조회(같은 이름·버전)를 건너뛴다(시험·허브 장애)."""
+    checks: list[dict] = []
+
+    def add(cid: str, level: str, message: str) -> None:
+        checks.append({"id": cid, "level": level, "message": message})
+
+    parts = [p for p in str(skill_path or "").split("/") if p]
+    if (not marketplace.PROFILE.match(profile or "") and profile != "default") or len(parts) < 2 or parts[0] != "skills" \
+            or any(p in ("..", ".") or p.startswith(".") for p in parts):
+        raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
+    rel = "/".join(parts)
+    root = skill_keep.profile_root(home, profile)
+    folder = root / rel
+    excluded: list[str] = []
+    try:
+        if skill_keep.escapes(root, folder) or not folder.is_dir() or not (folder / "SKILL.md").is_file():
+            raise MarketError(tr("그 프로파일에 이 스킬 폴더가 없습니다", "That skill folder is not in the profile"), 404)
+        skill_name = skill_keep.skill_name(folder)
+        origin = skill_origin.origin(skill_origin.Facts(root), skill_name, rel, folder)
+        try:
+            files = collect(folder, excluded)
+        except MarketError as exc:
+            files = []
+            add("files", "fail", str(exc))
+    except OSError as exc:
+        raise MarketError(tr(f"스킬 폴더를 읽지 못했습니다: {type(exc).__name__}", f"Could not read the skill folder: {type(exc).__name__}"), 503) from None
+
+    name = name or re.sub(r"[^a-z0-9-]+", "-", skill_name.lower()).strip("-")[:63]
+    md = dict(files).get("SKILL.md", b"").decode("utf-8", errors="replace")
+    fm = header_of(md)
+    if origin not in ALLOWED_ORIGINS:
+        add("origin", "fail", tr("Hermes 기본 스킬(고치지 않은 것)과 허브에서 받은 스킬은 올릴 수 없습니다",
+            "Unmodified Hermes built-in skills and skills installed from a hub cannot be published"))
+    else:
+        add("origin", "pass", tr("올릴 수 있는 출처입니다", "The skill's origin can be published"))
+    if files:
+        add("files", "pass", tr(f"파일 {len(files)}개, {sum(len(d) for _r, d in files) // 1024 + 1}KiB", f"{len(files)} files, {sum(len(d) for _r, d in files) // 1024 + 1} KiB"))
+    for f in excluded:
+        add("secret", "fail", tr(f"비밀값으로 보이는 문자열이 있습니다: {f} — 값을 지우고 환경변수로 읽게 고치세요",
+            f"Looks like it contains a secret: {f}. Remove the value and read it from an environment variable"))
+    if not NAME.match(name or ""):
+        add("name", "fail", tr("패키지 이름은 소문자·숫자·하이픈 2~63자입니다", "The package name must be 2-63 lowercase letters, digits, or hyphens"))
+    if md and not md.startswith("---\n"):
+        add("header", "fail", tr("SKILL.md 는 --- 로 시작하는 머리말이 있어야 합니다", "SKILL.md must start with a --- header"))
+    desc = fm.get("description", "")
+    if len(desc) < 20:
+        add("description", "fail", tr(f"description 이 {len(desc)}자입니다 — 20자 이상으로 무엇을 하는 스킬인지 적으세요",
+            f"The description is {len(desc)} characters. Write at least 20 characters about what the skill does"))
+    else:
+        add("description", "pass", tr("설명이 있습니다", "The skill has a description"))
+
+    hub_version = ""
+    if hub and NAME.match(name or ""):
+        try:
+            if any(r["status"] in ("requested", "publishing") and not r.get("stale") for r in requests() if r["name"] == name):
+                add("pending", "fail", tr("같은 이름의 게시 요청이 이미 기다리고 있습니다", "A publish request with that name is already waiting"))
+            there = _exists(name)
+            if there:
+                hub_version = there["version"]
+                prior = [r for r in requests() if r["name"] == name and r["status"] in ("published", "pending_review")]
+                if not (admin or any(r["who"] == who for r in prior)):
+                    add("hub_name", "fail", tr(f"스킬 허브({there['namespace']})에 같은 이름이 있습니다 — 다른 이름을 쓰세요",
+                        f"The skill hub ({there['namespace']}) already has that name. Use another name"))
+                else:
+                    add("hub_name", "pass", tr(f"허브의 {there['namespace']}/{name} 새 버전으로 올립니다(지금 {hub_version})",
+                        f"Publishes a new version of {there['namespace']}/{name} (now {hub_version})"))
+            else:
+                add("hub_name", "pass", tr("허브에 없는 새 이름입니다", "The name is new to the skill hub"))
+            if _exists_readonly(name):
+                add("mirror", "fail", tr("공개 미러에 같은 이름이 있습니다 — 다른 이름을 쓰세요", "The public mirror has that name. Use another name"))
+        except MarketError as exc:
+            add("hub", "warn", tr(f"스킬 허브를 확인하지 못했습니다: {exc}", f"Could not check the skill hub: {exc}"))
+    version = version or (_bump(hub_version) if hub_version else (fm.get("version") if VERSION.match(fm.get("version") or "") else "1.0.0"))
+    if not VERSION.match(version or ""):
+        add("version", "fail", tr("버전은 1.2.3 꼴이어야 합니다", "The version must look like 1.2.3"))
+    elif hub_version and not _newer(version, hub_version):
+        add("version", "fail", tr(f"허브의 버전({hub_version})보다 커야 합니다", f"Must be newer than the hub's version ({hub_version})"))
+
+    # 필요한 환경변수: 선언 ∪ 코드에서 읽는 것. 선언이 없으면 받는 쪽이 무엇을 채워야 하는지 모른다
+    from ..assets import skill_setup
+    declared = [e["name"] for e in skill_setup.required_env(skill_setup.frontmatter(md))]
+    reads = env_reads(files)
+    undeclared = [n for n in reads if n not in declared]
+    if undeclared:
+        add("env", "warn", tr(f"코드가 읽지만 선언하지 않은 환경변수: {', '.join(undeclared)} — 머리말에 선언을 더합니다",
+            f"Read by the code but not declared: {', '.join(undeclared)}. The header will declare them"))
+    elif declared or reads:
+        add("env", "pass", tr("필요한 환경변수가 선언돼 있습니다", "The required environment variables are declared"))
+    try:
+        refs = publish_auto_refs(files)
+    except Exception:
+        refs = []
+    if refs:
+        add("internal", "warn", tr(f"사내 주소·사설 IP 가 있습니다({len(refs)}곳) — 공개 네임스페이스에는 올라가지 않습니다",
+            f"Internal addresses or private IPs found ({len(refs)}). It cannot go to a public namespace"))
+
+    u = usage or {}
+    outside = [str(x) for x in u.get("external_scripts") or []]
+    if outside:                                                    # SKILL.md 가 부르는 폴더 밖 스크립트는 묶음에 들어가지 않는다 — 받는 쪽에서는 없다
+        add("outside", "warn", tr(f"스킬 폴더 밖 스크립트 {len(outside)}개는 묶음에 들어가지 않습니다({', '.join(outside[:3])}) — 스킬 폴더 안으로 옮겨야 받는 쪽에서 동작합니다",
+                                  f"{len(outside)} scripts outside the skill folder are not in the package ({', '.join(outside[:3])}). Move them into the skill folder so the skill works where it is installed"))
+    failed = [c for c in u.get("cron") or [] if str(c.get("last_status") or "") not in ("", "ok", "success")]
+    if failed:
+        add("works", "warn", tr(f"이 스킬을 부르는 예약 작업이 최근에 실패했습니다: {', '.join(str(c.get('job')) for c in failed[:3])}",
+            f"A scheduled job that runs this skill failed recently: {', '.join(str(c.get('job')) for c in failed[:3])}"))
+    elif u.get("uses") or u.get("seen") or any(c.get("last_status") for c in u.get("cron") or []):
+        add("works", "pass", tr(f"이 AI 에이전트가 {u.get('uses') or u.get('seen') or 0}번 썼습니다" + (f"(마지막 {str(u.get('last_used'))[:10]})" if u.get("last_used") else ""),
+            f"This AI Agent used it {u.get('uses') or u.get('seen') or 0} times" + (f" (last {str(u.get('last_used'))[:10]})" if u.get("last_used") else "")))
+    else:
+        add("works", "warn", tr("이 AI 에이전트가 쓴 기록이 없습니다 — 한 번 돌려 보고 올리기를 권합니다",
+            "This AI Agent has no record of using it. Run it once before publishing"))
+
+    before = md.split("\n---", 1)[0][4:] if md.startswith("---\n") else ""
+    after = before
+    if md.startswith("---\n") and "\n---" in md[4:]:
+        extra = {"name": name, "version": version} | _declare_fields(md, undeclared)
+        after = set_header(md, **extra).split("\n---", 1)[0][4:]
+    return {"ok": not any(c["level"] == "fail" for c in checks), "checks": checks, "name": name, "version": version,
+            "hub_version": hub_version, "origin": origin, "path": rel, "profile": profile,
+            "files": [{"path": r, "size": len(d)} for r, d in files], "excluded": excluded,
+            "env": {"declared": declared, "reads": reads, "undeclared": undeclared},
+            "header": {"before": before, "after": after}}
+
+
+def publish_auto_refs(files: list[tuple[str, bytes]]) -> list[str]:
+    from . import publish_auto
+    return publish_auto.internal_refs(files, publish_auto.config(marketplace.settings()["namespaces"])["domains"])
 
 
 # ---- 승인·반려·게시 ---------------------------------------------------------------------------------

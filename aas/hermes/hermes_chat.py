@@ -606,11 +606,20 @@ class ChatHub:
         rows = (self.request("session.list", params) or {}).get("sessions") or []
         from .chat_commands import shown
         live = {m.get("stored_id"): sid for sid, m in self.sessions.items() if not m.get("closed")}
+        # Hermes 는 마지막 활동 순으로 주지만 그 시각은 빼고 준다. 아래 줄들은 그보다 늦게 활동하지 않았으므로
+        # 「내 시작 시각과 아래 줄들의 시작 시각 중 가장 늦은 것」이 내 마지막 활동의 하한이다(세션 칸의 「어제까지」 거름)
+        active, floor = [0.0] * len(rows), 0.0
+        for i in range(len(rows) - 1, -1, -1):
+            try:
+                floor = max(floor, float(rows[i].get("started_at") or 0))
+            except (TypeError, ValueError):
+                pass
+            active[i] = floor
         # preview 는 Hermes 가 저장한 첫 사용자 말이라 /plan 대화는 영어 계획 프롬프트가 보였다(OKE 2026-10-27) — 말풍선과 같이 친 명령으로
         return [{"id": r.get("id"), "title": mask_oauth_redirect(r.get("title") or shown(said(r.get("preview") or "")) or tr("(제목 없음)", "(Untitled)")),
                  "preview": mask_oauth_redirect(shown(said(r.get("preview") or ""))[:120]), "started_at": r.get("started_at") or 0,
-                 "message_count": r.get("message_count") or 0, "source": r.get("source") or "",
-                 "live_session_id": live.get(r.get("id")), "control": self._control_brief(live.get(r.get("id")))} for r in rows]
+                 "message_count": r.get("message_count") or 0, "source": r.get("source") or "", "active_at": active[i],
+                 "live_session_id": live.get(r.get("id")), "control": self._control_brief(live.get(r.get("id")))} for i, r in enumerate(rows)]
 
     # ---- 목표·반복(스펙 2026-10-27-002 §4-1·R6) — Hermes session.control 요약 중 goal·loop 만 ----
     def _control(self, sid: str, control) -> None:
@@ -772,12 +781,15 @@ class ChatHub:
     def _resume(self, profile: str, stored_id: str, relay: bool = False, by: str = "") -> dict:
         for sid, meta in self.sessions.items():
             if meta.get("stored_id") == stored_id and not meta.get("closed"):
+                meta.pop("hidden", None)                      # 닫았던 세션을 다시 열면 목록에 돌아온다(스펙 2026-11-06-002 E3)
+                meta.pop("hidden_saved", None)
                 if relay:
                     meta["relay"] = True
                 if by:
                     meta.setdefault("by", by)
+                # seq: 지금 마지막 번호. 처음부터 받는 화면은 여기까지 모아서 한 번에 그린다 — 지난 답이 토큰마다 다시 흘렀다
                 return {"session_id": sid, "profile": meta["profile"], "title": meta["title"],
-                        "reused": True, "history": False}
+                        "reused": True, "history": False, "seq": self.seq(sid)}
         params = {"session_id": stored_id, "cols": 100}
         if profile and profile != "default":
             params["profile"] = profile
@@ -818,7 +830,7 @@ class ChatHub:
             # 다시 열기를 기다리게 하지 않는다 — 답이 늦으면 다시 열기(와 줄 선 탭들)가 그만큼 늦었다
             threading.Thread(target=self._read_control, args=(sid,), daemon=True, name="aas-chat-control").start()
         return {"session_id": sid, "profile": profile or "default", "title": title,
-                "running": bool(result.get("running")), "reused": False, "history": history}
+                "running": bool(result.get("running")), "reused": False, "history": history, "seq": self.seq(sid)}
 
     @staticmethod
     def _shown(messages: list) -> list:
@@ -1153,6 +1165,17 @@ class ChatHub:
                 done.append(str(sid))
         return done
 
+    def mark_hidden_saved(self, ids) -> list[str]:
+        """숨긴 세션 중 저장 번호를 아는 것의 번호. 표에 쓴 것으로 표시한다 — 세션 목록 읽기가 다시 쓰지 않게(스펙 2026-11-06-002 E1)."""
+        out = []
+        with self._lock:
+            for sid in ids or ():
+                m = self.sessions.get(str(sid))
+                if m and m.get("hidden") and m.get("stored_id") and not m.get("hidden_saved"):
+                    m["hidden_saved"] = True
+                    out.append(str(m["stored_id"]))
+        return out
+
     def prune(self, ttl: float, now: float | None = None) -> list[str]:
         """마지막 활동이 ttl 초보다 오래된 세션을 메모리에서 걷어내고 Hermes 세션도 닫는다. 답하는 중·사용자 답을 기다리는 세션,
         목표·반복이 켜졌거나 쉬는 중(resting)인 세션과 오피스 중계는 남긴다. Hermes 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다.
@@ -1199,7 +1222,7 @@ class ChatHub:
             out.append({"session_id": sid, "profile": m.get("profile") or "default", "title": m.get("title") or "",
                         "stored_id": m.get("stored_id") or "", "created": m.get("created") or 0,
                         "last_at": m.get("last_at") or m.get("created") or 0, "state": self.session_state(sid),
-                        "pending": [e["method"] for e in (m.get("requests") or {}).values()]})
+                        "pending": [e["method"] for e in (m.get("requests") or {}).values()], "seq": self.seq(sid)})
         out.sort(key=lambda r: -r["last_at"])
         return out
 

@@ -77,6 +77,17 @@ class LiveSessionsTest(unittest.TestCase):
         self.assertIn("m", self.hub.sessions)                       # 숨김일 뿐 대화는 남는다
         self.assertEqual(self.hub.hide_sessions(["o"], None), ["o"])  # 로그인이 꺼져 있으면 누구 것이든
 
+    def test_reopening_a_hidden_session_brings_it_back(self):
+        """닫았던 세션을 다시 열면(열린 세션 그대로 씀) 숨김이 풀린다(스펙 2026-11-06-002 E3)."""
+        self.hub.sessions["m"] = {"profile": "main", "created": 1.0, "title": "t", "by": "me@example.com", "stored_id": "st-m"}
+        self.hub.hide_sessions(["m"], "me@example.com")
+        self.assertEqual(self.hub.mark_hidden_saved(["m"]), ["st-m"])
+        self.assertEqual(self.hub.mark_hidden_saved(["m"]), [])               # 한 번만
+        out = self.hub.resume("main", "st-m", by="me@example.com")
+        self.assertTrue(out["reused"])
+        self.assertNotIn("hidden", self.hub.sessions["m"])
+        self.assertNotIn("hidden_saved", self.hub.sessions["m"])
+
     def test_prune_keeps_running_and_waiting(self):
         now = 100000.0
         self.hub.sessions.update({
@@ -181,8 +192,31 @@ class ChatSessionsRouteTest(unittest.TestCase):
         pods = [SimpleNamespace(id="a")]
         with mock.patch.object(server, "_my_agent_pods", return_value=(pods, {"a": "A"}, None)), \
                 mock.patch.dict(server._hubs, {"a": hub}, clear=True):
-            self.assertEqual(server._chat_hidden(None, {"email": "me@example.com"}, True, pods[0]), ["h1"])
-            self.assertEqual(sorted(server._chat_hidden(None, None, False, pods[0])), ["h1", "h2"])
+            self.assertEqual(server._chat_hidden(None, {"email": "me@example.com"}, True, pods[0])[0], ["h1"])
+            self.assertEqual(sorted(server._chat_hidden(None, None, False, pods[0])[0]), ["h1", "h2"])
+
+    def test_hidden_stored_ids_survive_prune_and_are_saved_when_learned_late(self):
+        """닫을 때 저장 번호를 몰랐던 세션은 목록을 읽을 때 표에 남긴다. 세션이 메모리에서 사라져도 저장 번호는 남는다(스펙 2026-11-06-002 E1)."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from aas.ops import chat_hidden
+        from aas.web import server
+        hub = ChatHub(SETTINGS, connect=lambda: None, reconnect_delays=())
+        hub.sessions["h1"] = {"profile": "main", "created": 1.0, "title": "t", "by": "me@example.com"}
+        self.assertEqual(hub.hide_sessions(["h1"], "me@example.com"), ["h1"])
+        self.assertEqual(hub.mark_hidden_saved(["h1"]), [])                  # 아직 저장 번호를 모른다
+        hub.sessions["h1"]["stored_id"] = "st-h1"                             # 첫 제목 뒤에 알게 됨
+        pods = [SimpleNamespace(id="csh-a")]
+        try:
+            with mock.patch.object(server, "_my_agent_pods", return_value=(pods, {"csh-a": "A"}, None)), \
+                    mock.patch.dict(server._hubs, {"csh-a": hub}, clear=True):
+                self.assertEqual(server._chat_hidden(None, {"email": "me@example.com"}, True, pods[0]), (["h1"], ["st-h1"]))
+                self.assertEqual(server._chat_hidden(None, {"email": "other@example.com"}, True, pods[0]), ([], []))
+                hub.sessions.clear()                                          # 정리·재시작
+                self.assertEqual(server._chat_hidden(None, {"email": "me@example.com"}, True, pods[0]), ([], ["st-h1"]))
+        finally:
+            chat_hidden.unhide("me@example.com", "csh-a", "st-h1")
 
     def test_reading_the_list_does_not_prune(self):
         """목록 읽기(GET)는 허브 상태를 바꾸지 않는다. 정리는 shared_tick 60초 블록에서 한다(스펙 2026-11-05-005 D4)."""
