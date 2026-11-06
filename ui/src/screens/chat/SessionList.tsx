@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// 세션 목록: 채팅 3칸의 가운데 칸. 에이전트보다 「어느 세션이 지금 어떤 상태인가」가 먼저 보이게 한다.
-// 묶음 순서는 고정 → 내 답 필요 → 실행 중 → 오늘 → 어제 → 이번 주 → 이전. 줄마다 상태 표시·세션 제목·그 세션이 도는 에이전트를 보인다.
-// 세션이 많아져도 다룰 수 있게 상태·AI 에이전트로 거르고, 여러 개를 골라 닫거나 끝난 세션을 한 번에 닫는다.
+// 세션 목록: 채팅 3칸의 가운데 칸. 에이전트 칸에서 AI 에이전트를 고르면 그 에이전트 전용이 된다(2026-11-06).
+// 묶음은 둘뿐이다 — 진행 중(답 필요 → 실행 중 → 열린 세션)과 완료(기본 어제까지, 「1주일」로 넓힌다). 고정은 맨 위.
+// 완료에는 이 서버가 연 세션뿐 아니라 Hermes 에 저장된 지난 세션도 든다 — 누르면 그 대화를 이어서 연다.
 import AddIcon from '@mui/icons-material/Add';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
@@ -22,9 +22,7 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
-  Divider,
   IconButton,
-  ListSubheader,
   Menu,
   MenuItem,
   TextField,
@@ -62,15 +60,20 @@ const STATE_LABEL: Record<SessionState, string> = {
   idle: 'chat.sessIdle',
   closed: 'chat.sessClosed',
 };
-type Filter = 'all' | 'waiting' | 'running' | 'done';
-const FILTERS: { key: Filter; label: string }[] = [
-  { key: 'all', label: 'chat.sessFilterAll' },
-  { key: 'waiting', label: 'chat.sessFilterWaiting' },
-  { key: 'running', label: 'chat.sessFilterRunning' },
-  { key: 'done', label: 'chat.sessFilterDone' },
-];
+/** 저장 세션의 출처 표시(AAS 가 아닌 것만 보인다) */
+const SOURCE_LABEL: Record<string, string> = { telegram: 'chat.srcTelegram', buzz: 'chat.srcBuzz' };
+/** 완료 묶음의 기간. 2d = 오늘·어제, 7d = 오늘 포함 7일 */
+type Range = '2d' | '7d';
+const RANGE_KEY = 'aas-chat-done-range';
+function readRange(): Range {
+  try {
+    return localStorage.getItem(RANGE_KEY) === '7d' ? '7d' : '2d';
+  } catch {
+    return '2d';
+  }
+}
 const live = (s: SessionState) => s === 'waiting' || s === 'running';
-const OLDER_PAGE = 20;
+const DONE_PAGE = 30;
 
 const GROUPS_KEY = 'aas-chat-sess-collapsed';
 function readFolded(): string[] {
@@ -109,6 +112,7 @@ function Row({
   onPick,
   onClose,
   select,
+  oneAgent,
 }: {
   store: ChatStore;
   r: SessionRow | null;
@@ -116,6 +120,8 @@ function Row({
   onClose: (ids: string[]) => void;
   /** 선택 모드: 체크칸이 보이고 줄을 누르면 고르기만 한다 */
   select?: { on: boolean; checked: boolean; toggle: (id: string, range: boolean) => void };
+  /** 한 AI 에이전트의 세션만 보는 중 — 줄마다 에이전트 이름을 되풀이하지 않는다 */
+  oneAgent?: boolean;
 }) {
   const tk = useChatTokens();
   const theme = useTheme();
@@ -146,7 +152,13 @@ function Row({
         data-state={state}
         aria-current={selected}
         aria-pressed={selecting ? select!.checked : undefined}
-        aria-label={selecting ? t('chat.sessSelectRow', { title }) : t('chat.sessAria', { title, agent: label, state: t(STATE_LABEL[state]) })}
+        aria-label={
+          selecting
+            ? t('chat.sessSelectRow', { title })
+            : !draft && r.stored
+              ? t('chat.sessResumeAria', { title })
+              : t('chat.sessAria', { title, agent: label, state: t(STATE_LABEL[state]) })
+        }
         onClick={click}
         sx={{
           all: 'unset',
@@ -156,7 +168,7 @@ function Row({
           width: '100%',
           px: 1.25,
           py: 1,
-          pr: selecting ? 1.25 : 7,
+          pr: selecting || (!draft && r.stored) ? 1.25 : 7,
           cursor: 'pointer',
           alignItems: 'flex-start',
           color: tk.text,
@@ -201,12 +213,29 @@ function Row({
               </Typography>
             )}
           </Box>
-          {/* 이 세션이 도는 에이전트(아바타·이름)와 상태 글. 세션이 어느 에이전트의 것인지 늘 보이게 */}
+          {/* 모든 AI 에이전트를 볼 때는 세션이 어느 에이전트의 것인지(아바타·이름), 한 에이전트를 볼 때는 출처·메시지 수 */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.5, minWidth: 0 }}>
-            <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />
-            <Typography component="span" noWrap sx={{ color: tk.muted, fontSize: 12, minWidth: 0 }} title={label}>
-              {label}
-            </Typography>
+            {!oneAgent && <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />}
+            {!oneAgent && (
+              <Typography component="span" noWrap sx={{ color: tk.muted, fontSize: 12, minWidth: 0 }} title={label}>
+                {label}
+              </Typography>
+            )}
+            {!draft && r.stored && r.source && r.source !== 'aas' ? (
+              <Box component="span" sx={{ fontSize: 11, px: 0.75, borderRadius: 999, border: `1px solid ${tk.line}`, color: tk.muted, flexShrink: 0 }}>
+                {SOURCE_LABEL[r.source] ? t(SOURCE_LABEL[r.source]) : r.source === 'cli' ? 'CLI' : r.source}
+              </Box>
+            ) : null}
+            {!draft && r.stored && r.count ? (
+              <Typography component="span" noWrap sx={{ color: tk.muted, fontSize: 12, flexShrink: 0 }}>
+                {t('chat.sessPastMeta', { n: r.count })}
+              </Typography>
+            ) : null}
+            {oneAgent && !draft && !r.stored && !live(state) ? (
+              <Typography component="span" noWrap sx={{ color: tk.muted, fontSize: 12 }}>
+                {t(STATE_LABEL[state])}
+              </Typography>
+            ) : null}
             {live(state) ? (
               <Typography
                 component="span"
@@ -219,7 +248,7 @@ function Row({
           </Box>
         </Box>
       </Box>
-      {!draft && !selecting && (
+      {!draft && !selecting && !r.stored && (
         <Box
           className="sess-act"
           sx={{ position: 'absolute', right: 4, top: 6, display: 'flex', opacity: 0, '@media (pointer: coarse)': { opacity: 1 } }}
@@ -271,7 +300,8 @@ export function SessionStrip({ store, onExpand }: { store: ChatStore; onExpand: 
   );
 }
 
-/** 세션 목록. onPick 은 세션을 열고 주소를 맞춘다, onNew 는 AI 에이전트 고르기로 옮긴다, onCollapse 가 있으면 접기 단추를 둔다 */
+/** 세션 목록. onPick 은 세션을 열고(저장 세션이면 이어서) 주소를 맞춘다, onNew 는 새 세션(한 AI 에이전트를 보는 중이면 그 에이전트로),
+ *  onCollapse 가 있으면 접기 단추를 둔다 */
 export function SessionList({
   store,
   onPick,
@@ -290,57 +320,68 @@ export function SessionList({
   const gt = gridTokens[useTheme().palette.mode];
   const confirm = useConfirm();
   const [q, setQ] = useState('');
-  const [filter, setFilter] = useState<Filter>('all');
-  const [agent, setAgent] = useState(''); // `pod|프로파일`
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [folded, setFolded] = useState<string[]>(readFolded);
-  const [olderShown, setOlderShown] = useState(OLDER_PAGE);
+  const [range, setRangeState] = useState<Range>(readRange);
+  const [doneShown, setDoneShown] = useState(DONE_PAGE);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const anchor = useRef('');
   const needle = q.trim().toLowerCase();
+  const f = store.agentFilter;
+  const fKey = f ? `${f.pod ?? ''}|${f.profile}` : '';
 
-  // 다른 탭·새로 고침 전에 연 내 세션을 서버에서 읽는다. 창을 다시 볼 때와 20초마다 맞춘다
+  // 다른 탭·새로 고침 전에 연 내 세션을 서버에서 읽는다. 창을 다시 볼 때와 20초마다 맞춘다.
+  // 한 AI 에이전트를 보는 중이면 그 에이전트의 지난 세션(Hermes 저장분)도 같이 읽는다(60초 안이면 다시 묻지 않는다)
   useEffect(() => {
-    void store.loadSessions();
-    const timer = window.setInterval(() => void store.loadSessions(), 20000);
-    const onFocus = () => void store.loadSessions();
-    window.addEventListener('focus', onFocus);
+    const tick = () => {
+      void store.loadSessions();
+      const cur = store.agentFilter;
+      if (cur) void store.loadPast(cur.pod, cur.profile);
+    };
+    tick();
+    const timer = window.setInterval(tick, 20000);
+    window.addEventListener('focus', tick);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('focus', tick);
     };
-  }, [store]);
+  }, [store, fKey]);
+  // 다른 AI 에이전트로 옮기면 「더 보기」를 처음으로
+  useEffect(() => setDoneShown(DONE_PAGE), [fKey, range]);
 
-  const all = store.sessionRows();
-  const agentKey = (r: SessionRow) => `${r.pod ?? ''}|${r.profile}`;
-  const rows = all
-    .filter((r) => !needle || `${r.title} ${agentLabelOf(store, r.pod, r.profile).label} ${r.profile}`.toLowerCase().includes(needle))
-    .filter((r) => !agent || agentKey(r) === agent)
-    .filter((r) => filter === 'all' || (filter === 'done' ? !live(r.state) : r.state === filter));
+  const setRange = (r: Range) => {
+    setRangeState(r);
+    try {
+      localStorage.setItem(RANGE_KEY, r);
+    } catch {
+      /* 이번 화면에서만 */
+    }
+  };
 
+  const all = f ? store.agentRows(f.pod, f.profile) : store.sessionRows();
+  const rows = all.filter((r) => !needle || `${r.title} ${agentLabelOf(store, r.pod, r.profile).label} ${r.profile}`.toLowerCase().includes(needle));
   const today = dayIndex(Date.now());
   const ageOf = (r: SessionRow) => (r.at ? today - dayIndex(r.at) : 0);
-  const rest = rows.filter((r) => !r.pinned && !live(r.state));
-  const groups: { key: string; label: string; rows: SessionRow[]; count?: boolean }[] = [
-    { key: 'pinned', label: t('chat.sessGroupPinned'), rows: rows.filter((r) => r.pinned) },
-    { key: 'waiting', label: t('chat.sessGroupWaiting'), rows: rows.filter((r) => !r.pinned && r.state === 'waiting'), count: true },
-    { key: 'running', label: t('chat.sessGroupRunning'), rows: rows.filter((r) => !r.pinned && r.state === 'running'), count: true },
-    { key: 'today', label: t('chat.sessGroupToday'), rows: rest.filter((r) => ageOf(r) <= 0) },
-    { key: 'yesterday', label: t('chat.sessGroupYesterday'), rows: rest.filter((r) => ageOf(r) === 1) },
-    { key: 'week', label: t('chat.sessGroupWeek'), rows: rest.filter((r) => ageOf(r) >= 2 && ageOf(r) < 7) },
-    { key: 'older', label: t('chat.sessGroupOlder'), rows: rest.filter((r) => ageOf(r) >= 7) },
-  ].filter((g) => g.rows.length);
-  const draft = !!store.profile && !store.currentId;
-  const finished = all.filter((r) => !live(r.state) && !r.pinned && r.id !== store.currentId);
-  // 이 목록에 있는 AI 에이전트(거름 메뉴). 세션 수가 많은 순
-  const agents = Object.entries(
-    all.reduce<Record<string, { n: number; r: SessionRow }>>((acc, r) => {
-      const k = agentKey(r);
-      acc[k] = { n: (acc[k]?.n ?? 0) + 1, r };
-      return acc;
-    }, {})
-  ).sort((a, b) => b[1].n - a[1].n);
+  const inRange = (r: SessionRow) => ageOf(r) < (range === '7d' ? 7 : 2);
+  const pinned = rows.filter((r) => r.pinned);
+  // 진행 중: 답 필요 → 실행 중 → 아직 열려 있는(이 서버가 받고 있는) 세션 중 오늘 활동한 것. 끝난 세션은 완료로
+  const liveRows = rows.filter((r) => !r.pinned && live(r.state));
+  const openToday = rows.filter((r) => !r.pinned && !live(r.state) && !r.stored && r.state !== 'closed' && (r.id === store.currentId || r.state === 'done'));
+  const progress = [...liveRows.filter((r) => r.state === 'waiting'), ...liveRows.filter((r) => r.state === 'running'), ...openToday];
+  const progressIds = new Set(progress.map((r) => r.id));
+  const doneAll = rows.filter((r) => !r.pinned && !progressIds.has(r.id)).sort((a, b) => b.at - a.at);
+  // 찾는 중에는 기간을 따지지 않는다 — 찾는 세션이 1주일 밖에 있으면 안 보였다
+  const done = needle ? doneAll : doneAll.filter(inRange);
+  const beyond = needle || range === '7d' ? 0 : doneAll.filter((r) => ageOf(r) < 7).length - done.length;
+  const draft = !!store.profile && !store.currentId && (!f || (f.profile === store.profile && (f.pod ?? '') === (store.status?.pod ?? '')));
+  const finished = all.filter((r) => !live(r.state) && !r.pinned && !r.stored && r.id !== store.currentId);
+  const loadingPast = !!f && store.pastLoading(f.pod, f.profile);
+  const groups: { key: string; label: string; rows: SessionRow[]; count?: boolean; range?: boolean }[] = [
+    { key: 'pinned', label: t('chat.sessGroupPinned'), rows: pinned },
+    { key: 'live', label: t('chat.sessGroupLive'), rows: progress, count: true },
+    { key: 'done', label: t('chat.sessGroupDone'), rows: done, range: true },
+  ].filter((g) => g.rows.length || g.key === 'done' || (g.key === 'live' && !!f));
 
   const toggleFold = (key: string) => {
     const next = folded.includes(key) ? folded.filter((x) => x !== key) : [...folded, key];
@@ -351,13 +392,14 @@ export function SessionList({
       /* 이번 화면에서만 */
     }
   };
+  const selectable = (r: SessionRow) => !r.stored;
   // 보이는 줄 순서(Shift 범위 선택의 기준)
-  const visible = groups.flatMap((g) => (folded.includes(g.key) ? [] : g.key === 'older' ? g.rows.slice(0, olderShown) : g.rows));
-  const toggle = (id: string, range: boolean) => {
+  const visible = groups.flatMap((g) => (folded.includes(g.key) ? [] : g.key === 'done' ? g.rows.slice(0, doneShown) : g.rows)).filter(selectable);
+  const toggle = (id: string, shift: boolean) => {
     setPicked((prev) => {
       const next = new Set(prev);
       const ids = visible.map((r) => r.id);
-      if (range && anchor.current && ids.includes(anchor.current)) {
+      if (shift && anchor.current && ids.includes(anchor.current)) {
         const [a, b] = [ids.indexOf(anchor.current), ids.indexOf(id)].sort((x, y) => x - y);
         for (const x of ids.slice(a, b + 1)) next.add(x);
       } else if (next.has(id)) next.delete(id);
@@ -396,13 +438,48 @@ export function SessionList({
     '& .MuiOutlinedInput-root': { bgcolor: gt.searchBg, fontSize: chatType.name, '& fieldset': { borderColor: gt.searchLine } },
     '& .MuiOutlinedInput-root.Mui-focused fieldset, & .MuiOutlinedInput-root:hover fieldset': { borderColor: gt.searchFocus },
   };
-  const agentChip = agent ? agentLabelOf(store, agent.split('|')[0] || undefined, agent.split('|').slice(1).join('|')).label : '';
+  const head = f ? agentLabelOf(store, f.pod, f.profile) : null;
+  const rangeChip = (r: Range, label: string) => (
+    <Chip
+      key={r}
+      size="small"
+      label={label}
+      aria-pressed={range === r}
+      variant={range === r ? 'filled' : 'outlined'}
+      onClick={(e) => {
+        e.stopPropagation();
+        setRange(r);
+      }}
+      sx={{ height: 22, fontSize: 11 }}
+    />
+  );
 
   return (
     <Box component="nav" aria-label={t('chat.sessionsLabel')} data-guide="chat.sessions" sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
       <Box sx={{ p: 1.25, pb: 0.75, display: 'flex', flexDirection: 'column', gap: 1 }}>
+        {/* 이 칸이 누구의 세션인지. 한 AI 에이전트면 아바타·이름과 「모두 보기」 */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minHeight: 28 }}>
+          {head ? <AgentAvatar name={head.colorKey} label={head.label} size={22} tone="hue" /> : null}
+          <Typography component="h3" noWrap title={head?.label} sx={{ flex: 1, minWidth: 0, fontSize: chatType.name, fontWeight: 600 }}>
+            {head ? t('chat.sessHeadAgent', { name: head.label }) : t('chat.sessHeadAll')}
+          </Typography>
+          {head ? (
+            <Tooltip title={t('chat.sessShowAll')}>
+              <IconButton size="small" aria-label={t('chat.sessShowAll')} onClick={() => store.setAgentFilter(null)} sx={{ color: tk.muted }}>
+                <CloseIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          {onCollapse && (
+            <Tooltip title={t('chat.sessionsCollapse')}>
+              <IconButton aria-label={t('chat.sessionsCollapse')} size="small" onClick={onCollapse} sx={{ color: tk.muted }}>
+                <ChevronLeftIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-          <Tooltip title={t('chat.newSessionTip')}>
+          <Tooltip title={head ? t('chat.agentNewTip', { name: head.label }) : t('chat.newSessionTip')}>
             <Button
               fullWidth
               variant="outlined"
@@ -420,13 +497,6 @@ export function SessionList({
               <MoreHorizIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          {onCollapse && (
-            <Tooltip title={t('chat.sessionsCollapse')}>
-              <IconButton aria-label={t('chat.sessionsCollapse')} size="small" onClick={onCollapse} sx={{ color: tk.muted }}>
-                <ChevronLeftIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          )}
         </Box>
         <TextField
           size="small"
@@ -438,26 +508,6 @@ export function SessionList({
           slotProps={{ htmlInput: { 'aria-label': t('chat.findSessionLabel') } }}
           sx={searchSx}
         />
-        <Box role="group" aria-label={t('chat.sessFilterLabel')} sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-          {FILTERS.map((f) => {
-            const n = f.key === 'all' ? 0 : f.key === 'done' ? 0 : all.filter((r) => r.state === f.key).length;
-            return (
-              <Chip
-                key={f.key}
-                size="small"
-                label={n ? `${t(f.label)} ${n}` : t(f.label)}
-                aria-pressed={filter === f.key}
-                variant={filter === f.key ? 'filled' : 'outlined'}
-                color={filter === f.key ? (f.key === 'waiting' ? 'warning' : f.key === 'running' ? 'info' : 'default') : 'default'}
-                onClick={() => setFilter(f.key)}
-                sx={{ height: 24, fontSize: 12 }}
-              />
-            );
-          })}
-          {agent && (
-            <Chip size="small" label={t('chat.sessFilterAgent', { agent: agentChip })} onDelete={() => setAgent('')} sx={{ height: 24, fontSize: 12, maxWidth: '100%' }} />
-          )}
-        </Box>
       </Box>
       <Menu anchorEl={menu} open={!!menu} onClose={() => setMenu(null)}>
         <MenuItem
@@ -472,46 +522,22 @@ export function SessionList({
           disabled={!finished.length}
           onClick={() => {
             setMenu(null);
-            store.dismissFinished();
+            store.dismissMany(finished.map((r) => r.id));
           }}
         >
           {t('chat.sessCloseFinished', { n: finished.length })}
         </MenuItem>
-        {agents.length > 1 && <Divider />}
-        {agents.length > 1 && <ListSubheader sx={{ lineHeight: '32px' }}>{t('chat.sessByAgent')}</ListSubheader>}
-        {agents.length > 1 &&
-          agents.map(([k, { n, r }]) => {
-            const { label, colorKey } = agentLabelOf(store, r.pod, r.profile);
-            return (
-              <MenuItem
-                key={k}
-                selected={agent === k}
-                onClick={() => {
-                  setMenu(null);
-                  setAgent(agent === k ? '' : k);
-                }}
-                sx={{ gap: 1 }}
-              >
-                <AgentAvatar name={colorKey} label={label} size={18} tone="hue" />
-                <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {label}
-                </Box>
-                <Typography component="span" sx={{ color: tk.muted, fontSize: 12 }}>
-                  {n}
-                </Typography>
-              </MenuItem>
-            );
-          })}
       </Menu>
       <Box sx={{ px: 0.75, pb: 2, flex: 1, minHeight: 0, overflowY: 'auto' }}>
-        {draft && !needle && !selecting && <Row store={store} r={null} onPick={onPick} onClose={close} />}
+        {draft && !needle && !selecting && <Row store={store} r={null} onPick={onPick} onClose={close} oneAgent={!!f} />}
         {groups.map((g) => {
           const open = !folded.includes(g.key) || !!needle;
-          const shown = g.key === 'older' ? g.rows.slice(0, olderShown) : g.rows;
-          const allPicked = g.rows.every((r) => picked.has(r.id));
+          const list = selecting ? g.rows.filter(selectable) : g.rows;
+          const shown = g.key === 'done' ? list.slice(0, doneShown) : list;
+          const allPicked = list.length > 0 && list.every((r) => picked.has(r.id));
           return (
-            <Box key={g.key} component="section" aria-label={g.label} sx={{ mt: 1 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', pr: 0.5 }}>
+            <Box key={g.key} component="section" aria-label={g.label} data-sess-group={g.key} sx={{ mt: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pr: 0.5 }}>
                 <Box
                   component="button"
                   type="button"
@@ -536,16 +562,23 @@ export function SessionList({
                   <ExpandMoreIcon aria-hidden sx={{ fontSize: 16, transition: 'transform .15s', transform: open ? 'none' : 'rotate(-90deg)' }} />
                   <Box component="h3" sx={{ m: 0, font: 'inherit' }}>
                     {g.label}
-                    {g.count || !open ? ` ${g.rows.length}` : ''}
+                    {g.count || !open || g.range ? ` ${g.rows.length}` : ''}
                   </Box>
                 </Box>
-                {selecting && open && (
+                {/* 완료 기간: 기본 어제까지, 1주일로 넓힌다(찾는 중에는 기간을 따지지 않는다) */}
+                {g.range && !needle && !selecting && (
+                  <Box role="group" aria-label={t('chat.sessRange')} sx={{ display: 'flex', gap: 0.5 }}>
+                    {rangeChip('2d', t('chat.sessRange2d'))}
+                    {rangeChip('7d', t('chat.sessRange7d'))}
+                  </Box>
+                )}
+                {selecting && open && list.length > 0 && (
                   <Button
                     size="small"
                     onClick={() =>
                       setPicked((prev) => {
                         const next = new Set(prev);
-                        for (const r of g.rows) {
+                        for (const r of list) {
                           if (allPicked) next.delete(r.id);
                           else next.add(r.id);
                         }
@@ -560,19 +593,60 @@ export function SessionList({
               </Box>
               {open &&
                 shown.map((r) => (
-                  <Row key={r.id} store={store} r={r} onPick={onPick} onClose={close} select={{ on: selecting, checked: picked.has(r.id), toggle }} />
+                  <Row
+                    key={r.id}
+                    store={store}
+                    r={r}
+                    onPick={onPick}
+                    onClose={close}
+                    oneAgent={!!f}
+                    select={{ on: selecting, checked: picked.has(r.id), toggle }}
+                  />
                 ))}
-              {open && g.key === 'older' && g.rows.length > olderShown && (
-                <Button size="small" onClick={() => setOlderShown((n) => n + OLDER_PAGE)} sx={{ ml: 1, textTransform: 'none', fontSize: 12 }}>
-                  {t('chat.sessMore', { n: Math.min(OLDER_PAGE, g.rows.length - olderShown) })}
+              {open && g.key === 'live' && !g.rows.length && !(draft && !needle) && (
+                <Typography color="text.secondary" sx={{ px: 1.5, py: 0.75, fontSize: 12 }}>
+                  {t('chat.sessNoneAgent')}
+                </Typography>
+              )}
+              {open && g.key === 'done' && list.length > doneShown && (
+                <Button size="small" onClick={() => setDoneShown((n) => n + DONE_PAGE)} sx={{ ml: 1, textTransform: 'none', fontSize: 12 }}>
+                  {t('chat.sessMore', { n: Math.min(DONE_PAGE, list.length - doneShown) })}
                 </Button>
+              )}
+              {open && g.key === 'done' && !needle && (
+                <Box sx={{ px: 1.5, py: 0.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  {loadingPast ? (
+                    <Typography color="text.secondary" role="status" sx={{ fontSize: 12 }}>
+                      {t('chat.sessPastLoading')}
+                    </Typography>
+                  ) : !g.rows.length ? (
+                    <Typography color="text.secondary" sx={{ fontSize: 12 }}>
+                      {t('chat.sessDoneNone')}
+                    </Typography>
+                  ) : null}
+                  {beyond > 0 && !loadingPast ? (
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => setRange('7d')}
+                      sx={{ all: 'unset', cursor: 'pointer', fontSize: 12, color: 'primary.main', '&:hover': { textDecoration: 'underline' }, '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` } }}
+                    >
+                      {t('chat.sessDoneMore', { n: beyond })}
+                    </Box>
+                  ) : null}
+                  {!f ? (
+                    <Typography color="text.secondary" sx={{ fontSize: 12 }}>
+                      {t('chat.sessPastHintAll')}
+                    </Typography>
+                  ) : null}
+                </Box>
               )}
             </Box>
           );
         })}
-        {!rows.length && !(draft && !needle) && (
+        {needle && !rows.length && (
           <Typography color="text.secondary" sx={{ p: 2, fontSize: 13 }}>
-            {needle || filter !== 'all' || agent ? t('chat.sessNoMatch') : t('chat.sessNone')}
+            {t('chat.sessNoMatch')}
           </Typography>
         )}
       </Box>

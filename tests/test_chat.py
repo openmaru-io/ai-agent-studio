@@ -158,6 +158,14 @@ class ChatHubTest(unittest.TestCase):
         self.assertEqual([(a["request_id"], a["question_id"]) for a in answered], [("srq-9", "q0"), ("srq-9", "q1")])
         self.assertNotIn("clarify.respond", [f.get("method") for f in self.ws.sent])
 
+    def test_history_gives_a_lower_bound_of_last_activity(self):
+        """Hermes 는 마지막 활동 순으로 주지만 그 시각은 없다. 아래 줄들의 시작 시각으로 하한을 매긴다(세션 칸 「어제까지」)."""
+        from unittest import mock
+        rows = [{"id": "a", "started_at": 100}, {"id": "b", "started_at": 300}, {"id": "c", "started_at": 200}, {"id": "d", "started_at": None}]
+        with mock.patch.object(self.hub, "request", return_value={"sessions": rows}):
+            got = self.hub.history("ma")
+        self.assertEqual([(r["id"], r["active_at"]) for r in got], [("a", 300), ("b", 300), ("c", 200), ("d", 0)])
+
     def test_history_and_resume_replay_past_messages(self):
         rows = self.hub.history("ma")
         self.assertEqual((rows[0]["id"], rows[0]["source"], rows[0]["live_session_id"]), ("st1", "buzz", None))

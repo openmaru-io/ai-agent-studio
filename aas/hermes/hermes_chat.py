@@ -606,11 +606,20 @@ class ChatHub:
         rows = (self.request("session.list", params) or {}).get("sessions") or []
         from .chat_commands import shown
         live = {m.get("stored_id"): sid for sid, m in self.sessions.items() if not m.get("closed")}
+        # Hermes 는 마지막 활동 순으로 주지만 그 시각은 빼고 준다. 아래 줄들은 그보다 늦게 활동하지 않았으므로
+        # 「내 시작 시각과 아래 줄들의 시작 시각 중 가장 늦은 것」이 내 마지막 활동의 하한이다(세션 칸의 「어제까지」 거름)
+        active, floor = [0.0] * len(rows), 0.0
+        for i in range(len(rows) - 1, -1, -1):
+            try:
+                floor = max(floor, float(rows[i].get("started_at") or 0))
+            except (TypeError, ValueError):
+                pass
+            active[i] = floor
         # preview 는 Hermes 가 저장한 첫 사용자 말이라 /plan 대화는 영어 계획 프롬프트가 보였다(OKE 2026-10-27) — 말풍선과 같이 친 명령으로
         return [{"id": r.get("id"), "title": mask_oauth_redirect(r.get("title") or shown(said(r.get("preview") or "")) or tr("(제목 없음)", "(Untitled)")),
                  "preview": mask_oauth_redirect(shown(said(r.get("preview") or ""))[:120]), "started_at": r.get("started_at") or 0,
-                 "message_count": r.get("message_count") or 0, "source": r.get("source") or "",
-                 "live_session_id": live.get(r.get("id")), "control": self._control_brief(live.get(r.get("id")))} for r in rows]
+                 "message_count": r.get("message_count") or 0, "source": r.get("source") or "", "active_at": active[i],
+                 "live_session_id": live.get(r.get("id")), "control": self._control_brief(live.get(r.get("id")))} for i, r in enumerate(rows)]
 
     # ---- 목표·반복(스펙 2026-10-27-002 §4-1·R6) — Hermes session.control 요약 중 goal·loop 만 ----
     def _control(self, sid: str, control) -> None:

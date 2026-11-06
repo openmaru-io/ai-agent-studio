@@ -6,6 +6,7 @@
 // 채팅 3칸 틀(AI 에이전트 | 세션 | 대화)의 부품: 칸 폭·접힘 기억, 칸 사이 끌개, 접힌 AI 에이전트 띠.
 // 폭과 접힘은 이 브라우저에만 남는다(localStorage). 저장을 못 하면 기본값으로 그린다.
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import { Badge, Box, IconButton, Tooltip } from '@mui/material';
 import { KeyboardEvent, PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from 'react';
@@ -175,6 +176,17 @@ export function AgentStrip({
           </IconButton>
         </Tooltip>
       )}
+      <Tooltip title={t('chat.allAgentsRow')} placement="right">
+        <IconButton
+          size="small"
+          aria-label={t('chat.allAgentsRow')}
+          aria-current={!store.agentFilter}
+          onClick={() => store.setAgentFilter(null)}
+          sx={{ color: tk.muted, '&[aria-current=true]': { bgcolor: tk.selected, color: tk.text } }}
+        >
+          <ForumOutlinedIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
       <Tooltip title={t('chat.allAgentsPick')} placement="right">
         <IconButton size="small" aria-label={t('chat.allAgentsPick')} onClick={onSearch} sx={{ color: tk.muted, mb: 0.5 }}>
           <SearchIcon fontSize="small" />
@@ -190,7 +202,8 @@ export function AgentStrip({
             <Box
               component="button"
               type="button"
-              aria-label={t('chat.newSessionWith', { name: label })}
+              aria-label={t('chat.agentPick', { name: label })}
+              aria-current={!!store.agentFilter && store.agentFilter.profile === a.name && (store.agentFilter.pod ?? '') === (pod ?? store.status?.pod ?? '')}
               onClick={() => onPick(a.name, pod)}
               sx={{
                 all: 'unset',
@@ -198,6 +211,7 @@ export function AgentStrip({
                 p: '4px',
                 borderRadius: '10px',
                 '&:hover': { bgcolor: tk.hover },
+                '&[aria-current=true]': { bgcolor: tk.selected, boxShadow: `inset 0 0 0 2px ${tk.selectedAccent}` },
                 '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` },
               }}
             >

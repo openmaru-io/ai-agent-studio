@@ -80,6 +80,8 @@ export interface StoredSession {
   preview?: string;
   started_at?: number | string;
   message_count?: number;
+  /** 마지막 활동(초)의 하한. 서버가 Hermes 의 최근 활동 순서로 계산한다(옛 서버는 없음 → started_at) */
+  active_at?: number;
   live_session_id?: string | null;
   /** 이 서버가 연 대화의 목표·반복(스펙 2026-10-27-002 R6). 다시 띄운 뒤에는 그 대화를 열어야 보인다 */
   control?: { goal?: { status?: string; turns_used?: number; max_turns?: number } | null; loop?: { status?: string } | null } | null;
@@ -123,7 +125,21 @@ export interface SessionRow {
   storedId?: string;
   /** 사용자가 위에 고정한 세션 */
   pinned?: boolean;
+  /** Hermes 에 저장된 지난 세션(아직 열지 않음). 누르면 이어서(resume) 연다 */
+  stored?: boolean;
+  /** 저장 세션의 출처(aas·telegram·cli …)와 메시지 수 */
+  source?: string;
+  count?: number;
 }
+/** 세션 칸이 보는 AI 에이전트. null = 모든 AI 에이전트 */
+export interface AgentFilter {
+  pod?: string;
+  profile: string;
+}
+/** 지난 세션 목록을 다시 읽는 간격(ms) */
+const PAST_TTL = 60000;
+/** 일하는 대화만: 크론·Claude Code 스킬 시험은 뺀다(「지난 대화」 서랍의 talk 규칙과 같다) */
+export const isTalk = (r: StoredSession) => r.source !== 'cron' && r.claude?.purpose !== 'skill-test';
 const DISMISSED_KEY = 'aas-chat-dismissed';
 const PINNED_KEY = 'aas-chat-pinned';
 function readPinned(): Set<string> {
@@ -208,6 +224,10 @@ export class ChatStore {
   pinned: Set<string> = typeof localStorage === 'undefined' ? new Set() : readPinned();
   /** 세션별 마지막 활동 시각(ms) */
   private lastAt: Record<string, number> = {};
+  /** 세션 칸이 보는 AI 에이전트(null = 모두). 에이전트 칸에서 고른다 */
+  agentFilter: AgentFilter | null = null;
+  /** `pod|프로파일` → Hermes 에 저장된 지난 세션(60초 보관) */
+  private past: Record<string, { at: number; rows: StoredSession[]; loading?: Promise<void> }> = {};
   opening = '';
   notice = '';
   version = 0;
@@ -735,6 +755,7 @@ export class ChatStore {
     this.profile = name;
     this.draft = '';
     this.notice = '';
+    this.follow();
     const live = this.sessionOf(name);
     this.currentId = live && (!live.closed || live.reconnect) ? live.id : null;
     if (live) live.unread = 0;
@@ -794,6 +815,7 @@ export class ChatStore {
       this.currentId = null;
       this.notice = '';
       this.restoreDraft();
+      this.follow();
       this.notify();
       return this.status?.configured ? this.startSession() : Promise.resolve(null);
     };
@@ -822,6 +844,7 @@ export class ChatStore {
       S.unread = 0;
       this.notice = '';
       this.restoreDraft();
+      this.follow();
       this.notify();
       if (S.closed && !S.reconnect) this.reopenNow(S);
       return true;
@@ -832,6 +855,7 @@ export class ChatStore {
     this.profile = row.profile;
     this.currentId = null;
     this.notice = '';
+    this.follow();
     this.opening = row.profile;
     this.notify();
     try {
@@ -922,6 +946,98 @@ export class ChatStore {
     }
     return out;
   }
+  // ---- AI 에이전트별 세션(에이전트 칸에서 고른다) ----
+  /** 세션 칸이 볼 AI 에이전트를 고른다(null = 모두). 고르기만 하고 새 세션은 만들지 않는다. 그 에이전트의 지난 세션을 읽는다 */
+  setAgentFilter(f: AgentFilter | null) {
+    const same = (this.agentFilter?.pod ?? '') === (f?.pod ?? '') && this.agentFilter?.profile === f?.profile;
+    this.agentFilter = f ? { pod: f.pod || undefined, profile: f.profile } : null;
+    if (!same) this.notify();
+    if (f) void this.loadPast(f.pod, f.profile);
+  }
+  /** 다른 AI 에이전트의 대화를 열면 세션 칸도 그 에이전트로 옮긴다(모두 보기일 때는 그대로) */
+  private follow() {
+    const f = this.agentFilter;
+    if (!f || !this.profile) return;
+    const pod = this.status?.pod ?? '';
+    if (f.profile !== this.profile || (f.pod ?? '') !== pod) this.setAgentFilter({ pod, profile: this.profile });
+  }
+  /** 그 AI 에이전트의 Hermes 저장 세션을 읽는다. 60초 안에 읽었으면 다시 묻지 않는다(force 는 무시하고 읽는다) */
+  loadPast(pod: string | undefined, profile: string, force = false): Promise<void> {
+    const k = key(pod, profile);
+    const c = this.past[k];
+    if (c?.loading) return c.loading;
+    if (c && !force && Date.now() - c.at < PAST_TTL) return Promise.resolve();
+    const q = `/api/chat/history?profile=${encodeURIComponent(profile)}&limit=200${pod ? `&pod=${encodeURIComponent(pod)}` : ''}`;
+    const loading = get<{ sessions: StoredSession[] }>(q)
+      .then((res) => {
+        this.past[k] = { at: Date.now(), rows: res.sessions ?? [] };
+      })
+      .catch(() => {
+        this.past[k] = { at: Date.now(), rows: c?.rows ?? [] }; // 실패해도 앞서 읽은 줄은 남긴다
+      })
+      .finally(() => this.notify());
+    this.past[k] = { at: c?.at ?? 0, rows: c?.rows ?? [], loading };
+    return loading;
+  }
+  /** 지난 세션을 읽는 중인가(처음 읽기만) */
+  pastLoading(pod: string | undefined, profile: string): boolean {
+    const c = this.past[key(pod, profile)];
+    return !!c?.loading && !c.at;
+  }
+  /** 그 AI 에이전트의 세션 줄: 열린 세션 + 아직 열지 않은 Hermes 저장 세션(일하는 대화만). 같은 저장 id 는 하나로 */
+  agentRows(pod: string | undefined, profile: string): SessionRow[] {
+    const live = this.sessionRows().filter((r) => r.profile === profile && (r.pod ?? '') === (pod ?? ''));
+    const seen = new Set(live.flatMap((r) => [r.id, ...(r.storedId ? ['stored:' + r.storedId] : [])]));
+    const stored: SessionRow[] = [];
+    for (const r of this.past[key(pod, profile)]?.rows ?? []) {
+      if (!r.id || !isTalk(r) || seen.has('stored:' + r.id) || (r.live_session_id && seen.has(r.live_session_id))) continue;
+      seen.add('stored:' + r.id);
+      stored.push({
+        id: 'stored:' + r.id,
+        pod,
+        profile,
+        title: cleanTitle(r.title || ''),
+        state: 'idle',
+        unread: 0,
+        at: Number(r.active_at || r.started_at || 0) * 1000,
+        storedId: r.id,
+        stored: true,
+        source: r.source || '',
+        count: r.message_count ?? 0,
+        pinned: this.pinned.has('stored:' + r.id),
+      });
+    }
+    return [...live, ...stored];
+  }
+  /** 저장 세션 줄을 연다: 그 AI 에이전트로 옮기고 이어서(resume) 연다. 이미 열린 같은 대화가 있으면 그 세션으로 간다 */
+  async openPast(r: SessionRow): Promise<boolean> {
+    if (!r.storedId) return false;
+    const open = Object.values(this.sessions).find((S) => S.storedId === r.storedId && (S.pod ?? '') === (r.pod ?? '') && (!S.closed || S.reconnect));
+    if (open) return this.focus(open.id);
+    await this.preload();
+    this.select(r.pod ?? this.currentPod);
+    this.profile = r.profile;
+    this.currentId = null;
+    this.notice = '';
+    this.follow();
+    this.opening = r.profile;
+    this.notify();
+    try {
+      const S = await this.resume(r.storedId);
+      if (!S.title && r.title) S.title = r.title;
+      this.lastAt[S.id] = r.at || Date.now();
+      this.currentId = S.id;
+      this.active[key(S.pod, S.profile)] = S.id;
+      this.restoreDraft();
+      return true;
+    } catch (e) {
+      this.notice = (e as Error).message;
+      return false;
+    } finally {
+      this.opening = '';
+      this.notify();
+    }
+  }
   /** 서버의 내 세션 목록을 다시 읽는다(화면 진입·창 포커스·주기) */
   async loadSessions() {
     try {
@@ -1004,6 +1120,7 @@ export class ChatStore {
     this.profile = name;
     this.draft = '';
     this.notice = '';
+    this.follow();
     const live = this.sessionOf(name);
     const same = live && live.storedId === storedId && (!live.closed || live.reconnect);
     this.currentId = same ? live.id : null;

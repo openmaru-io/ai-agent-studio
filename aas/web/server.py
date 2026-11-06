@@ -5786,7 +5786,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # 회의가 만든 세션(오피스 등록부의 meeting-*)은 뺀다 — 새 대화마다 에이전트별로 늘어 주인의 대화를 밀어낸다(스펙 2026-10-20-027 R11)
                 hidden = office.meeting_stored_ids()
-                rows = [r for r in hub(pod).history(profile, limit=200) if r.get("id") not in hidden][:80]
+                # 보일 줄 수(기본 80, 세션 칸의 「1주일」은 200). 회의 세션을 거른 뒤 자른다
+                try:
+                    want = max(1, min(200, int(query.get("limit", ["80"])[0] or 80)))
+                except ValueError:
+                    want = 80
+                rows = [r for r in hub(pod).history(profile, limit=max(200, want)) if r.get("id") not in hidden][:want]
                 # Claude Code 가 연 대화: 목록 Tag·「스킬 시험」 거름·쓰는 중 띠(스펙 2026-10-28-001 §3-7 ⑤)
                 meta = chat_session_meta.for_stored(pod.id, [str(r.get("id") or "") for r in rows])
                 for r in rows:

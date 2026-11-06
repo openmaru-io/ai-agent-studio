@@ -131,6 +131,15 @@ class HttpTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in out["sessions"]], ["st-mine", "st-1on1"])      # 1:1 오피스 대화는 남는다
         self.assertEqual(seen["limit"], 200)
 
+    def test_history_limit_is_capped(self):
+        """세션 칸의 「1주일」은 limit=200 으로 묻는다. 기본은 80, 상한 200, 잘못된 값은 기본(스펙 2026-11-06 세션 칸)."""
+        rows = [{"id": f"st-{i}"} for i in range(250)]
+        with mock.patch.object(FakeHub, "history", lambda self, profile, limit=80: rows):
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main")[1]["sessions"]), 80)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=200")[1]["sessions"]), 200)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=999")[1]["sessions"]), 200)
+            self.assertEqual(len(self.req("GET", "/api/chat/history?profile=main&limit=x")[1]["sessions"]), 80)
+
     def test_other_unknown_names_are_still_refused(self):
         self.assertEqual(self.req("GET", "/api/chat/history?profile=ghost")[0], 400)
         self.assertEqual(self.req("POST", "/api/chat/session", {"profile": "ghost"})[0], 400)
