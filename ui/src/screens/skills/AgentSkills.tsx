@@ -12,11 +12,14 @@
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import CloseFullscreenIcon from '@mui/icons-material/CloseFullscreen';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import OpenInFullIcon from '@mui/icons-material/OpenInFull';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import SearchIcon from '@mui/icons-material/Search';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import type { SxProps, Theme } from '@mui/material';
@@ -27,8 +30,10 @@ import {
   Button,
   Checkbox,
   Chip,
+  IconButton,
   InputAdornment,
   LinearProgress,
+  Link,
   NativeSelect,
   Popover,
   Stack,
@@ -63,6 +68,7 @@ import { badgeTone, serverTerm } from '@/lib/serverTerms';
 import { FOCUS_RING } from '@/lib/shellTokens';
 import { Splitter, STRIP_W } from '@/screens/chat/layout';
 import { AgentAvatar } from '@/screens/chat/parts';
+import { GraphView } from '@/screens/flows/GraphView';
 import { Toggle } from '@/screens/profiles/Panes';
 import { useProfileAct } from '@/screens/profiles/shared';
 import { BulkDeleteDialog, DeleteMode, useSkillDelete } from '@/screens/skills/DeleteSkill';
@@ -128,10 +134,11 @@ interface SkillOne {
 
 const FILTERS = ['all', 'on', 'off', 'setup', 'unused'] as const;
 type Filter = (typeof FILTERS)[number];
-// 「개요」가 맨 앞이고 기본 탭이다(스펙 2026-11-06-003 R1·D2). 기본 탭이면 주소에서 pane 을 지운다
-const PANES = ['overview', 'run', 'needs', 'files', 'publish'] as const;
+// 「연결도」가 첫 탭이자 기본 — 스킬을 고르면 바로 그 스킬의 호출 관계가 보인다. 「개요」는 그다음(스펙 2026-11-06-003 R1 의 개요 탭은 그대로)
+// 기본 탭이면 주소에서 pane 을 지운다
+const PANES = ['map', 'overview', 'run', 'needs', 'files', 'publish'] as const;
 type Pane = (typeof PANES)[number];
-const DEFAULT_PANE: Pane = 'overview';
+const DEFAULT_PANE: Pane = 'map';
 /** 개요에서 요약을 스스로 만들기 전에 같은 스킬을 보고 있어야 하는 시간(D3) */
 const SUMMARY_DWELL_MS = 1500;
 /** 요약 대신 보이는 SKILL.md 앞부분 줄 수(빈 줄 빼고, D5·OV-L1) */
@@ -194,6 +201,29 @@ function useLayout(): [{ agentsW: number; listW: number }, (p: Partial<{ agentsW
   ];
 }
 
+const WIDE_KEY = 'aas.skills.wide';
+/** 「넓게 보기」 — 이 브라우저에만 기억한다(저장소가 막혀도 화면은 돈다) */
+function useWide(): [boolean, (v: boolean) => void] {
+  const [v, setV] = useState(() => {
+    try {
+      return localStorage.getItem(WIDE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  return [
+    v,
+    (next) => {
+      setV(next);
+      try {
+        localStorage.setItem(WIDE_KEY, next ? '1' : '0');
+      } catch {
+        /* 이번 화면에서만 */
+      }
+    },
+  ];
+}
+
 /** 에이전트 목록 순서: 주 에이전트 → 이름순 → 공용(default) */
 export function agentOrder(g: AgentSkillsData): string[] {
   const names = g.agents?.map((a) => a.profile) ?? [...new Set(g.skills.map((s) => s.profile))];
@@ -222,14 +252,15 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   const pane: Pane = (PANES as readonly string[]).includes(params.get('pane') ?? '')
     ? (params.get('pane') as Pane)
     : DEFAULT_PANE;
-  const set = (patch: Record<string, string | null>) =>
+  // push 면 브라우저 뒤로 가기로 돌아온다 — 연결도에서 다른 스킬로 옮겨 갈 때만 쓴다
+  const set = (patch: Record<string, string | null>, push = false) =>
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)));
         return next;
       },
-      { replace: true }
+      { replace: !push }
     );
   // 주소의 에이전트가 목록에 없으면(다른 작업공간의 에이전트 등) 주 에이전트로 바꾸고 한 번 알린다(D10).
   // 표 화면의 없는 프로파일 알림(useProfileScope)과 같은 방식 — 주소에 적혀 온 것만 알리고, 주소가 비어 있으면 조용히
@@ -251,6 +282,37 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   const del = useSkillDelete(g.skills, (s) => {
     if (s.id === skillId) set({ skill: null });
   });
+  // 지나온 스킬(연결도 탭 위 경로 칩). 스킬이 바뀔 때마다 앞 스킬을 쌓는다 — 목록에서 골랐든 그림에서 옮겼든
+  const [trail, setTrail] = useState<string[]>([]);
+  const [prevSkill, setPrevSkill] = useState(skillId);
+  if (prevSkill !== skillId) {
+    setPrevSkill(skillId);
+    if (prevSkill && skillId)
+      setTrail((tr) => [...tr.filter((x) => x !== prevSkill && x !== skillId), prevSkill].slice(-8));
+  }
+  const byId = useMemo(() => new Map(g.skills.map((s) => [s.id, s])), [g.skills]);
+  /** 그림의 스킬 노드 → 이 화면의 줄. 지금 AI 에이전트가 가져다 쓰는 사본이 있으면 그 줄(자리를 지킨다), 없으면 그 스킬의 AI 에이전트로 */
+  const resolve = (sid: string): AgentSkillRow | undefined => {
+    const r = byId.get(sid);
+    if (!r) return undefined;
+    if (r.profile === agent) return r;
+    const origin = r.shared_from
+      ? g.skills.find((x) => x.profile === r.shared_from && x.name === r.name && !x.shared_from)
+      : r;
+    const mine = g.skills.find(
+      (x) =>
+        x.profile === agent && x.name === r.name && (x.shared_from === (origin ?? r).profile || x.id === origin?.id)
+    );
+    return mine ?? origin ?? r;
+  };
+  /** 다른 스킬로 옮겨 간다. 이 화면에 없는 스킬(허브·기본 제공 등)이면 false — 그림 안에서만 중심을 바꾼다 */
+  const goSkill = (sid: string): boolean => {
+    const r = resolve(sid);
+    if (!r) return false;
+    if (r.id !== skillId) set({ profile: r.profile, skill: r.id }, true);
+    return true;
+  };
+  const [wide, setWide] = useWide();
 
   const agentsPanel = medium ? (
     <AgentStripSkills g={g} order={order} agent={agent} onPick={(p) => set({ profile: p, skill: null })} />
@@ -276,6 +338,11 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
       row={picked}
       pane={pane}
       onPane={(p) => set({ pane: p === DEFAULT_PANE ? null : p })}
+      onGo={goSkill}
+      trail={trail.map((id) => byId.get(id)).filter((r): r is AgentSkillRow => !!r)}
+      onTrail={goSkill}
+      wide={wide}
+      onWide={narrow ? undefined : () => setWide(!wide)}
       onBack={narrow ? () => set({ skill: null }) : undefined}
       mode={del.modeOf(picked)}
       onDelete={() => del.open(picked)}
@@ -338,7 +405,10 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
         ref={frame}
         sx={{
           display: 'grid',
-          gridTemplateColumns: medium
+          // 넓게 보기: AI 에이전트 칸을 접고 스킬 목록을 좁혀 연결도를 크게
+          gridTemplateColumns: wide
+            ? `0px 0px ${Math.min(layout.listW, 300)}px 6px minmax(0, 1fr)`
+            : medium
             ? `${STRIP_W}px ${layout.listW}px 6px minmax(0, 1fr)`
             : `${layout.agentsW}px 6px ${layout.listW}px 6px minmax(0, 1fr)`,
           gridTemplateRows: 'minmax(0, 1fr)',
@@ -350,14 +420,29 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
           overflow: 'hidden',
         }}
       >
-        <Box sx={{ minHeight: 0, overflow: 'auto', borderRight: medium ? 1 : 0, borderColor: 'divider' }}>{agentsPanel}</Box>
-        {!medium && (
+        <Box
+          sx={{
+            minHeight: 0,
+            overflow: 'auto',
+            borderRight: medium && !wide ? 1 : 0,
+            borderColor: 'divider',
+            visibility: wide ? 'hidden' : undefined,
+          }}
+          aria-hidden={wide || undefined}
+        >
+          {!wide && agentsPanel}
+        </Box>
+        {wide ? (
+          <Box />
+        ) : (
+          !medium && (
           <Splitter
             label={t('skillsAgent.resizeAgents')}
             value={layout.agentsW}
             limits={LIMITS.agents}
             onChange={(v) => setLayout({ agentsW: v })}
           />
+          )
         )}
         <Box sx={{ minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>{listPanel}</Box>
         <Splitter
@@ -1130,6 +1215,11 @@ function SkillPanel({
   onBack,
   mode,
   onDelete,
+  onGo,
+  trail,
+  onTrail,
+  wide,
+  onWide,
 }: {
   row: AgentSkillRow;
   pane: Pane;
@@ -1137,13 +1227,20 @@ function SkillPanel({
   onBack?: () => void;
   mode: DeleteMode;
   onDelete: () => void;
+  /** 그림·카드에서 다른 스킬로 옮겨 간다(스킬 id). 이 화면에 없는 스킬이면 false */
+  onGo: (sid: string) => boolean;
+  trail: AgentSkillRow[];
+  onTrail: (sid: string) => boolean;
+  wide: boolean;
+  onWide?: () => void;
 }) {
   const one = useQuery<SkillOne>({
     queryKey: ['skill', row.id],
     queryFn: () => get<SkillOne>('/api/skill?id=' + encodeURIComponent(row.id)),
   });
   const flow = useQuery<Graph>({
-    queryKey: ['flow', 'skill:' + row.id],
+    // 연결도 탭(GraphView)과 같은 열쇠 — 한 번 받아 두 탭이 같이 쓴다
+    queryKey: ['flow', 'skill:' + row.id, false],
     queryFn: () => get<Graph>('/api/flow?root=' + encodeURIComponent('skill:' + row.id)),
   });
   const label = useAgentLabel();
@@ -1219,16 +1316,39 @@ function SkillPanel({
           aria-label={t('skillsAgent.actions')}
         >
           <Button
-            component={RouterLink}
-            to={'/flows?root=' + encodeURIComponent('skill:' + row.id)}
             size="small"
-            variant="outlined"
-            color="inherit"
-            sx={tier1}
+            variant={pane === 'map' ? 'contained' : 'outlined'}
+            color={pane === 'map' ? 'primary' : 'inherit'}
+            sx={pane === 'map' ? undefined : tier1}
             startIcon={<AccountTreeOutlinedIcon />}
+            aria-pressed={pane === 'map'}
+            onClick={() => onPane('map')}
           >
             {t('skills.viewFlow')}
           </Button>
+          {onWide && (
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              sx={tier2}
+              startIcon={wide ? <CloseFullscreenIcon /> : <OpenInFullIcon />}
+              aria-pressed={wide}
+              onClick={onWide}
+            >
+              {wide ? t('skillsAgent.map.narrow') : t('skillsAgent.map.wide')}
+            </Button>
+          )}
+          <Tooltip title={t('skillsAgent.map.openMenu')}>
+            <IconButton
+              size="small"
+              component={RouterLink}
+              to={'/flows?root=' + encodeURIComponent('skill:' + row.id)}
+              aria-label={t('skillsAgent.map.openMenu')}
+            >
+              <OpenInNewIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Box sx={{ flex: 1 }} />
           {why ? (
             <Tooltip title={why}>
@@ -1272,12 +1392,84 @@ function SkillPanel({
         </Tabs>
       </Box>
       <Box sx={{ p: 2 }}>
+        {pane === 'map' && <MapPane row={row} onGo={onGo} trail={trail} onTrail={onTrail} />}
         {pane === 'overview' && <OverviewPane row={row} one={one.data} onFiles={() => onPane('files')} />}
-        {pane === 'run' && <RunPane row={row} flow={flow.data} loading={flow.isLoading} error={flow.error?.message} />}
+        {pane === 'run' && (
+          <RunPane row={row} flow={flow.data} loading={flow.isLoading} error={flow.error?.message} onGo={onGo} />
+        )}
         {pane === 'needs' && <NeedsPane row={row} one={one.data} flow={flow.data} />}
         {pane === 'files' && <FilesPane row={row} one={one.data} />}
         {pane === 'publish' && <PublishPane row={row} one={one.data} />}
       </Box>
+    </Box>
+  );
+}
+
+/** 「연결도」: 이 스킬을 부르는 곳 → 이 스킬 → 부르는 것. 스킬 화면을 떠나지 않고 노드를 눌러 다른 스킬로 옮겨 간다.
+ * 예약 작업·스크립트 노드는 그림 안에서만 중심을 바꾸고(목록 선택은 그대로), 「원래 스킬로」로 돌아온다 */
+function MapPane({
+  row,
+  onGo,
+  trail,
+  onTrail,
+}: {
+  row: AgentSkillRow;
+  onGo: (sid: string) => boolean;
+  trail: AgentSkillRow[];
+  onTrail: (sid: string) => boolean;
+}) {
+  const [center, setCenter] = useState<string | null>(null);
+  const root = center ?? 'skill:' + row.id;
+  const move = (r: string) => {
+    if (r.startsWith('skill:') && onGo(r.slice(6))) return;
+    setCenter(r === 'skill:' + row.id ? null : r);
+  };
+  const last = trail[trail.length - 1];
+  return (
+    <Box data-testid="skill-map">
+      {(trail.length > 0 || center) && (
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ mb: 1 }}
+          component="nav"
+          aria-label={t('skillsAgent.map.trail')}
+        >
+          {center ? (
+            <Button size="small" startIcon={<ArrowBackIcon />} onClick={() => setCenter(null)}>
+              {t('skillsAgent.map.backToSkill', { name: row.name })}
+            </Button>
+          ) : (
+            last && (
+              <Button size="small" startIcon={<ArrowBackIcon />} onClick={() => onTrail(last.id)}>
+                {t('skillsAgent.map.back')}
+              </Button>
+            )
+          )}
+          {trail.length > 0 && (
+            <Typography variant="caption" color="text.secondary">
+              {t('skillsAgent.map.trail')}
+            </Typography>
+          )}
+          {trail.map((r) => (
+            <Chip
+              key={r.id}
+              size="small"
+              variant="outlined"
+              label={r.profile === row.profile ? r.name : `${r.name} · ${agentLabel(r.profile)}`}
+              onClick={() => onTrail(r.id)}
+            />
+          ))}
+          <Chip size="small" color="primary" label={row.name} aria-current="true" />
+        </Stack>
+      )}
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
+        {t('skillsAgent.map.hint')}
+      </Typography>
+      <GraphView key={root} root={root} inDrawer onCenter={move} moveLabel={t('skillsAgent.map.moveTo')} />
     </Box>
   );
 }
@@ -1301,11 +1493,13 @@ function RunPane({
   flow,
   loading,
   error,
+  onGo,
 }: {
   row: AgentSkillRow;
   flow?: Graph;
   loading: boolean;
   error?: string;
+  onGo?: (sid: string) => boolean;
 }) {
   if (loading) return <LinearProgress aria-label={t('skillsAgent.loading')} />;
   if (!flow) return <Alert severity="warning">{error ?? t('skillsAgent.noFlow')}</Alert>;
@@ -1355,7 +1549,15 @@ function RunPane({
                   </Typography>
                 )}
                 {items.map((n) => (
-                  <NodeCard key={n.id} node={n} label={n.label} sub={n.sub || kindLabel(n.kind)} edges={edgeTo(n.id)} profile={row.profile} />
+                  <NodeCard
+                    key={n.id}
+                    node={n}
+                    label={n.label}
+                    sub={n.sub || kindLabel(n.kind)}
+                    edges={edgeTo(n.id)}
+                    profile={row.profile}
+                    onOpen={n.kind === 'skill' && onGo ? () => onGo(n.id.slice(6)) : undefined}
+                  />
                 ))}
               </Stack>
             </Box>
@@ -1385,7 +1587,22 @@ export const nodeBadgeTone = (badge: string, bad: boolean): 'bad' | 'warn' | und
   return bad ? 'bad' : tone;
 };
 
-function NodeCard({ node, label, sub, edges, profile }: { node?: FNode; label: string; sub: string; edges: FEdge[]; profile?: string }) {
+function NodeCard({
+  node,
+  label,
+  sub,
+  edges,
+  profile,
+  onOpen,
+}: {
+  node?: FNode;
+  label: string;
+  sub: string;
+  edges: FEdge[];
+  profile?: string;
+  /** 스킬 카드: 이름을 누르면 그 스킬로 옮겨 간다 */
+  onOpen?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const evId = useId();
   const evidence = edges.flatMap((e) => e.evidence).slice(0, 8);
@@ -1411,7 +1628,19 @@ function NodeCard({ node, label, sub, edges, profile }: { node?: FNode; label: s
       }}
       data-node={node?.id}
     >
-      <Typography sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all' }}>{label}</Typography>
+      {onOpen ? (
+        <Link
+          component="button"
+          type="button"
+          underline="hover"
+          onClick={onOpen}
+          sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all', textAlign: 'left' }}
+        >
+          {label}
+        </Link>
+      ) : (
+        <Typography sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all' }}>{label}</Typography>
+      )}
       <Typography variant="caption" color="text.secondary" component="div" sx={{ wordBreak: 'break-all' }}>
         {sub}
       </Typography>

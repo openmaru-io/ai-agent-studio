@@ -79,9 +79,11 @@ interface Props {
   selected: string | null;
   onSelect: (n: FNode | null) => void;
   onEdge: (e: FEdge) => void;
+  /** 노드를 두 번 누르거나 Enter — 그 노드로 옮겨 간다(스킬 화면의 연결도 탭). 없으면 고르기만 한다 */
+  onOpen?: (n: FNode) => void;
 }
 
-export function FlowCanvas({ graph, hide, query, selected, onSelect, onEdge }: Props) {
+export function FlowCanvas({ graph, hide, query, selected, onSelect, onEdge, onOpen }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const lang = getLang();
@@ -222,7 +224,11 @@ export function FlowCanvas({ graph, hide, query, selected, onSelect, onEdge }: P
       <Box
         data-flow-stage=""
         sx={{ position: 'absolute', left: 0, top: 0, transformOrigin: '0 0' }}
-        style={{ width: L.width, height: L.height, transform: `translate(${view.tx}px,${view.ty}px) scale(${view.scale})` }}
+        style={{
+          width: L.width,
+          height: L.height,
+          transform: `translate(${view.tx}px,${view.ty}px) scale(${view.scale})`,
+        }}
       >
         <svg width={L.width} height={L.height} aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0 }}>
           <defs>
@@ -313,7 +319,20 @@ export function FlowCanvas({ graph, hide, query, selected, onSelect, onEdge }: P
                 ev.stopPropagation();
                 onSelect(n);
               }}
+              onDoubleClick={
+                onOpen
+                  ? (ev) => {
+                      ev.stopPropagation();
+                      onOpen(n);
+                    }
+                  : undefined
+              }
               onKeyDown={(ev) => {
+                if (onOpen && ev.key === 'Enter' && n.id === selected) {
+                  ev.preventDefault();
+                  onOpen(n);
+                  return;
+                }
                 if (['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp'].includes(ev.key)) {
                   ev.preventDefault();
                   arrow(n, ev.key);
