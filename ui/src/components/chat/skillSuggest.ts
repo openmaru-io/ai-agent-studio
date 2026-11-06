@@ -97,6 +97,18 @@ export function slashItems(data: SkillList | null, busy = false): SuggestItem[] 
         ariaLabel: [c.command, c.description, c.hint].filter(Boolean).join(', '),
       });
   if (busy) return out;
+  // 에이전트 플러그인 명령(예: /작업): 고르면 「/작업 」 이 들어가고 글로 보낸다 — 플러그인 훅이 처리한다
+  const pg = t('chat.suggest.pluginCommands');
+  for (const c of data.plugin_commands ?? [])
+    out.push({
+      value: c.command,
+      label: c.command,
+      detail: c.description || undefined,
+      hint: c.hint || undefined,
+      group: pg,
+      whole: true,
+      ariaLabel: [c.command, c.description, c.hint].filter(Boolean).join(', '),
+    });
   const sg = t('chat.suggest.skills');
   const skills = skillSuggestItems(data) ?? [];
   if (skills.length) out.push(...skills.map((s) => ({ ...s, group: sg })));
@@ -107,9 +119,9 @@ export function slashItems(data: SkillList | null, busy = false): SuggestItem[] 
 /** 화면 읽기 개수(DC12): 「명령 10개 · 스킬 12개」. 묶음이 없으면(회의실) 스킬 개수 */
 export function slashCount(items: SuggestItem[]): string {
   if (!items.some((i) => i.group)) return t('chat.suggest.skillsCount', { count: items.length });
-  const cg = t('chat.suggest.commands');
+  const cg = [t('chat.suggest.commands'), t('chat.suggest.pluginCommands')];
   const real = items.filter((i) => !i.note);
-  const commands = real.filter((i) => i.group === cg).length;
+  const commands = real.filter((i) => cg.includes(i.group ?? '')).length;
   return t('chat.suggest.slashCount', { commands, skills: real.length - commands });
 }
 

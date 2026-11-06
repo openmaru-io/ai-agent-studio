@@ -33,6 +33,14 @@ export interface CommandRow {
   while_busy?: boolean;
 }
 
+/** 「/」 플러그인 명령 한 줄(예: /작업). 설명은 플러그인이 쓴 그대로 */
+export interface PluginCommandRow {
+  command: string;
+  name: string;
+  description: string;
+  hint: string;
+}
+
 export interface SkillList {
   skills: SkillRow[];
   /** 쓸 수 있는 명령(관리하지 않는 사람·회의실은 없음) */
@@ -46,6 +54,8 @@ export interface SkillList {
   owner_only?: string[];
   /** 같은 이름의 빠른·플러그인 명령이 있어 뺀 명령(R9) */
   commands_blocked?: string[];
+  /** 그 에이전트의 Hermes 플러그인이 등록한 명령. 보이기만 한다 — 고르면 글로 보내고 플러그인 훅이 처리한다(command_names 에 없다) */
+  plugin_commands?: PluginCommandRow[];
   /** 거짓이면 이 사람은 명령을 쓸 수 없다(오피스 1:1 관리하지 않는 사람, DC13) */
   commands_allowed?: boolean;
   warning?: string;
@@ -91,6 +101,7 @@ export function useSkillSuggest(url: string | null): SkillSuggest {
                 commands_allowed: r.commands_allowed !== false,
                 command_aliases: r.command_aliases ?? {},
                 owner_only: r.owner_only ?? [],
+                plugin_commands: r.plugin_commands ?? [],
               }
             : {}),
         });

@@ -60,7 +60,7 @@ def parse(result) -> dict:
     rows.sort(key=lambda r: (-r["usage"], r["name"].lower()))
     cmds = chat_commands.pick(result)
     return {"skills": rows, "blocked": sorted(blocked), "commands": cmds["commands"], "commands_blocked": cmds["blocked"],
-            "known": cmds.get("known") or [], "aliases": cmds.get("aliases") or {}}
+            "known": cmds.get("known") or [], "aliases": cmds.get("aliases") or {}, "plugins": cmds.get("plugins") or []}
 
 
 def read(hub, profile: str = "", session_id: str = "", timeout: float | None = None) -> dict:
@@ -76,7 +76,7 @@ def read(hub, profile: str = "", session_id: str = "", timeout: float | None = N
     try:
         out = parse(hub.request("commands.catalog", params, timeout=CATALOG_TIMEOUT if timeout is None else timeout))
     except Exception:                                   # 연결 실패·시간 초과·모르는 RPC 모두 목록 없음으로
-        return {"skills": [], "blocked": [], "commands": [], "commands_blocked": [], "warning": "unavailable"}
+        return {"skills": [], "blocked": [], "commands": [], "commands_blocked": [], "plugins": [], "warning": "unavailable"}
     return {**out, "warning": ""}
 
 

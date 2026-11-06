@@ -95,7 +95,26 @@ def pick(result) -> dict:
             blocked.append(key)
         elif key in meta and not (meta[key] if isinstance(meta[key], dict) else {}).get("desktop"):
             ok.append(name)
-    return {"commands": ok, "blocked": blocked, **known_names(result, others)}
+    return {"commands": ok, "blocked": blocked, "plugins": plugin_rows(result), **known_names(result, others)}
+
+
+def plugin_rows(result: dict) -> list[dict]:
+    """그 세션 Hermes 플러그인이 등록한 명령(catalog 「Plugin commands」). 화면 「/」 목록에 보이기만 한다 —
+    고르면 글로 보내고 그 플러그인의 훅(pre_llm_call 등)이 처리한다. command.dispatch 로 보내지 않고 command_names 에도 넣지 않는다(R9).
+    빠른 명령(「User commands」)은 셸을 돌므로 계속 보이지 않는다."""
+    meta = result.get("commands") if isinstance(result.get("commands"), dict) else {}
+    rows = []
+    for cat in result.get("categories") or []:
+        if not (isinstance(cat, dict) and cat.get("name") == "Plugin commands"):
+            continue
+        for p in cat.get("pairs") or []:
+            if not (isinstance(p, (list, tuple)) and p and str(p[0]).startswith("/") and len(str(p[0])) > 1):
+                continue
+            key = str(p[0])
+            m = meta.get(key) if isinstance(meta.get(key), dict) else {}
+            rows.append({"command": key, "name": key[1:], "description": str(p[1] if len(p) > 1 else "")[:200],
+                         "hint": tr("<내용>", "<text>") if m.get("argument_mode") in ("text", "mixed") else ""})
+    return rows
 
 
 def known_names(result: dict, others: set) -> dict:
@@ -131,7 +150,9 @@ def view(got: dict, allowed: bool = True, manages: bool = True, office: bool = F
             "command_aliases": dict(got.get("aliases") or {}),      # /q → queue(3단계 R10)
             "owner_only": ["/" + n for n in sorted(OWNER_ONLY - CONTROL_ONLY)] if allowed and not manages else [],
             "commands_blocked": list(got.get("commands_blocked") or []) if allowed else [],
-            "commands_allowed": bool(allowed)}
+            "commands_allowed": bool(allowed),
+            # 플러그인 명령(보이기만, 글로 보낸다) — 실행은 Hermes 플러그인이 하므로 이 사람의 명령 권한과 관계없다
+            "plugin_commands": list(got.get("plugins") or [])}
 
 
 def help_text(cat: dict, names: list[str] | None = None) -> str:
