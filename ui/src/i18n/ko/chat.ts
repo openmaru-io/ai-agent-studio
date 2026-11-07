@@ -369,6 +369,7 @@ export default {
   'chat.chipLost': '연결이 끊김',
   // 「/」 Hermes 명령(스펙 2026-10-26-010 §11)
   'chat.suggest.commands': '명령',
+  'chat.suggest.pluginCommands': 'AI 에이전트 명령',
   'chat.suggest.groupCount': '{group} · {count}',
   'chat.suggest.slashCount': '명령 {commands}개 · 스킬 {skills}개',
   'chat.suggest.slashNoMatch': '맞는 명령·스킬이 없습니다',

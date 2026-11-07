@@ -137,7 +137,21 @@ class PickTest(unittest.TestCase):
                                            "learn", "memory", "review", "refine", "goal", "loop", "title", "subgoal", "btw"])
         self.assertEqual(got["blocked"], ["/retry"])         # 빠른 명령과 이름이 같다(R9)
         # 목록을 못 읽어도 AAS 가 만드는 help 와 전용 RPC 명령(3단계)은 남는다 — catalog 의 desktop 값·이름 겹침과 관계없다
-        self.assertEqual(cc.pick(None), {"commands": ["help", "title", "subgoal", "btw"], "blocked": [], "known": [], "aliases": {}})
+        self.assertEqual(cc.pick(None), {"commands": ["help", "title", "subgoal", "btw"], "blocked": [], "plugins": [], "known": [], "aliases": {}})
+
+    def test_plugin_commands_are_listed_to_show_but_never_known_as_commands(self):
+        meta = dict(META, **{"/작업": {"argument_mode": "text", "desktop": None}, "/ping": {"argument_mode": None, "desktop": None}})
+        cat = {"commands": meta, "categories": [
+            {"name": "Plugin commands", "pairs": [["/작업", "작업 페이지 1장"], ["/ping", "plugin"]]},
+            {"name": "User commands", "pairs": [["/deploy", "exec: ./deploy.sh"]]}]}
+        got = skill_commands.parse(cat)
+        self.assertEqual(got["plugins"], [{"command": "/작업", "name": "작업", "description": "작업 페이지 1장", "hint": "<내용>"},
+                                          {"command": "/ping", "name": "ping", "description": "plugin", "hint": ""}])
+        v = cc.view(got, allowed=False)                       # 명령 권한이 없어도 보인다 — 글로 보내고 플러그인이 처리한다
+        self.assertEqual([r["command"] for r in v["plugin_commands"]], ["/작업", "/ping"])
+        # 화면이 명령으로 막거나 dispatch 하지 않게 알아보는 이름에는 넣지 않는다(R9). 빠른 명령은 어디에도 없다
+        self.assertNotIn("/작업", v["command_names"])
+        self.assertNotIn("/deploy", [r["command"] for r in v["plugin_commands"]])
 
     def test_parse_carries_commands_next_to_skills(self):
         out = skill_commands.parse(CATALOG)

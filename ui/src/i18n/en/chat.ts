@@ -376,6 +376,7 @@ export default {
   'chat.chipLost': 'Disconnected',
   // 「/」 Hermes 명령(스펙 2026-10-26-010 §11)
   'chat.suggest.commands': 'Commands',
+  'chat.suggest.pluginCommands': 'AI Agent commands',
   'chat.suggest.groupCount': '{group} · {count}',
   'chat.suggest.slashCount': '{commands} commands · {skills} skills',
   'chat.suggest.slashNoMatch': 'No matching command or skill',
