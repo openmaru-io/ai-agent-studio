@@ -253,6 +253,13 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual(self.get(self.url(path="profiles/ma"))[0], 400)               # skills/ 밖
         self.assertEqual(self.get(self.url(profile="ghost"))[0], 404)                  # 없는 프로파일
 
+    def test_the_data_folder_path_from_the_skill_list_is_accepted_for_its_own_profile(self):
+        # 목록·상세 API 와 MCP skill_get 은 profiles/<이름>/skills/… 를 준다(2026-11-06 「스킬 폴더 경로가 올바르지 않습니다」)
+        self.assertEqual(self.get(self.url(path="profiles/ma/skills/ops/clean"))[0], 200)
+        self.assertEqual(self.get(self.url(path="profiles/other/skills/ops/clean"))[0], 400)   # 다른 프로파일 이름은 거부
+        self.assertEqual(self.get(self.url(path="profiles/ma/skills/../../x"))[0], 400)
+        self.assertEqual(self.get(self.url(path="profiles/ma/skills/.archive/clean"))[0], 400)
+
 
 def make_zip(files: dict, wrap: str = "") -> bytes:
     buf = io.BytesIO()

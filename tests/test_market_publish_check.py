@@ -58,6 +58,15 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.level(out, "works"), "pass")
         self.assertEqual(list(mp._dir().glob("*")), [])                                 # 점검은 요청 기록·묶음을 남기지 않는다
 
+    def test_the_data_folder_path_is_accepted_for_its_own_profile_only(self):
+        out = self.check(skill_path="profiles/ma/skills/local/weekly-report")      # skills_list 가 주는 그대로
+        self.assertTrue(out["ok"])
+        for bad, profile in (("profiles/other/skills/local/weekly-report", "ma"),
+                             ("profiles/ma/skills/local/weekly-report", "default"),
+                             ("skills/../x", "ma"), ("weekly-report", "ma")):
+            with self.assertRaises(mp.MarketError, msg=bad):
+                self.check(skill_path=bad, profile=profile)
+
     def test_undeclared_env_is_warned_and_previewed_in_header(self):
         out = self.check()
         self.assertEqual(out["env"]["undeclared"], ["REPORT_API_TOKEN"])                 # HOME·HERMES_* 는 비밀값이 아니다

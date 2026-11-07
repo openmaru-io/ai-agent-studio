@@ -31,6 +31,19 @@ def profile_root(home, profile: str):
     return home if profile in ("", "default") else home / "profiles" / profile
 
 
+def profile_rel(profile: str, path) -> list[str] | None:
+    """스킬 폴더 경로를 프로파일 기준 조각으로. 맞지 않으면 None.
+    목록·상세 API 는 데이터 폴더 기준(profiles/<이름>/skills/…)을 준다. 같은 프로파일이면 그 앞부분을 떼고 받는다 —
+    MCP skill_get 의 zip 링크와 market_publish 가 이 값을 그대로 넘겨 「스킬 폴더 경로가 올바르지 않습니다」가 났다(2026-11-06).
+    다른 프로파일 이름이 붙은 경로는 그대로 거부한다."""
+    parts = [p for p in str(path or "").split("/") if p]
+    if len(parts) > 2 and parts[0] == "profiles" and profile not in ("", "default") and parts[1] == profile:
+        parts = parts[2:]
+    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+        return None
+    return parts
+
+
 def escapes(root, folder) -> bool:
     """로컬 폴더(Path)가 링크를 따라 프로파일 밖을 가리키는가. 사이드카 경로는 사이드카가 링크를 따라가지 않아 늘 False 다.
     폴더 안 링크는 collect 가 거절하지만 폴더 자체·중간 폴더가 링크면 밖의 파일을 읽었다(CodeQL #32~35·42·43·46)."""

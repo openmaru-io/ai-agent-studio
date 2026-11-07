@@ -36,8 +36,8 @@ def _skill_folder(home, profile: str, path: str):
     """프로파일 안 skills/ 아래의 스킬 폴더. 상위 경로·점 폴더·skills/ 밖은 400, 없는 프로파일·폴더는 404."""
     if profile != "default" and not marketplace.PROFILE.match(profile or ""):
         raise MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"), 400)
-    parts = [p for p in str(path or "").split("/") if p]
-    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    parts = skill_keep.profile_rel(profile, path)      # profiles/<이름>/skills/… 도 받는다(MCP skill_get zip 링크)
+    if parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"), 400)
     root = skill_keep.profile_root(home, profile)
     try:
