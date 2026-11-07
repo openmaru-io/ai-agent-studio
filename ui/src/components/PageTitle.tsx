@@ -90,17 +90,20 @@ function TitleHelp({ view }: { view: string }) {
 
 /**
  * @param action 제목 바로 옆 단추(추가 등). 순서는 [제목][action][도움말]이다(디자인 리뷰 12A): 추가가 주 동작이고 도움말은 보조라 뒤에 작고 연하게 둔다.
+ * @param wrap 자리가 모자라면 action 을 다음 줄로 넘긴다. 스킬 화면의 보기 전환이 좁은 화면에서 둘째 줄 전체 폭을 쓴다(스펙 2026-11-06-003 D11)
  */
 export function PageTitle({
   children,
   gutterBottom,
   context,
   action,
+  wrap,
 }: {
   children: ReactNode;
   gutterBottom?: boolean;
   context?: string;
   action?: ReactNode;
+  wrap?: boolean;
 }) {
   const inRouter = useInRouterContext();
   // 라우터 안팎은 한 화면 트리에서 바뀌지 않으므로 조건부 호출이어도 호출 순서가 바뀌지 않는다
@@ -110,7 +113,7 @@ export function PageTitle({
   const title = <TitleText gutterBottom={gutterBottom && !action && !help} context={context}>{children}</TitleText>;
   if (!action && !help) return title;
   return (
-    <Stack direction="row" alignItems="center" spacing={1} useFlexGap sx={{ minWidth: 0, mb: gutterBottom ? '0.35em' : undefined }}>
+    <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap={wrap ? 'wrap' : undefined} sx={{ minWidth: 0, mb: gutterBottom ? '0.35em' : undefined }}>
       {title}
       {action}
       {help}

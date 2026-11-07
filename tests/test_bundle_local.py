@@ -57,9 +57,19 @@ class LocalTest(unittest.TestCase):
         bundle_local.reset()
         self.disk = Disk()
 
-    def _run(self, profiles=("main", "work", "default")):
+    def _run(self, profiles=("main", "work", "default"), gone=()):
         bundle_local.reset()
+        for profile in profiles:                                  # 있는 프로파일(config.yaml 이 있다). gone 은 목록을 읽은 뒤 지워진 것
+            if profile not in gone and profile != "default":
+                self.disk.files.setdefault(f"profiles/{profile}/config.yaml", b"model: {}\n")
         return bundle_local.install([POD], lambda pod: list(profiles), lambda pod: self.disk.read, lambda pod: self.disk.write)
+
+    def test_does_not_recreate_a_profile_deleted_after_the_list_was_read(self):
+        """목록을 읽은 뒤 지워진 프로파일에는 쓰지 않는다 — 파일을 쓰면 상위 폴더가 다시 생겨 지운 프로파일 폴더가 남았다
+        (2026-11-07 OKE: 서버가 다시 뜬 직후 이 일과 지우기가 겹쳐 profiles/blockprobe/skills/market/… 가 생김)."""
+        self._run(profiles=("main", "gone"), gone=("gone",))
+        self.assertFalse(any(p.startswith("profiles/gone/") for p in self.disk.writes))
+        self.assertIn(f"{_skill_dir('main', NAMES[0])}/SKILL.md", self.disk.files)
 
     def test_writes_every_package_to_every_profile_but_the_root(self):
         self._run()

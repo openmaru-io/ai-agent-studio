@@ -50,8 +50,25 @@ class FakeHub:
         FakeHub.calls.append((self.pid, "interrupt", sid))
         return {}
 
+    # 다시 열기·메모리 초과 원인 줄(스펙 2026-11-07-001 E6·E7·디자인 2A·재검토 R2-1~R2-4)
+    disconnected_at = 0.0
+    resume_error = None                                   # 예외를 넣으면 resume 이 그것을 던진다
+    notices: list = []
 
-class HttpTest(unittest.TestCase):
+    def resume(self, profile, stored_id, relay=False, by=""):
+        FakeHub.calls.append((self.pid, "resume", profile))
+        if FakeHub.resume_error is not None:
+            raise FakeHub.resume_error
+        return {"session_id": f"r-{self.pid}", "profile": profile}
+
+    def notice_once(self, sid, key, payload):
+        FakeHub.notices.append((sid, key, payload))
+        return True
+
+
+class _HttpBase(unittest.TestCase):
+    """실제 서버를 띄우고 허브를 가짜로 바꾸는 공통 준비. 시험은 이어받는 쪽에 둔다."""
+
     @classmethod
     def setUpClass(cls):
         from aas.auth import auth
@@ -104,6 +121,8 @@ class HttpTest(unittest.TestCase):
         for p in self.patches:
             p.stop()
 
+
+class HttpTest(_HttpBase):
     def test_pod_인자가_없으면_지금_에이전트_있으면_그_에이전트(self):
         self.assertEqual(self.req("GET", "/api/chat/history?profile=main")[0], 200)
         self.assertEqual(self.req("GET", "/api/chat/history?profile=main&pod=u")[0], 200)
@@ -358,3 +377,82 @@ class GroupScopeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReopenOomTest(_HttpBase):
+    """다시 연 대화의 메모리 초과 원인 줄·지우는 중·없는 프로파일 코드(스펙 2026-11-07-001)."""
+
+    def setUp(self):
+        super().setUp()
+        import time as _t
+        FakeHub.resume_error, FakeHub.notices = None, []
+        self.now = _t.time()
+        FakeHub.disconnected_at = self.now - 30
+        self.hub_t = FakeHub("t")
+        self.extra = [mock.patch.object(server, "hub", side_effect=lambda pod: self.hub_t),
+                      mock.patch.object(server._registry, "refresh", lambda ttl=0: None),
+                      mock.patch.dict(server._hubs, {"t": self.hub_t, "r": self.hub_t})]
+        for p in self.extra:
+            p.start()
+        self.old_agents = server._registry.agents
+
+    def tearDown(self):
+        server._registry.agents = self.old_agents
+        for p in self.extra:
+            p.stop()
+        FakeHub.resume_error = None
+        super().tearDown()
+
+    def _oom_row(self, pid, ended):
+        from datetime import datetime, timezone
+        at = datetime.fromtimestamp(ended, timezone.utc).isoformat().replace("+00:00", "Z")
+        return {"name": pid, "owner": f"{pid}@example.com", "size": {"memory_limit": None},
+                "last_termination": {"reason": "OOMKilled", "finished_at": at, "limit_memory": "4Gi"}}
+
+    def test_끊긴_시각_앞뒤_120초의_OOM_만_원인_줄(self):
+        cases = [(self.now - 40, True), (self.now - 30 + 115, True), (self.now - 30 - 200, False), (self.now - 30 + 200, False)]
+        for ended, want in cases:
+            FakeHub.notices = []
+            server._registry.agents = [self._oom_row("t", ended)]
+            st, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+            self.assertEqual(st, 200)
+            self.assertEqual(bool(FakeHub.notices), want, ended - self.now)
+            if want:
+                sid, key, payload = FakeHub.notices[0]
+                self.assertEqual((sid, payload["code"], payload["limit_memory"]), ("r-t", "oom_restart", "4Gi"))
+        server._registry.agents = [{**self._oom_row("t", self.now - 40), "last_termination": {"reason": "Error", "finished_at": "2026-11-07T00:00:00Z"}}]
+        FakeHub.notices = []
+        self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+        self.assertEqual(FakeHub.notices, [], "OOMKilled 가 아니면 없다")
+        FakeHub.disconnected_at = 0.0
+        server._registry.agents = [self._oom_row("t", self.now - 40)]
+        self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+        self.assertEqual(FakeHub.notices, [], "끊긴 적이 없으면(compose·새 서버) 없다")
+
+    def test_다시_열기_실패_응답에_원인을_싣는다(self):
+        from aas.hermes.hermes_chat import ChatUnavailable
+        server._registry.agents = [self._oom_row("t", self.now - 40)]
+        FakeHub.resume_error = ChatUnavailable("Hermes API 서버 연결이 끊겼습니다")
+        st, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+        self.assertEqual((st, data["oom"]["limit_memory"]), (503, "4Gi"))
+        server._registry.agents = []
+        self.assertNotIn("oom", self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})[1])
+        # 다시 시작 중(등록부에서 잠시 빠짐) 503 에도 싣는다
+        from aas.fleet import pods
+        server._registry.agents = [self._oom_row("r", self.now - 40)]
+        server._registry.restarting = [pods.Pod("r", "r@example.com", Path(TMP.name) / "hermes-r", restarting=True)]
+        try:
+            st, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "r"})
+            self.assertEqual((st, data["oom"]["limit_memory"]), (503, "4Gi"))
+        finally:
+            server._registry.restarting = []
+
+    def test_지우는_중과_없는_프로파일은_코드로(self):
+        from aas.hermes.hermes_chat import ProfileDeleting
+        FakeHub.resume_error = ProfileDeleting("이 프로파일을 지우는 중입니다")
+        st, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+        self.assertEqual((st, data["code"]), (409, "profile_deleting"))
+        st, data = self.req("POST", "/api/chat/resume", {"profile": "gone", "stored_id": "x", "pod": "t"})
+        self.assertEqual((st, data["code"]), (400, "profile_not_found"))
+        st, data = self.req("POST", "/api/chat/session", {"profile": "gone", "pod": "t"})
+        self.assertEqual((st, data["code"]), (400, "profile_not_found"))

@@ -142,3 +142,16 @@ describe.each(['dark', 'light'] as const)('떠 있는 대화 창 토큰 %s (OMAI
     expect(ratio(hex(tk.text), over(tk.mine, surface))).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+// Sky 정보 줄(스펙 2026-11-07-001 디자인 5B): DESIGN.md Sky(#60a5fa) 계열이고, 줄 글자가 그 바탕 위에서 읽힌다
+describe.each(['dark', 'light'] as const)('chatTokens %s Sky 정보 줄', (mode) => {
+  const tk = chatTokens[mode];
+  it('바탕·테두리는 Sky(96,165,250) 이고 아이콘은 DESIGN.md 값', () => {
+    expect(rgba(tk.infoWash).rgb).toEqual([96, 165, 250]);
+    expect(rgba(tk.infoLine).rgb).toEqual([96, 165, 250]);
+    expect(tk.info).toBe(mode === 'dark' ? '#60a5fa' : '#2563eb');
+  });
+  it('본문 글자가 정보 줄 바탕 위에서 4.5:1 이상', () => {
+    expect(ratio(hex(tk.text), over(tk.infoWash, hex(tk.canvas)))).toBeGreaterThanOrEqual(4.5);
+  });
+});

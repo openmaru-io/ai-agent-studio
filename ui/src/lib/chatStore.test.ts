@@ -1054,3 +1054,84 @@ describe('ChatStore — 화면 상태(스펙 2026-11-06-002 G9·G10·G11)', () =
     expect(s.sessionRows()).toEqual([]);
   });
 });
+
+// 스펙 2026-11-07-001 ①③: 다시 열기 실패의 원인 줄(재검토 R2-1·디자인 2A), 지우는 중(2E), 프로파일이 없어져 끝난 대화(3C·R2-4·E5)
+describe('ChatStore — 다시 열기 실패의 원인과 끝난 대화(2026-11-07-001)', () => {
+  async function opened(over: Parameters<typeof api>[0] = {}) {
+    const a = api({ '/api/chat/resume': (b: Record<string, unknown>) => ({ session_id: 's-new', profile: b.profile, reused: false, history: true }), ...over });
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('a');
+    const es = FakeES.all[0];
+    es.emit('session.title', { session_id: 'st-1', title: 'a' });
+    es.emit('aas.user', { text: 'a' });
+    return { a, s, es };
+  }
+  const json = (status: number, body: Record<string, unknown>) => () => new Response(JSON.stringify(body), { status });
+  const OOM = { finished_at: '2026-11-07T01:02:03Z', limit_memory: '4Gi' };
+
+  it('503 본문의 oom 을 기억했다가 포기할 때 원인 줄을 「다시 열지 못했습니다」 위에 둔다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    let n = 0;
+    const { s, es } = await opened({ '/api/chat/resume': () => (++n === 1 ? new Response(JSON.stringify({ error: 'x', oom: OOM }), { status: 503 }) : new Response('{}', { status: 503 })) });
+    try {
+      es.onerror?.();
+      await vi.advanceTimersByTimeAsync(6 * 60000);
+      const S = s.current()!;
+      expect(S.reconnect).toBeUndefined();
+      const tail = S.items.slice(-2);
+      expect(tail[0]).toMatchObject({ kind: 'notice', code: 'oom_restart', oom: OOM });
+      expect(tail[1]).toMatchObject({ kind: 'error', text: '이 대화를 다시 열지 못했습니다.', reopen: true });
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('409 profile_deleting 이면 다시 열기를 멈추고 회색 「지우는 중」 줄', async () => {
+    const { a, s, es } = await opened({ '/api/chat/resume': json(409, { error: 'x', code: 'profile_deleting' }) });
+    es.onerror?.();
+    await vi.waitFor(() => expect(s.current()!.reconnect).toBeUndefined());
+    const S = s.current()!;
+    expect(S.items.at(-1)).toMatchObject({ kind: 'notice', code: 'profile_deleting' });
+    expect(S.items.some((x) => x.kind === 'error')).toBe(false);
+    expect(a.posted('/api/chat/resume')).toHaveLength(1);
+  });
+
+  it('400 profile_not_found 면 끝난 대화: 줄 하나, 목록 「끝남」, 보내기 거절·새 세션 없음, 에이전트 목록을 다시 읽는다', async () => {
+    const { a, s, es } = await opened({ '/api/chat/resume': json(400, { error: 'x', code: 'profile_not_found' }) });
+    const before = a.calls.filter((c) => c.url.startsWith('/api/chat/status')).length;
+    es.onerror?.();
+    await vi.waitFor(() => expect(s.current()!.ended).toBe(true));
+    const S = s.current()!;
+    expect(S.items.at(-1)).toMatchObject({ kind: 'notice', code: 'profile_ended' });
+    expect(s.stateOf(S)).toBe('ended');
+    expect(s.sessionRows().find((r) => r.id === S.id)?.state).toBe('ended');
+    expect(await s.send('또')).toBe('rejected');
+    expect(a.posted('/api/chat/session')).toHaveLength(1); // 처음 연 것뿐 — 없어진 프로파일로 새로 열지 않는다
+    await vi.waitFor(() => expect(a.calls.filter((c) => c.url.startsWith('/api/chat/status')).length).toBeGreaterThan(before));
+    await s.focus(S.id); // 목록에서 다시 눌러도 다시 열지 않는다
+    expect(a.posted('/api/chat/resume')).toHaveLength(1);
+  });
+
+  it('aas.disconnected profile_deleted 는 resume 하지 않고 끝난 대화로', async () => {
+    const { a, s, es } = await opened();
+    es.emit('aas.disconnected', { code: 'profile_deleted', text: 'x' });
+    const S = s.current()!;
+    expect(S.ended).toBe(true);
+    expect(S.reconnect).toBeUndefined();
+    expect(es.closed).toBe(true);
+    expect(S.items.at(-1)).toMatchObject({ kind: 'notice', code: 'profile_ended' });
+    s.reopenNow(S);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(a.posted('/api/chat/resume')).toHaveLength(0);
+  });
+
+  it('다시 연 세션의 oom_restart 알림은 한 번만 원인 줄이 된다', async () => {
+    const { s, es } = await opened();
+    es.emit('aas.notice', { code: 'oom_restart', ...OOM });
+    es.emit('aas.notice', { code: 'oom_restart', ...OOM });
+    expect(s.current()!.items.filter((x) => x.code === 'oom_restart')).toHaveLength(1);
+  });
+});

@@ -97,8 +97,9 @@ export const PRIMARY = '@primary';
 
 const key = (pod: string | undefined, profile: string) => `${pod ?? ''}|${profile}`;
 
-/** 세션 목록 한 줄의 상태. waiting: 되묻기·승인이 내 답을 기다림, running: 답하는 중, done: 끝났고 아직 안 봄, idle: 끝남, closed: 끊김 */
-export type SessionState = 'waiting' | 'running' | 'done' | 'idle' | 'closed';
+/** 세션 목록 한 줄의 상태. waiting: 되묻기·승인이 내 답을 기다림, running: 답하는 중, done: 끝났고 아직 안 봄, idle: 끝남, closed: 끊김,
+ *  ended: 프로파일이 없어져 끝난 대화(스펙 2026-11-07-001 디자인 3C) — 다시 열지 않는다 */
+export type SessionState = 'waiting' | 'running' | 'done' | 'idle' | 'closed' | 'ended';
 /** 서버 세션 목록(/api/chat/sessions)의 한 줄 */
 export interface LiveSessionRow {
   session_id: string;
@@ -604,7 +605,7 @@ export class ChatStore {
 
   /** 끊긴 대화를 다시 잇기 시작한다. 이미 잇는 중이면 아무것도 하지 않는다 */
   private reconnect(S: Session, reason: Reconnect['reason']) {
-    if (S.reconnect || this.sessions[S.id] !== S) return;
+    if (S.reconnect || S.ended || this.sessions[S.id] !== S) return;
     this.closeStream(S);
     const prev = this.recent.get(S.id);
     const carry = !!prev && Date.now() - prev.at < CARRY_MS;
@@ -666,6 +667,11 @@ export class ChatStore {
     } catch (e) {
       R.inflight = false;
       if (S.reconnect !== R) return;
+      // 메모리 초과로 다시 시작하는 중이면 오류 본문에 원인이 온다(재검토 R2-1) — 마지막 값을 들고 있다가 포기할 때 쓴다
+      if (e instanceof ApiError && e.data.oom && typeof e.data.oom === 'object') R.oom = e.data.oom as Reconnect['oom'];
+      // 프로파일 코드는 일반 4xx(「다시 열지 못했습니다」)보다 먼저 거른다(재검토 R2-2)
+      if (e instanceof ApiError && e.data.code === 'profile_deleting') return this.giveUp(S, 'profile_deleting');
+      if (e instanceof ApiError && e.data.code === 'profile_not_found') return this.giveUp(S, 'profile_not_found');
       if (e instanceof ApiError && e.status === 404) return this.giveUp(S, 'not_found');
       if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429) return this.giveUp(S, 'expired');
       this.fail(S, R);
@@ -681,10 +687,29 @@ export class ChatStore {
     this.notify();
   }
 
-  private giveUp(S: Session, code: 'expired' | 'not_found') {
+  private giveUp(S: Session, code: 'expired' | 'not_found' | 'profile_deleting' | 'profile_not_found') {
+    const oom = S.reconnect?.oom;
     this.stopReconnect(S);
-    applyEvent(S, { type: 'aas.reconnect.failed', payload: { code } });
-    this.say(code === 'not_found' ? t('chat.reopenNotFound') : t('chat.reopenFailed'), S);
+    applyEvent(S, { type: 'aas.reconnect.failed', payload: { code, ...(oom ? { oom } : {}) } });
+    const said: Record<typeof code, string> = {
+      expired: 'chat.reopenFailed',
+      not_found: 'chat.reopenNotFound',
+      profile_deleting: 'chat.profileDeleting',
+      profile_not_found: 'chat.profileEnded',
+    };
+    this.say(t(said[code]), S);
+    if (code === 'profile_not_found') void this.refresh(); // 없어진 프로파일을 에이전트 목록에서 뺀다(디자인 3C)
+    this.notify();
+  }
+
+  /** 지우기가 닫은 대화(aas.disconnected profile_deleted, E5): 다시 열지 않고 「끝남」 줄, 에이전트 목록을 새로 읽는다 */
+  private ended(S: Session, ev: ChatEvent) {
+    this.stopReconnect(S);
+    this.closeStream(S);
+    applyEvent(S, ev);
+    this.lastAt[S.id] = Date.now();
+    this.say(t('chat.profileEnded'), S);
+    void this.refresh();
     this.notify();
   }
 
@@ -722,6 +747,7 @@ export class ChatStore {
 
   /** 「지금 다시 열기」·포기 뒤 「다시 열기」: 한도를 새로 시작해 바로 시도한다(DR10) */
   reopenNow(S: Session) {
+    if (S.ended) return; // 프로파일이 없어 다시 열 수 없다(디자인 3C)
     this.recent.delete(S.id);
     if (S.reconnect) {
       S.reconnect.tries = 0;
@@ -785,6 +811,7 @@ export class ChatStore {
       if ((S.lastSeq ?? 0) >= S.catchUp) this.endCatchUp(S);
       return;
     }
+    if (ev.type === 'aas.disconnected' && ev.payload?.code === 'profile_deleted') return this.ended(S, ev);
     if (ev.type === 'aas.disconnected') {
       // 서버와 Hermes 대시보드 사이가 끊겼다. 서버가 스스로 다시 붙으므로 기다리지 않고 다시 연다(R6·D6)
       this.reconnect(S, ev.payload?.code === 'hub_disconnected' ? 'hub' : 'aas');
@@ -841,6 +868,7 @@ export class ChatStore {
       return this.openSession(await post<SessionInfo>('/api/chat/session', { profile: this.profile, ...this.podBody() }), at);
     } catch (e) {
       this.notice = (e as Error).message;
+      if (e instanceof ApiError && e.data.code === 'profile_not_found') void this.refresh(); // 없어진 프로파일(재검토 R2-4) — 목록을 맞춘다
       this.notify();
       return null;
     }
@@ -888,7 +916,7 @@ export class ChatStore {
     const order = Object.keys(this.sessions); // 같은 시각이면 나중에 연 세션이 앞
     const rank = (r: SessionRow) => order.indexOf(r.id);
     return this.sessionRows()
-      .filter((r) => r.profile === want && (r.pod ?? '') === (where ?? '') && r.state !== 'closed')
+      .filter((r) => r.profile === want && (r.pod ?? '') === (where ?? '') && r.state !== 'closed' && r.state !== 'ended')
       .sort((x, y) => y.at - x.at || rank(y) - rank(x))[0];
   }
   /** 목록의 세션을 연다. 이 탭이 받는 세션이면 바로, 서버에만 있으면 붙어서 받는다 */
@@ -905,7 +933,7 @@ export class ChatStore {
       this.restoreDraft();
       this.follow();
       this.notify();
-      if (S.closed && !S.reconnect) this.reopenNow(S);
+      if (S.closed && !S.reconnect && !S.ended) this.reopenNow(S);
       return true;
     }
     const row = this.liveRows.find((r) => r.session_id === id);
@@ -1165,6 +1193,7 @@ export class ChatStore {
   }
   /** 세션 하나의 목록 상태 */
   stateOf(S: Session): SessionState {
+    if (S.ended) return 'ended';
     if (S.closed && !S.reconnect) return 'closed';
     if (pending(S).length) return 'waiting';
     if (S.busy || S.compressing) return 'running';
@@ -1198,7 +1227,7 @@ export class ChatStore {
         storedId: r.stored_id || undefined,
       });
     }
-    const rank: Record<SessionState, number> = { waiting: 0, running: 1, done: 2, idle: 2, closed: 3 };
+    const rank: Record<SessionState, number> = { waiting: 0, running: 1, done: 2, idle: 2, closed: 3, ended: 3 };
     return rows.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
   }
 
@@ -1286,6 +1315,7 @@ export class ChatStore {
     if ((!text && !files.length) || !this.profile) return 'empty';
     let S = this.current();
     if (S?.busy) return 'busy';
+    if (S?.ended) return 'rejected'; // 끝난 대화 — 새 대화는 에이전트를 골라 연다(디자인 3C). 없어진 프로파일로 새로 열지 않는다
     if (!S || S.closed) {
       S = await this.startSession();
       if (!S) return 'failed';

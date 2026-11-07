@@ -119,6 +119,14 @@ class SessionBusy(ChatUnavailable):
     """세션이 앞의 말에 아직 답하는 중이다. 스킬을 붙인 말은 펼치기 전에 거절한다(스펙 2026-10-19-012 R10)."""
 
 
+class ProfileDeleting(ChatUnavailable):
+    """그 프로파일을 지우는 중이라 대화를 열지 않는다(스펙 2026-11-07-001 E4). 화면은 code 로 「지우는 중」 줄을 보이고 다시 열기를 멈춘다.
+    ChatUnavailable 을 이어받아 회의 중계처럼 그것만 잡는 곳은 「못 엶」으로 다룬다."""
+
+
+DELETE_CLOSE_TOTAL = 15.0                                 # 지우기가 세션을 닫는 전체 상한(초). 세션마다 RPC 10초를 나란히 보낸다(2026-11-07-001 Section 4)
+
+
 def _why(exc: BaseException) -> str:
     """연결 실패의 원인. 예외 종류(과 있으면 운영체제 설명)만 쓴다. 주소·자격증명이 든 URL 은 넣지 않는다."""
     reason = getattr(exc, "reason", None) or exc
@@ -254,6 +262,8 @@ class ChatHub:
         self._connect = connect or (lambda: _default_connect(self.auth))
         self._ws = None
         self._lock = threading.RLock()
+        self._deleting: set[str] = set()                # 지우는 중인 프로파일 — create·resume 을 거절한다(2026-11-07-001 E4)
+        self.disconnected_at = 0.0                      # 마지막으로 Hermes 연결이 끊긴 시각(서버 시계). 다시 열 때 메모리 초과 판정 기준(E6)
         self._send_lock = threading.Lock()
         self._ids = itertools.count(1)
         self._pending: dict[str, Future] = {}
@@ -353,6 +363,7 @@ class ChatHub:
             with self._lock:
                 if self._ws is ws:
                     self._ws = None
+                    self.disconnected_at = time.time()
                 pending, self._pending = self._pending, {}
             for fut in pending.values():
                 if not fut.done():
@@ -568,6 +579,7 @@ class ChatHub:
         # follow_profile_config: Hermes 는 다시 연 세션을 처음 쓴 모델(sessions.model)에 고정한다. 이 표시가 있으면
         # 다시 열 때도 프로파일 설정(HERMES_LLM_MODEL)을 따른다. 없으면 기본 모델을 바꿔도 이어 쓰는 대화는 옛 별칭으로
         # 가서 가드레일을 거치지 않았다(OKE 2026-10-12, docs-plan/deploy/aas-litellm-model-and-guardrail.md §10-2).
+        self._refuse_deleting(profile)
         params = {"cols": 100, "source": "aas", "follow_profile_config": True}
         if profile and profile != "default":
             params["profile"] = profile
@@ -753,6 +765,7 @@ class ChatHub:
         """저장된 대화를 다시 연다. 이미 열려 있으면 그 세션을 돌려준다.
         같은 저장 대화의 요청은 하나씩 처리한다 — 서버가 다시 시작되면 탭들이 거의 동시에 다시 열어 Hermes 세션이 둘 생길 수 있었다(스펙 2026-10-20-030 R9).
         history: 이번에 aas.history 를 보냈는가. 화면은 거짓이면 받던 번호 뒤부터, 참이면 처음부터 받는다(4-4)."""
+        self._refuse_deleting(profile)
         with self._lock:
             running = self._resuming.get(stored_id)
             mine = running is None
@@ -856,6 +869,8 @@ class ChatHub:
                 continue
             rows.append({**{k: m.get(k) for k in ("role", "text", "name", "context", "timestamp")},
                          **({"guard": str(m["guard"])} if m.get("role") == "tool" and m.get("guard") else {}),
+                         # 실패·LLM 가드 막힘(패치 history-tool-guard, 스펙 2026-11-07-001 E1·DT5) — 참일 때만 넘긴다
+                         **{k: True for k in ("llm_blocked", "failed") if m.get("role") == "tool" and m.get(k) is True},
                          **({"args": m["args"]} if m.get("name") == "clarify" and isinstance(m.get("args"), dict) else {})})
         return rows
 
@@ -1140,6 +1155,96 @@ class ChatHub:
                 if remaining <= 0:
                     return []
                 self._cond.wait(remaining)
+
+    # ---- 프로파일 지우기(스펙 2026-11-07-001 ③, 리뷰 E3·E4·E5) ----
+    def _refuse_deleting(self, profile: str) -> None:
+        if (profile or "default") in self._deleting:
+            raise ProfileDeleting(tr("이 프로파일을 지우는 중입니다", "This profile is being deleted"))
+
+    def _delete_busy(self, sid: str, meta: dict) -> bool:
+        """지우기가 닫지 않고 거절하는 세션: 답하는 중·사용자 답 대기·뒤에서 일함(목표·반복·하트비트·resting). 쉬는 회의 중계는 닫는다(E3)."""
+        return self.session_state(sid) in ("running", "waiting") or self._working(meta)
+
+    def open_sessions(self, profile: str) -> list[str]:
+        """그 프로파일의 닫히지 않은 세션(숨김·회의 중계 포함). 지우기 확인 화면의 「열린 대화 N개」(디자인 3D·재검토 R2-3)."""
+        with self._lock:
+            return [sid for sid, m in self.sessions.items() if m.get("profile") == profile and not m.get("closed")]
+
+    def busy_sessions(self, profile: str) -> list[dict]:
+        """지우기를 막는 세션 목록 [{title, kind}] — kind 는 relay(회의 중계)·chat. 제목은 앞 40자(디자인 5C)."""
+        with self._lock:
+            return [{"title": str(m.get("title") or "")[:40], "kind": "relay" if m.get("relay") else "chat"}
+                    for sid, m in self.sessions.items()
+                    if m.get("profile") == profile and not m.get("closed") and self._delete_busy(sid, m)]
+
+    def begin_delete(self, profile: str) -> list[dict]:
+        """지우는 중 표시를 세운다. 그 사이 일하기 시작한 세션이 있으면 표시를 거두고 그 목록을 돌려준다(빈 목록이면 진행)."""
+        with self._lock:
+            self._deleting.add(profile)
+            busy = self.busy_sessions(profile)
+            if busy:
+                self._deleting.discard(profile)
+            return busy
+
+    def end_delete(self, profile: str) -> None:
+        with self._lock:
+            self._deleting.discard(profile)
+
+    def close_for_delete(self, profile: str, total: float | None = None) -> list[str]:
+        """그 프로파일의 쉬는 세션을 닫는다(Hermes 세션도). 보던 화면에는 아직 알리지 않는다 — 지우기가 끝난 뒤 announce_closed 로
+        profile_deleted(다시 열지 않음, E5)를, 실패하면 보통 끊김을 보낸다. 먼저 알리면 화면이 에이전트 목록을 다시 읽을 때 아직 프로파일이
+        있어 채팅 왼쪽 줄에 남았고(2026-11-07 OKE 실화면), 지우기가 실패해도 「없어져 끝남」으로 보였다.
+        닫기 RPC 를 나란히 보내고 total 초까지 **기다린다** — prune 처럼 뒤로 보내면 닫히기 전에 지우기가 시작돼 NFS 에서 EBUSY 가 날 수 있다
+        (리뷰 Section 1). 제한 안에 답이 없는 것이 있으면 ChatUnavailable — 부르는 쪽은 지우지 않는다. Hermes 가 오류로 답한 것(이미 없는 세션 등)은
+        닫힌 것으로 본다. 세션 정보는 지우지 않고 closed 로만 둔다 — 회의 중계(_live_ok)가 closed 를 보고 새로 연다. 닫은 세션 목록."""
+        with self._lock:
+            sids = [sid for sid in self.open_sessions(profile)]
+            for sid in sids:
+                self.sessions[sid]["closed"] = True
+                self.sessions[sid].pop("running", None)
+        if not sids:
+            return []
+        futures = []
+        for sid in sids:
+            fut: Future = Future()
+            futures.append(fut)
+
+            def run(sid=sid, fut=fut):
+                try:
+                    self.request("session.close", {"session_id": sid}, timeout=10)
+                except Exception:                             # noqa: BLE001 — Hermes 가 답했다(이미 닫힘 등). 답 없음만 실패로 센다
+                    pass
+                fut.set_result(True)
+            threading.Thread(target=run, daemon=True, name="aas-chat-delete-close").start()
+        deadline = time.time() + (DELETE_CLOSE_TOTAL if total is None else total)
+        for fut in futures:
+            try:
+                fut.result(timeout=max(0.0, deadline - time.time()))
+            except FutureTimeout:
+                raise ChatUnavailable(tr("열린 대화를 닫지 못해 지우지 않았습니다. 잠시 뒤 다시 하세요",
+                                         "Could not close the open chats, so nothing was deleted. Try again shortly")) from None
+        return sids
+
+    def announce_closed(self, sids: list[str], deleted: bool) -> None:
+        """close_for_delete 가 닫은 세션을 보던 화면에 알린다. deleted 면 profile_deleted(끝남, 다시 열지 않음), 아니면 지우기가 실패해
+        프로파일이 남았으니 보통 끊김(hub_disconnected) — 화면이 다시 연다."""
+        for sid in sids:
+            if deleted:
+                self._push(sid, "aas.disconnected", {"code": "profile_deleted",
+                                                      "text": tr("이 프로파일이 없어져 대화가 끝났습니다", "This profile no longer exists, so the chat has ended")})
+            else:
+                self._push(sid, "aas.disconnected", {"code": "hub_disconnected",
+                                                      "text": tr("대화가 닫혔습니다. 다시 엽니다.", "The chat was closed. Reopening.")})
+
+    def notice_once(self, sid: str, key: str, payload: dict) -> bool:
+        """그 세션에 aas.notice 를 한 번만 넣는다(같은 세션을 다시 돌려받아도 겹치지 않게). 넣었으면 참."""
+        with self._lock:
+            meta = self.sessions.get(sid)
+            if meta is None or key in meta.setdefault("notices", set()):
+                return False
+            meta["notices"].add(key)
+        self._push(sid, "aas.notice", payload)
+        return True
 
     def session_state(self, sid: str) -> str:
         """세션 목록의 상태: waiting(되묻기·승인이 사용자 답을 기다림) > running(답하는 중) > idle. 닫힌 세션은 closed."""

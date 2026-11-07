@@ -86,6 +86,70 @@ def _same_gateway(base_url: str) -> bool:
     return (host.get(a.hostname or "", a.hostname), a.port) == (host.get(b.hostname or "", b.hostname), b.port)
 
 
+# 프로파일이 쓰는 LLM 주소가 AAS LiteLLM 이 아니면 「허용되지 않은 경로」(OMAI-1857, 스펙 2026-11-06-005 M2·디자인 D5·D19).
+# 사용자 Hermes 이미지의 가드(AAS_LLM_ALLOWED_BASE_URLS)가 이 호출을 403 으로 막는다 — 막히기 전에 화면에서 먼저 보인다.
+# 오퍼레이터 자리표시자 ${HERMES_LLM_BASE_URL} 은 서버에 값이 없어 풀리지 않아도 LiteLLM 으로 본다(가드 허용 목록과 같은 값).
+GATEWAY_REF = "${HERMES_LLM_BASE_URL}"
+_OWN_PROVIDERS = {"", "custom", "auto"}
+
+
+def blocked_host(base_url: str, provider: str = "") -> str:
+    """막히는 경로면 보일 주소(host:port, 주소가 없으면 제공자 이름), 아니면 빈 글. LiteLLM 주소를 모르면 판정하지 않는다."""
+    if not api_base():
+        return ""
+    if not base_url:
+        # 주소 없이 이름 있는 제공자(openrouter·anthropic 등)는 그 회사 주소로 바로 나간다
+        return provider if provider.lower() not in _OWN_PROVIDERS else ""
+    if GATEWAY_REF in base_url or _same_gateway(base_url):
+        return ""
+    u = urlsplit(base_url)
+    if not u.hostname:
+        return ""
+    return f"{u.hostname}:{u.port or (443 if u.scheme == 'https' else 80)}"
+
+
+def _resolve_named(r: dict, named: dict[str, str]) -> dict:
+    """provider: custom:<이름> 의 주소를 Hermes 처럼 providers.<이름>·custom_providers 의 같은 이름에서 찾는다. 오퍼레이터 표준 설정이
+    이 꼴이다(주소는 providers.litellm.api 의 ${HERMES_LLM_BASE_URL}). 이름을 못 찾으면 판정하지 않는다(custom 으로 본다) —
+    Hermes 도 그 제공자로 부르지 못하므로 밖으로 나가는 길이 아니다."""
+    prov = r.get("provider", "")
+    if r.get("base_url") or not prov.lower().startswith("custom:"):
+        return r
+    return {**r, "base_url": named.get(prov.split(":", 1)[1], ""), "provider": "custom"}
+
+
+def _route_refs(cfg: dict) -> list[tuple[str, dict]]:
+    """(역할, 참조) — 주·폴백·보조. 주소가 없는 폴백·보조는 주 모델 주소를 따른다(다른 판정과 같음)."""
+    named = cfg.get("named_urls") or {}
+    prim = _resolve_named(cfg["primary"], named) if cfg.get("primary") else None
+    out = [("primary", prim)] if prim else []
+    out += [("fallback", _resolve_named(f, named)) for f in cfg.get("fallbacks") or []]
+    out += [("auxiliary", _resolve_named(a, named)) for a in cfg.get("auxiliary") or []]
+    base = (prim or {}).get("base_url", "")
+    return [(role, {**r, "base_url": r.get("base_url") or ("" if r.get("provider", "").lower() not in _OWN_PROVIDERS else base)}) for role, r in out]
+
+
+def routes_of(cfg: dict) -> list[dict]:
+    """프로파일 설정(_profile_config 결과)의 막히는 경로: [{model, role, host}]. 같은 (모델, 주소)는 한 번."""
+    seen, out = set(), []
+    for role, r in _route_refs(cfg):
+        host = blocked_host(r.get("base_url", ""), r.get("provider", ""))
+        if host and (r["model"], host) not in seen:
+            seen.add((r["model"], host))
+            out.append({"model": r["model"], "role": role, "host": host})
+    return out
+
+
+def blocked_routes(home=None) -> list[dict]:
+    """작업공간 하나의 막히는 경로: [{profile, model, role, host}]. config.yaml 만 읽고 LiteLLM 에 묻지 않는다(관리자 받은편지함용, 재검토 M4·#6)."""
+    out = []
+    for prof in hr.profiles(home):
+        cfg = _profile_config(prof)[0]
+        if cfg.get("has_config"):
+            out += [{"profile": prof.name, **r} for r in routes_of(cfg)]
+    return out
+
+
 # 쿠버네티스 오퍼레이터가 만드는 에이전트 설정은 모델·주소를 환경변수 자리표시자로 적는다(Hermes 가 실행할 때 푼다).
 # 서버에도 같은 이름의 값이 있으면 풀어서 보인다. 키(${HERMES_LLM_API_KEY})는 풀지 않는다.
 _PLACEHOLDER = re.compile(r"\$\{(HERMES_LLM_MODEL|HERMES_LLM_BASE_URL)\}")
@@ -140,13 +204,19 @@ def _profile_config(prof: hr.Profile) -> tuple[dict, str]:
         raw = str(p.get("api_key") or "")
         if not key and raw and "${" not in raw and _same_gateway(str(p.get("base_url") or "")):
             key = raw
+    # custom:<이름> 제공자의 주소(막힌 경로 판정용, _resolve_named). Hermes 는 providers 의 api·base_url 과 custom_providers 의 base_url 을 쓴다
+    named = {str(n): str(p.get("api") or p.get("base_url") or "") for n, p in (cfg.get("providers") or {}).items() if isinstance(p, dict)}
+    for c in cfg.get("custom_providers") or []:
+        if isinstance(c, dict) and c.get("name") and str(c["name"]) not in named:
+            named[str(c["name"])] = str(c.get("base_url") or c.get("api") or "")
+    named = {n: (u if "${" in u else clean_url(u)) for n, u in named.items() if u}
     aux = []
     for task, a in (cfg.get("auxiliary") or {}).items():
         if isinstance(a, dict) and str(a.get("model") or "").strip():
             aux.append({"task": str(task), **(_ref(a) or {})})
     return {"has_config": True, "primary": _ref(cfg.get("model")),
             "fallbacks": [r for r in (_ref(f) for f in fallbacks) if r],
-            "declared": declared, "auxiliary": aux}, key
+            "declared": declared, "auxiliary": aux, "named_urls": named}, key
 
 
 def fetch_litellm(key: str, key_source: str) -> dict:
@@ -248,6 +318,7 @@ def collect(health: dict | None = None, home=None) -> dict:
                 jobs_.append(row["job"])
 
     usage: dict[str, dict] = {}
+    blocked_by: dict[str, dict[str, str]] = {}          # 모델 → {프로파일: 막힌 주소}. 프로파일 하나라도 막히면 그 모델 줄이 빨강(D19)
 
     def use(model: str, role: str, name: str):
         usage.setdefault(model, {"primary": [], "fallback": [], "auxiliary": [], "cron": []})[role].append(name)
@@ -302,6 +373,11 @@ def collect(health: dict | None = None, home=None) -> dict:
             stale = sorted({m for d in p["declared"] if _same_gateway(d["base_url"]) for m in d["models"]} - known)
             if stale:
                 p["issues"].append({"level": "warn", "text": tr("제공자 목록에 적혀 있으나 LiteLLM 에 없는 모델: ", "Models listed for the provider but missing in LiteLLM: ") + ", ".join(stale)})
+        p["blocked_routes"] = routes_of(p)
+        for r in p["blocked_routes"]:
+            blocked_by.setdefault(r["model"], {}).setdefault(p["name"], r["host"])
+            p["issues"].append({"level": "bad", "text": tr(f"허용되지 않은 경로({r['host']}) — `{r['model']}` 이 LiteLLM 을 거치지 않음(가드레일·사용량 집계 밖)",
+                                                            f"Route not allowed ({r['host']}): `{r['model']}` does not go through LiteLLM (outside the guardrail and usage tracking)")})
         if p["name"] in traces:
             jobs_txt = ", ".join(traces[p["name"]][:4])
             if p["fallbacks"]:
@@ -320,6 +396,11 @@ def collect(health: dict | None = None, home=None) -> dict:
     skip = excluded_models() if prefix else set()
     models += [{"id": m, "in_litellm": (m in known) if known is not None else None, "aas_model": is_aas_model(m, prefix), **u}
                for m, u in sorted(usage.items()) if m not in set(gw["models"]) and m not in skip]
+    for m in models:
+        hit = blocked_by.get(m["id"]) or {}
+        m["blocked_route"] = bool(hit)
+        if hit:
+            m["blocked_profiles"] = [{"profile": k, "host": v} for k, v in sorted(hit.items())]
     from ..fleet.profiles import default_model
     return {"collected_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "litellm": gw, "models": models,
             "profiles": profiles, "default_model": default_model(),     # 화면의 「기본 모델」 뱃지(2026-10-18)
@@ -327,6 +408,7 @@ def collect(health: dict | None = None, home=None) -> dict:
                        "profiles_with_bad": sum(1 for p in profiles if any(i["level"] == "bad" for i in p["issues"])),
                        "profiles_with_warn": sum(1 for p in profiles if p["issues"]),
                        "fallback_trace_jobs": sum(len(v) for v in traces.values()),
+                       "blocked_routes": sum(len(p.get("blocked_routes") or []) for p in profiles),
                        "unused_models": sum(1 for m in models if m["in_litellm"] and not any(m[k] for k in ("primary", "fallback", "auxiliary", "cron")))}}
 
 

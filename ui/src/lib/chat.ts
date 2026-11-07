@@ -9,6 +9,7 @@ import { hasKey, t } from '@/i18n';
 import { parseNotice } from './attachNotice';
 import { FileRef } from './chatFiles';
 import { zonedDate } from './format';
+import { isLlmBlocked, isLlmBlockedTool } from './llmBlock';
 
 export type ItemKind =
   | 'user'
@@ -37,6 +38,13 @@ export interface Item {
   ms?: number;
   /** 안전장치(hardline·운영자 거절 규칙)가 이 도구 실행을 막은 이유(스펙 2026-10-24-004) */
   guard?: string;
+  /** 오류 줄: LLM 가드가 막은 호출(OMAI-1857 D17). 화면이 모델 변경 요청 단추를 붙인다.
+   *  도구 줄: 실패한 도구 결과에 가드 구절이 있다(스펙 2026-11-07-001 E2) — 단계 묶음 뒤에 안내 줄 하나가 붙는다(1A) */
+  llmBlocked?: boolean;
+  /** 도구 줄: 실패 이유(result.error 첫 줄 80자, 디자인 2D) */
+  failReason?: string;
+  /** notice oom_restart: 작업공간이 메모리 초과로 다시 시작된 시각·한도(스펙 2026-11-07-001 ①, 디자인 5A) */
+  oom?: OomInfo;
   // 승인·되묻기
   p?: Record<string, unknown>;
   answered?: string | null;
@@ -107,6 +115,12 @@ export interface Control {
   resting?: boolean;
 }
 
+/** 메모리 초과로 다시 시작한 기록(서버 aas.notice oom_restart·resume 오류 본문의 oom) */
+export interface OomInfo {
+  finished_at: string;
+  limit_memory: string;
+}
+
 export interface Session {
   id: string;
   profile: string;
@@ -159,6 +173,8 @@ export interface Session {
   flash?: { text: string; until: number };
   /** /retry 를 되감았지만 다시 보내지 못했다 — 호박색 줄, 질문은 입력창에(DC9) */
   retryFailed?: boolean;
+  /** 프로파일이 없어져 끝난 대화(profile_deleted·profile_not_found, 스펙 2026-11-07-001 E5·디자인 3C·R2-4). 다시 열지 않고 입력창을 끈다 */
+  ended?: boolean;
 }
 
 export interface Reconnect {
@@ -173,6 +189,8 @@ export interface Reconnect {
   paused?: boolean;
   /** 지금 요청 중 */
   inflight?: boolean;
+  /** resume 오류 본문이 준 메모리 초과 원인(재검토 R2-1). 끝내 포기하면 실패 줄 위에 원인 줄을 둔다(디자인 2A) */
+  oom?: OomInfo;
 }
 
 export interface SessionInfo {
@@ -269,7 +287,19 @@ function historyItems(msgs: Record<string, any>[], S: Session): Item[] { // esli
     else if (m.role === 'tool') {
       // guard: 안전장치가 막은 도구 줄(Hermes 패치 history-tool-guard, 스펙 2026-10-24-004 6절)
       const guard = typeof m.guard === 'string' && m.guard ? m.guard : '';
-      out.push({ kind: 'tool', id: null, name: m.name || 'tool', context: m.context || '', state: guard ? 'failed' : 'done', t: ts, ...(guard ? { guard } : {}) });
+      // llm_blocked·failed: 같은 패치가 실시간과 같은 실패 정의(E8)·가드 구절(E2)로 넘긴다(E1·디자인 2C, 롤아웃 전에는 오지 않는다)
+      const llmBlocked = m.llm_blocked === true;
+      const failed = !!guard || llmBlocked || m.failed === true;
+      out.push({
+        kind: 'tool',
+        id: null,
+        name: m.name || 'tool',
+        context: m.context || '',
+        state: failed ? 'failed' : 'done',
+        t: ts,
+        ...(guard ? { guard } : {}),
+        ...(llmBlocked && !guard ? { llmBlocked: true } : {}),
+      });
     }
   }
   return out;
@@ -348,8 +378,14 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     // 저절로 다시 열기를 그만뒀다(R5). 찾지 못함(404)이면 「새 대화」, 아니면 「다시 열기」(DR4)
     S.busy = false;
     S.closed = true;
-    const gone = p.code === 'not_found';
-    push({ kind: 'error', text: gone ? t('chat.reopenNotFound') : t('chat.reopenFailed'), ...(gone ? { newChat: true } : { reopen: true }) });
+    if (p.code === 'profile_not_found') endSession(S); // 알림을 놓친 탭(재검토 R2-4) — 지워졌거나 이름이 바뀌었다
+    else if (p.code === 'profile_deleting') push({ kind: 'notice', code: 'profile_deleting' }); // 지우는 중(디자인 2E) — 다시 열지 않는다
+    else {
+      // 메모리 초과로 다시 시작했다면 원인 줄을 실패 줄 위에(디자인 2A)
+      if (p.oom && typeof p.oom === 'object') pushOom(S, p.oom as Record<string, unknown>);
+      const gone = p.code === 'not_found';
+      push({ kind: 'error', text: gone ? t('chat.reopenNotFound') : t('chat.reopenFailed'), ...(gone ? { newChat: true } : { reopen: true }) });
+    }
   } else if (T === 'aas.user') {
     S.streamed = false;
     const files = Array.isArray(p.files) ? (p.files as FileRef[]) : [];
@@ -392,6 +428,11 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     S.queueHeld = !!p.held;
     if (S.queue.length) S.queueLost = 0;
     return true;
+  } else if (T === 'aas.notice' && p.code === 'oom_restart') {
+    // 메모리 초과로 다시 시작해 다시 연 대화(E6). 앞선 빨간 끊김 줄은 회색 한 줄로 바꾼다(디자인 1C)
+    const hub = lastOf(S.items, (x) => x.kind === 'error' && x.code === 'hub_disconnected');
+    if (hub) Object.assign(hub, { kind: 'notice', code: 'reconnected', text: undefined, reopen: undefined });
+    if (!pushOom(S, p)) return true;
   } else if (T === 'aas.notice') {
     push({ kind: 'notice', code: str(p.code), ...(p.code === 'skill_failed' ? { name: str(p.name), reason: str(p.reason) } : {}) });
   } else if (T === 'message.start') S.busy = true;
@@ -400,7 +441,7 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     S.streamed = true;
   } else if (T === 'message.complete') {
     S.busy = false;
-    if (p.status === 'error') push({ kind: 'error', text: p.text || t('chat.errorDefault') });
+    if (p.status === 'error') pushError(S, p.text || t('chat.errorDefault'));
     else if (p.text && !S.streamed) push({ kind: 'assistant', text: p.text });
     else if (p.text) {
       // 답하는 중에 다른 서버로 다시 열리면 그 뒤의 조각만 온다. 끝 글이 받은 글로 끝나면 앞을 놓친 것 — 전체로 바꾼다(스펙 2026-10-20-030 T11)
@@ -439,9 +480,14 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     const it = lastOf(S.items, (x) => x.kind === 'tool' && x.id === p.tool_id);
     if (it) {
       const guard = guardBlockReason(p.result);
-      it.state = guard || p.error || p.status === 'error' ? 'failed' : 'done';
+      // 실패 판정은 결과 안의 칸으로 한다(E8). 맨 위 p.error·p.status 는 상류 ToolCompletePayload 에 없다 — 해가 없어 대비로만 둔다(외부 검토 M1)
+      const o = toolOutcome(p.result, p.error);
+      const failed = !!guard || o.failed || !!p.error || p.status === 'error';
+      it.state = failed ? 'failed' : 'done';
       it.ms = Date.now() - (it.t0 ?? Date.now());
       if (guard) it.guard = guard;
+      else if (failed && o.llmBlocked) it.llmBlocked = true;
+      if (failed && o.reason) it.failReason = o.reason;
     }
   } else if (T === 'approval.request') {
     S.streamed = false;
@@ -492,11 +538,17 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
     if (it) it.answered = Array.isArray(p.answer) ? p.answer.join(', ') : String(p.answer);
   } else if (T === 'error') {
     S.busy = false;
-    push({ kind: 'error', text: p.message || p.text || JSON.stringify(p) });
+    pushError(S, p.message || p.text || JSON.stringify(p));
+  } else if (T === 'aas.disconnected' && p.code === 'profile_deleted') {
+    // 지우기가 닫은 대화(E5): 다시 열지 않고 「끝남」 줄(디자인 3C)
+    S.busy = false;
+    S.closed = true;
+    endSession(S);
   } else if (T === 'aas.disconnected') {
     S.busy = false;
     S.closed = true;
-    push({ kind: 'error', text: p.code === 'hub_disconnected' ? t('chat.hubDisconnected') : p.text, reopen: true });
+    const hub = p.code === 'hub_disconnected';
+    push({ kind: 'error', text: hub ? t('chat.hubDisconnected') : p.text, reopen: true, ...(hub ? { code: 'hub_disconnected' } : {}) });
   } else return false;
 
   for (let i = n0; i < S.items.length; i++) if (!S.items[i].t) S.items[i].t = Date.now();
@@ -521,6 +573,65 @@ const dayOf = (ts: number) => {
 /** 도구 결과가 안전장치 차단이면 그 이유, 아니면 빈 값(스펙 2026-10-24-004). Hermes 터미널 결과의 status 'blocked' 중
  *  hardline(「BLOCKED (hardline): <이유>.」)과 운영자 거절 규칙(「user-defined deny rule '<규칙>'」)만 본다 —
  *  사용자의 승인 거부·위험 판정 거절은 표시하지 않는다. 결과는 객체나 JSON 글로 온다. */
+/** 오류 줄. LLM 가드 거절이면 번역 안내로 바꾸고 llmBlocked 를 단다 — 모델 변경 요청 단추가 붙는다(D17).
+ *  예비 모델(fallback)까지 막혀 거절이 연달아 와도 안내는 한 줄(바로 앞 줄이 같은 안내면 넣지 않는다) */
+function pushError(S: Session, text: string) {
+  if (!isLlmBlocked(text)) {
+    S.items.push({ kind: 'error', text });
+    return;
+  }
+  // 턴 단위로 한 번(디자인 1A): 같은 턴에 가드 안내 줄이나 가드에 막힌 도구 줄(묶음 뒤 안내가 붙는다)이 있으면 넣지 않는다
+  if (turnItems(S.items).some((x) => x.llmBlocked)) return;
+  S.items.push({ kind: 'error', text: t('chat.llmBlocked'), llmBlocked: true });
+}
+
+/** 마지막 턴(마지막 사람 말·Hermes 가 시작한 턴 줄 뒤)의 항목 */
+function turnItems(items: Item[]): Item[] {
+  for (let i = items.length - 1; i >= 0; i--) if (items[i].kind === 'user' || (items[i].kind === 'divider' && items[i].code === 'auto')) return items.slice(i + 1);
+  return items;
+}
+
+/** 메모리 초과 원인 줄을 넣는다. 같은 기록(finished_at)이면 넣지 않는다 — 다시 받은 이벤트·실패 경로가 겹쳐도 한 번(디자인 1C). 넣었으면 참 */
+function pushOom(S: Session, p: Record<string, unknown>): boolean {
+  const oom: OomInfo = { finished_at: str(p.finished_at), limit_memory: str(p.limit_memory) };
+  if (!oom.finished_at || S.items.some((x) => x.kind === 'notice' && x.code === 'oom_restart' && x.oom?.finished_at === oom.finished_at)) return false;
+  S.items.push({ kind: 'notice', code: 'oom_restart', oom });
+  return true;
+}
+
+/** 프로파일이 없어져 끝난 대화(디자인 3C). 줄은 한 번 */
+function endSession(S: Session) {
+  S.ended = true;
+  if (!S.items.some((x) => x.kind === 'notice' && x.code === 'profile_ended')) S.items.push({ kind: 'notice', code: 'profile_ended' });
+}
+
+/** 도구 결과의 실패 판정(E8)과 LLM 가드 막힘(E2). 결과는 객체나 JSON 글로 온다(Hermes 터미널 결과는 JSON — output·exit_code).
+ *  실패: success === false · error 가 빈 글이 아님 · exit_code 가 0 이 아닌 수 · status === 'error'. JSON 이 아닌 글은 실패를 알 수 없어
+ *  fallbackError(맨 위 p.error)가 있을 때만 실패로 보고 그 글을 output 으로 본다. reason 은 error 첫 줄 80자(디자인 2D) */
+export function toolOutcome(result: unknown, fallbackError?: unknown): { failed: boolean; llmBlocked: boolean; reason: string } {
+  let r: unknown = result;
+  if (typeof r === 'string') {
+    try {
+      r = JSON.parse(r);
+    } catch {
+      r = { output: r };
+    }
+  }
+  const o = (r && typeof r === 'object' ? r : {}) as { success?: unknown; error?: unknown; exit_code?: unknown; status?: unknown; output?: unknown; stderr?: unknown };
+  const errText = typeof o.error === 'string' && o.error.trim() ? o.error : typeof fallbackError === 'string' ? fallbackError : '';
+  const failed =
+    o.success === false ||
+    (typeof o.error === 'string' && !!o.error.trim()) ||
+    (typeof o.exit_code === 'number' && o.exit_code !== 0) ||
+    o.status === 'error' ||
+    !!fallbackError;
+  return {
+    failed,
+    llmBlocked: isLlmBlockedTool(failed, { error: errText, output: o.output, stderr: o.stderr }),
+    reason: failed ? (errText.trim().split('\n')[0] ?? '').trim().slice(0, 80) : '',
+  };
+}
+
 export function guardBlockReason(result: unknown): string {
   let r = result;
   if (typeof r === 'string') {
@@ -547,9 +658,16 @@ export function groupItems(S: Session): Block[] {
   let g: { idx: number; items: Item[] } | null = null;
   let gi = 0;
   let attach = false; // 첨부가 있는 턴의 단계는 펼친 채 시작한다(D15)
+  let blockShown = false; // 이 턴에 LLM 가드 안내가 이미 있다(디자인 1A — 턴 단위로 한 번)
   const flush = (live: boolean) => {
     if (g) {
       out.push({ type: 'steps', idx: g.idx, items: g.items, live, attach });
+      // 가드에 막힌 도구가 있으면 접힌 묶음 바깥 바로 뒤에 도구용 안내 줄 하나(디자인 1A·3B)
+      const blocked = !blockShown && g.items.find((x) => x.kind === 'tool' && x.llmBlocked);
+      if (blocked) {
+        blockShown = true;
+        out.push({ type: 'item', item: { kind: 'error', llmBlocked: true, code: 'tool_blocked', name: blocked.name, text: t('chat.toolLlmBlocked', { tool: blocked.name || 'tool' }) }, cont: false });
+      }
       g = null;
       prev = 'steps';
     }
@@ -562,6 +680,11 @@ export function groupItems(S: Session): Block[] {
     }
     flush(false);
     if (it.kind === 'user') attach = !!it.files?.length;
+    if (it.kind === 'user' || (it.kind === 'divider' && it.code === 'auto')) blockShown = false;
+    if (it.kind === 'error' && it.llmBlocked) {
+      if (blockShown) continue; // 같은 턴에 안내가 이미 있다
+      blockShown = true;
+    }
     if (it.t && (it.kind === 'user' || it.kind === 'assistant')) {
       const d = dayOf(it.t);
       if (d !== day) {

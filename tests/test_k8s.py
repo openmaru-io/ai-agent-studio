@@ -469,6 +469,22 @@ class ServerApiTest(K8sBase):
         FakeAPI.agents = {"hag-a": agent("hag-a", "a@x.com"), "hag-b": agent("hag-b", "b@x.com")}
         self.reg = pods.Registry(Path(TMP.name) / "없는-등록부.json")
 
+    def test_목록의_메모리_초과_안내는_닫으면_빠진다(self):
+        # 스펙 2026-11-06-005 디자인 D3·D21: 행마다 oom, 이 사람이 확인한 것은 None
+        from datetime import datetime, timedelta, timezone
+        from aas.ops import workspace_notices
+        ended = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        FakeAPI.agents["hag-a"] = agent("hag-a", "a@x.com", lastTermination={"container": "hermes", "reason": "OOMKilled", "exitCode": 137, "finishedAt": ended, "limitMemory": "4Gi"})
+        self.reg.refresh(ttl=0)
+        row = server._agents_list(self.reg, {"email": "a@x.com"}, True)["agents"][0]
+        self.assertEqual((row["oom"] or {}).get("limit_memory"), "4Gi")
+        workspace_notices.ack("a@x.com", row["oom"]["id"])
+        try:
+            self.assertIsNone(server._agents_list(self.reg, {"email": "a@x.com"}, True)["agents"][0]["oom"])
+        finally:
+            with workspace_notices._conn() as conn:
+                conn.execute("DELETE FROM workspace_notice_ack")
+
     def test_목록은_관리자는_전부_사용자는_내_것만(self):
         admin = server._agents_list(self.reg, {"email": "admin@x.com"}, True)
         self.assertEqual((admin["enabled"], admin["can_create"], [a["name"] for a in admin["agents"]]), (True, True, ["hag-a", "hag-b"]))

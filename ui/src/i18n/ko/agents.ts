@@ -5,6 +5,11 @@
 
 export default {
   'agents.phaseReady': '사용할 수 있음',
+  'agents.oomPill': '메모리 초과로 재시작',
+  'agents.oomLine1': '메모리 한도 {limit}를 넘어 {at} 에 다시 시작됨',
+  'agents.oomLine2': '그때 진행 중이던 대화·작업은 중단되었습니다.',
+  'agents.oomSizeLink': '크기 바꾸기',
+  'agents.oomClose': '메모리 초과 안내 닫기',
   'agents.limitReset': '{owner} 의 AI 에이전트 작업공간 한도를 기본값({n}개)으로 되돌렸습니다',
   'agents.phasePending': '준비 중',
   'agents.phaseProvisioning': '만드는 중',

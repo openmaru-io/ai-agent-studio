@@ -85,7 +85,41 @@ def view(item: dict) -> dict:
             "updating": bool((meta.get("annotations") or {}).get("aas.openmaru.io/rollout-updating")),
             # 노드 자리가 없어 파드가 기다린다(오퍼레이터 status.waitReason, 스펙 2026-10-30-003 §4-2a), spec 의 크기 다섯 칸(§4-8)
             "wait_reason": str(status.get("waitReason") or ""), "size": spec_size(item),
+            # hermes 컨테이너의 마지막 비정상 종료(오퍼레이터 status.lastTermination, 스펙 2026-11-06-005 §5 O1). 안내 여부는 oom_notice
+            "last_termination": _last_termination(status),
             "busy": _busy(item)}                                # 대화 중(busy-until). 크기 저장 확인 창의 목록이 보인다(3A)
+
+
+def _last_termination(status: dict) -> dict | None:
+    t = status.get("lastTermination")
+    if not isinstance(t, dict) or not t.get("finishedAt"):
+        return None
+    return {"container": str(t.get("container") or ""), "reason": str(t.get("reason") or ""), "exit_code": int(t.get("exitCode") or 0),
+            "finished_at": str(t["finishedAt"]), "limit_memory": str(t.get("limitMemory") or "")}
+
+
+OOM_NOTICE_DAYS = 7
+
+
+def oom_notice(row: dict, now=None) -> dict | None:
+    """작업공간 화면 값(view) → 메모리 초과 안내 또는 None(스펙 2026-11-06-005 디자인 D8).
+    OOMKilled 이고, 끝난 지 7일 안이고, 지금 spec 의 메모리 한도가 그때 한도보다 크지 않을 때만. 사람별 [닫기]는 부르는 쪽이 거른다.
+    지금 한도를 모르면(spec 에 없음 — 오퍼레이터 기본값) 그때 한도로 본다(늘린 적이 없다)."""
+    from datetime import datetime, timedelta, timezone
+    t = row.get("last_termination") or {}
+    if t.get("reason") != "OOMKilled":
+        return None
+    try:
+        ended = datetime.fromisoformat(str(t["finished_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+    now = now or datetime.now(timezone.utc)
+    if now - ended > timedelta(days=OOM_NOTICE_DAYS):
+        return None
+    then, cur = qty(t.get("limit_memory")), qty(((row.get("size") or {}).get("memory_limit")))
+    if then is not None and cur is not None and cur > then:
+        return None
+    return {"id": f"oom|{row.get('name', '')}|{t['finished_at']}", "finished_at": t["finished_at"], "limit_memory": t.get("limit_memory") or ""}
 
 
 def _busy(item: dict) -> bool:

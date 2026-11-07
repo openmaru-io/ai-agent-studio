@@ -48,6 +48,8 @@ class FakeWS:
             self.reply(rid, {"session_id": "s1", "resumed": p["session_id"], "running": False, "messages": [
                 {"role": "user", "text": "첫 질문\n둘째 줄", "row_id": 1},
                 {"role": "tool", "name": "terminal", "context": "ls", "args": "{'x': 'SECRET'}", "guard": "recursive delete of Hermes data (/opt/data)"},
+                {"role": "tool", "name": "text_to_speech", "context": "", "llm_blocked": True, "failed": True},
+                {"role": "tool", "name": "terminal", "context": "x", "llm_blocked": "yes", "failed": 1},
                 {"role": "assistant", "text": "답"}, {"role": "system", "text": "숨김"}]})
         elif m == "boom":
             self.inbox.put(json.dumps({"id": rid, "error": {"code": 5000, "message": "안 됨"}}))
@@ -174,7 +176,11 @@ class ChatHubTest(unittest.TestCase):
         ev = self.hub.events_after("s1", 0, wait=1)
         self.assertEqual(ev[0]["type"], "aas.history")
         msgs = ev[0]["payload"]["messages"]
-        self.assertEqual([m["role"] for m in msgs], ["user", "tool", "assistant"])    # system 은 뺀다
+        self.assertEqual([m["role"] for m in msgs], ["user", "tool", "tool", "tool", "assistant"])    # system 은 뺀다
+        # 패치가 넘긴 실패·LLM 가드 막힘 표시를 그대로 넘긴다 — 참(True)일 때만(스펙 2026-11-07-001 E1·DT5)
+        self.assertEqual((msgs[2].get("llm_blocked"), msgs[2].get("failed")), (True, True))
+        self.assertNotIn("llm_blocked", msgs[3]); self.assertNotIn("failed", msgs[3])
+        self.assertNotIn("llm_blocked", msgs[1])
         self.assertNotIn("args", msgs[1])                                              # 도구 인자는 싣지 않는다
         self.assertEqual(msgs[1]["guard"], "recursive delete of Hermes data (/opt/data)")  # 안전장치 차단 이유는 싣는다(스펙 2026-10-24-004 6절)
         self.assertNotIn("guard", msgs[0])

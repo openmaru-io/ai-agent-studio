@@ -5,6 +5,7 @@
 
 // 스킬 AI 요약(스펙 docs-plan/marketplace/skill-ai-summary.md, 2026-10-17-002). 스킬 허브 서랍과 스킬 서랍이 함께 쓴다.
 // 서버가 저장해 둔 요약을 읽고, 없거나 판이 바뀌었으면 열 때 바로 만든다(사용자 결정 Q1). 「다시 요약」은 10분에 한 번(Q2).
+// 스킬 화면의 「개요」 탭은 autoDelay 만큼 머문 뒤에만 만든다(스펙 2026-11-06-003 R1·D3). 표 서랍·스킬 허브는 지금처럼 바로(D9).
 // 만든 사람은 보이지 않는다(Q4). 요약은 신뢰할 수 없는 원문에서 나왔으므로 마크다운으로 렌더하지 않고 글자 그대로 보인다.
 import { Alert, Box, Button, LinearProgress, Stack, Typography } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -63,15 +64,36 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+const summaryKey = (lang: string, target: SummaryTarget) => ['skill-summary', lang, query(target)];
+
+/** 요약 상태(꺼짐·오류·없음·있음)를 부모도 읽는다. AiSummary 와 같은 질의 키라 요청이 늘지 않는다(스펙 2026-11-06-003 OV-H1) */
+export function useSummaryView(target: SummaryTarget) {
+  const lang = getLang();
+  return useQuery<SummaryView>({
+    queryKey: summaryKey(lang, target),
+    queryFn: () => get<SummaryView>(`/api/skill/summary?${query(target)}`),
+  });
+}
+
 /**
  * facts: 서버가 아는 사실(필요한 환경변수·MCP·외부 호스트). 모델 답과 섞지 않고 「쓰려면 필요한 것」 아래에 따로 보인다.
  * actions: 요약 단추 옆에 둘 것(「AI 에게 더 묻기」 대화 단추).
+ * autoDelay: 없는 요약을 스스로 만들기 전에 기다릴 시간(ms). 주지 않으면 열자마자 만든다. 기다리는 동안 닫히면 만들지 않는다.
  */
-export function AiSummary({ target, facts, actions }: { target: SummaryTarget; facts?: ReactNode; actions?: ReactNode }) {
+export function AiSummary({
+  target,
+  facts,
+  actions,
+  autoDelay,
+}: {
+  target: SummaryTarget;
+  facts?: ReactNode;
+  actions?: ReactNode;
+  autoDelay?: number;
+}) {
   const qc = useQueryClient();
-  const lang = getLang();
-  const key = ['skill-summary', lang, query(target)];
-  const q = useQuery<SummaryView>({ queryKey: key, queryFn: () => get<SummaryView>(`/api/skill/summary?${query(target)}`) });
+  const key = summaryKey(getLang(), target);
+  const q = useSummaryView(target);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
@@ -88,12 +110,21 @@ export function AiSummary({ target, facts, actions }: { target: SummaryTarget; f
   };
 
   const d = q.data;
-  // 열 때 자동으로 만든다: 이 언어 요약이 없거나, 마켓 패키지 판이 바뀌었을 때 한 번(실패하면 단추로 다시 한다)
+  // 열 때 자동으로 만든다: 이 언어 요약이 없거나, 마켓 패키지 판이 바뀌었을 때 한 번(실패하면 단추로 다시 한다).
+  // autoDelay 가 있으면 그만큼 머문 뒤에 만든다 — 닫히면(스킬·탭을 바꾸면) 타이머를 지워 목록을 훑을 때 LLM 을 부르지 않는다(D3·OV-M2)
   useEffect(() => {
     if (!d || !d.enabled || tried.current || busy) return;
     if (!d.summary || d.stale) {
-      tried.current = true;
-      run(false);
+      const make = () => {
+        tried.current = true;
+        run(false);
+      };
+      if (!autoDelay) {
+        make();
+        return;
+      }
+      const id = window.setTimeout(make, autoDelay);
+      return () => window.clearTimeout(id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [d]);

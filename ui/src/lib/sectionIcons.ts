@@ -16,6 +16,7 @@ import AltRouteOutlinedIcon from '@mui/icons-material/AltRouteOutlined';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import BadgeOutlinedIcon from '@mui/icons-material/BadgeOutlined';
+import BlockOutlinedIcon from '@mui/icons-material/BlockOutlined';
 import BuildOutlinedIcon from '@mui/icons-material/BuildOutlined';
 import CallMadeOutlinedIcon from '@mui/icons-material/CallMadeOutlined';
 import CallReceivedOutlinedIcon from '@mui/icons-material/CallReceivedOutlined';
@@ -134,6 +135,7 @@ export const SECTION_ICONS: Record<string, SvgIconComponent> = {
   'market.needsTitle': EditOutlinedIcon,
   // 모델
   'models.fallbackProfiles': SwapHorizOutlinedIcon,
+  'models.blockedRoute': BlockOutlinedIcon,
   'models.primaryProfiles': StarOutlineIcon,
   'models.probe': NetworkCheckOutlinedIcon,
   // 프로파일
@@ -165,6 +167,7 @@ export const SECTION_ICONS: Record<string, SvgIconComponent> = {
   'skillsAgent.checks': FactCheckOutlinedIcon,
   'skillsAgent.packageFiles': ChecklistOutlinedIcon,
   'skillsAgent.headerPreview': DescriptionOutlinedIcon,
+  'skillsAgent.excerpt': DescriptionOutlinedIcon,       // 개요의 SKILL.md 앞부분(요약 대신 보기, 스펙 2026-11-06-003 D5)
   'skillsAgent.publishHistory': HistoryOutlinedIcon,
   'skillsAgent.overviewSetup': ReportProblemOutlinedIcon, // 스킬을 고르기 전 에이전트 요약의 「설정이 필요한 스킬」(스펙 2026-11-06-002 G15)
   // 사용자

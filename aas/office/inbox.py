@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 
+from ..ops import llm_block
 from ..common.redact import redact
 
 _ASK = {"approval.request": "approval", "clarify.request": "clarify"}
@@ -120,4 +121,4 @@ def crons_for(failed: list[dict], email: str) -> list[dict]:
     """실패한 크론(주인 기준으로 이미 거른 목록)을 받은편지함 항목으로."""
     return [{"id": f"cron|{f['pod']}|{f['profile']}|{f['job_id']}", "kind": "cron_failed", "alias": f.get("alias") or f["profile"],
              "pod": f["pod"], "profile": f["profile"], "job_id": f["job_id"],   # 화면의 「크론 보기」가 작업 서랍을 열 때 쓴다(alias 는 Cron 표 검색 글에 없고, Cron 화면은 보고 있는 POD 의 작업만 보이므로 다른 POD 면 pod 로 전환한다)
-             "text": redact(str(f.get("job") or f.get("name") or f["job_id"]), 120), "error": redact(str(f.get("error") or ""), 300)} for f in failed]
+             "text": redact(str(f.get("job") or f.get("name") or f["job_id"]), 120), "error": llm_block.explain(redact(str(f.get("error") or ""), 300))} for f in failed]   # 가드 거절은 안내로(D18)

@@ -42,6 +42,19 @@ function mount(initial = '/models', data: unknown = DATA, probe: unknown = { ok:
 }
 
 describe('Models', () => {
+  it('허용되지 않은 경로는 빨간 태그 하나, 「AAS 모델 아님」은 빼고 서랍에 막힌 프로파일과 주소(OMAI-1857 D5·D19)', async () => {
+    const user = userEvent.setup();
+    const blocked = { id: 'dgx-qwen', in_litellm: false, aas_model: false, blocked_route: true, blocked_profiles: [{ profile: 'ma', host: '10.0.0.151:8000' }], primary: ['ma'], fallback: [], auxiliary: [], cron: [] };
+    mount('/models', { ...DATA, models: [...DATA.models, blocked] });
+    const row = await rowByName(/^dgx-qwen/);
+    expect(within(row).getByText('허용되지 않은 경로')).toBeInTheDocument();
+    expect(within(row).queryByText('AAS 모델 아님')).toBeNull();
+    expect(within(row).queryByText('LiteLLM 에 없음')).toBeNull();
+    await user.click(row);
+    const dlg = await screen.findByRole('dialog', { name: 'dgx-qwen' });
+    expect(await within(dlg).findByText('10.0.0.151:8000')).toBeInTheDocument();
+  });
+
   it('기본 모델 이름 옆에 「기본 모델」 뱃지를 보인다(2026-10-18)', async () => {
     mount('/models', { ...DATA, default_model: 'qwen3' });
     const row = await rowByName(/^qwen3/);

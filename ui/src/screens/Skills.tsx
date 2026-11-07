@@ -45,6 +45,7 @@ import { isMySkill } from '@/screens/profiles/skillOrigin';
 import { agentOrder, AgentSkills, type AgentSkillsData } from '@/screens/skills/AgentSkills';
 import { useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
 interface SkillRow {
   id: string;
@@ -1084,10 +1085,11 @@ const TABLE_PARAMS = ['view', 'lens', 'tab', 'chip', 'tag', 'open', 'new'];
 
 /**
  * 스킬 화면. 기본은 에이전트 중심 3칸(AI 에이전트 | 그 에이전트의 스킬 | 동작·필요한 것·파일·게시)이고,
- * 「전체 표」(?view=table 또는 위의 주소 값)는 POD 전체 스킬 표다. 상태 값이 없는 옛 서버면 표로 연다.
+ * 「전체 스킬」(?view=table 또는 위의 주소 값)은 POD 전체 스킬 표다. 상태 값이 없는 옛 서버면 표로 연다.
+ * 두 보기는 머리 오른쪽 끝의 같은 두 칸 전환(SkillsViewToggle)으로 오간다(스펙 2026-11-06-003 R2).
  */
 export function Skills() {
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
   const { openDrawer } = useUi();
   const q = useQuery<SkillsData>({ queryKey: ['skills'], queryFn: () => get<SkillsData>('/api/skills'), staleTime: 120000 });
   useMe(); // 표 보기가 붙기 전에 권한 정보를 함께 받아 둔다(관리자 단추가 늦게 뜨지 않게)
@@ -1096,14 +1098,6 @@ export function Skills() {
   if (!q.data) return <ScreenLoading title={t('skills.title')} error={q.error?.message} />;
   const g = q.data;
   if (!g.agents?.length) return <SkillsTable />;
-  const onTable = () =>
-    setParams((prev) => {
-      const next = new URLSearchParams(prev);
-      ['skill', 'pane', 'f'].forEach((k) => next.delete(k));
-      next.set('view', 'table');
-      next.set('profile', ALL_PROFILES);
-      return next;
-    });
   const profiles = g.profiles ?? agentOrder(g);
   const onNew = (profile: string) =>
     openDrawer({
@@ -1111,24 +1105,7 @@ export function Skills() {
       sub: t('skills.newSkillSub'),
       body: <CreateSkill profiles={profiles} initialProfile={profiles.includes(profile) ? profile : (profiles[0] ?? 'default')} canUpload={!!g.can_upload} initialTab="write" />,
     });
-  return <AgentSkills g={g} onTable={onTable} onNew={onNew} />;
-}
-
-/** 에이전트 중심 보기로 돌아가는 단추(표 보기의 도구 줄) */
-function AgentViewButton() {
-  const [params, setParams] = useSearchParams();
-  const back = () =>
-    setParams((prev) => {
-      const next = new URLSearchParams();
-      const p = prev.get('profile');
-      if (p && p !== ALL_PROFILES) next.set('profile', p);
-      return next;
-    });
-  return (
-    <Button size="small" onClick={back} data-agent-view={params.get('profile') ?? ''}>
-      {t('skillsAgent.byAgent')}
-    </Button>
-  );
+  return <AgentSkills g={g} onNew={onNew} />;
 }
 
 function SkillsTable() {
@@ -1360,11 +1337,16 @@ function SkillsTable() {
       <ListView<SkillRow>
         guide="skills.list"
         key={scope}
+        titleWrap
         titleAction={
-          // 가이드가 강조하는 자리(OMAI-1274 user.make-skill)
-          <Box component="span" data-guide="skills.new" sx={{ display: 'inline-flex' }}>
-            <AddIconButton {...add} />
-          </Box>
+          <>
+            {/* 가이드가 강조하는 자리(OMAI-1274 user.make-skill) */}
+            <Box component="span" data-guide="skills.new" sx={{ display: 'inline-flex' }}>
+              <AddIconButton {...add} />
+            </Box>
+            {/* 에이전트 상태 값이 없는 옛 서버는 늘 표로 열어 전환이 헛단추라 숨긴다(스펙 2026-11-06-003 OV-H2) */}
+            {!!g.agents?.length && <SkillsViewToggle value="all" />}
+          </>
         }
         gridAction={add}
         title={t('skills.title')}
@@ -1408,7 +1390,6 @@ function SkillsTable() {
                   ))}
               </optgroup>
             </NativeSelect>
-            <AgentViewButton />
             <Button
               size="small"
               data-guide="skills.delegate"

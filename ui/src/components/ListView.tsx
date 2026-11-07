@@ -130,6 +130,8 @@ export interface ListViewProps<T> {
   guide?: string;
   /** 제목 바로 옆(같은 줄)에 둘 「새 항목 추가」 아이콘(AddIconButton) */
   titleAction?: ReactNode | ((ctx: { tab: string }) => ReactNode);
+  /** 자리가 모자라면 titleAction 을 제목 다음 줄로 넘긴다(PageTitle wrap, 스펙 2026-11-06-003 D11) */
+  titleWrap?: boolean;
   /** 표 툴바 오른쪽 끝에 둘 「+ 새 …」 단추. 보통 titleAction 과 같은 동작을 준다 */
   gridAction?: AddAction | null | ((ctx: { tab: string }) => AddAction | null | undefined);
   /** 행을 눌렀을 때 서랍에 보일 내용. onRow 가 있으면 onRow 가 먼저다. */
@@ -373,7 +375,7 @@ export function ListView<T>(props: ListViewProps<T>) {
 
   const titleAction = typeof props.titleAction === 'function' ? props.titleAction({ tab: tab.id }) : props.titleAction;
   // 추가 단추는 제목 옆, 도움말 단추 앞에 둔다(PageTitle 의 action, OMAI-1274 디자인 리뷰 12A)
-  const heading = <PageTitle action={titleAction}>{title}</PageTitle>;
+  const heading = <PageTitle action={titleAction} wrap={props.titleWrap}>{title}</PageTitle>;
   const gridAction = typeof props.gridAction === 'function' ? props.gridAction({ tab: tab.id }) : props.gridAction;
 
   return (

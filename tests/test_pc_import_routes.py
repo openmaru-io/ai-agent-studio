@@ -418,7 +418,9 @@ class ProfileGuardTest(unittest.TestCase):
         """(_profile_action 결과 또는 예외, Hermes 호출 목록, _drop_bundles 대역)."""
         api = mock.Mock()
         api.call.return_value = {}
-        hub = types.SimpleNamespace(auth=None, status=lambda: {"sessions": []})
+        hub = types.SimpleNamespace(auth=None, status=lambda: {"sessions": []}, busy_sessions=lambda name: [],   # 지우기의 세션 닫기(2026-11-07-001)
+                                    begin_delete=lambda name: [], end_delete=lambda name: None, close_for_delete=lambda name: [],
+                                    announce_closed=lambda sids, deleted: None)
         with mock.patch.object(server, "HermesAPI", return_value=api), mock.patch.object(server, "hub", return_value=hub), \
                 mock.patch.object(server, "_profile_rows", return_value=rows or self.ROWS), mock.patch.object(server, "_is_primary", return_value=False), \
                 mock.patch.object(routes, "_drop_bundles") as drop:

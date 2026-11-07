@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,6 +60,39 @@ describe('AiSummary', () => {
     mountScreen(<AiSummary target={{ ns: 'community', name: 'weekly' }} />, '/');
     expect(await screen.findByText('주간 보고서를 만든다')).toBeInTheDocument();
     expect(postedTo(fn, '/api/skill/summary')).toEqual([{ ns: 'community', name: 'weekly', refresh: false }]);
+  });
+
+  // 스킬 화면의 개요 탭은 머문 뒤에만 만든다(스펙 2026-11-06-003 D3). 표 서랍·스킬 허브는 지연을 주지 않아 지금처럼 바로(D9)
+  it('autoDelay 를 주면 그 시간이 지난 뒤에만 만들고, 그 전에 닫히면 만들지 않는다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const fn = stubApi({ '/api/skill/summary': (_u: string, b: Record<string, unknown>) => (b.id ? view() : view({ summary: null })) });
+      const first = mountScreen(<AiSummary target={{ id: 'a' }} autoDelay={1500} />, '/');
+      await screen.findByTestId('ai-summary');
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
+      first.unmount();
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);       // 닫히면 타이머를 지운다
+      mountScreen(<AiSummary target={{ id: 'b' }} autoDelay={1500} />, '/');
+      await screen.findByTestId('ai-summary');
+      await act(() => vi.advanceTimersByTimeAsync(1600));
+      await waitFor(() => expect(postedTo(fn, '/api/skill/summary')).toEqual([{ id: 'b', refresh: false }]));
+      expect(await screen.findByText('주간 보고서를 만든다')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('autoDelay 를 주지 않으면 지금처럼 열자마자 만든다(표 서랍·스킬 허브)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const fn = stubApi({ '/api/skill/summary': (_u: string, b: Record<string, unknown>) => (b.id ? view() : view({ summary: null })) });
+      mountScreen(<AiSummary target={{ id: 'a' }} />, '/');
+      await waitFor(() => expect(postedTo(fn, '/api/skill/summary')).toEqual([{ id: 'a', refresh: false }]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('버전이 바뀐 요약은 「이전 버전 기준」을 보이고 열 때 다시 만든다', async () => {

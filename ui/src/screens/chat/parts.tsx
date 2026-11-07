@@ -153,8 +153,16 @@ function StepDot({ state }: { state: 'run' | 'bad' | 'ok' }) {
  * 진행 단계 머리줄의 점. 진행 중이면 크기가 다른 호박색 점 둘이 작은 원을 돈다(OMAI-1447, 「Claude 처럼」).
  * 끝나면 멈춘 점 하나. 상자를 12px 로 고정해 상태가 바뀌어도 글이 밀리지 않는다. 움직임 줄이기 설정에서는 멈춘 점 하나다.
  */
-function HeadDot({ state }: { state: 'run' | 'bad' | 'ok' }) {
+/** 묶음 머리 점. muted: 실패가 섞인 묶음 — 빨강을 쓰지 않고 회색, 글만 「실패 포함」(스펙 2026-11-07-001 디자인 2D) */
+function HeadDot({ state }: { state: 'run' | 'muted' | 'ok' }) {
+  const tk = useChatTokens();
   const box = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 12, height: 12, flexShrink: 0 } as const;
+  if (state === 'muted')
+    return (
+      <Box component="span" aria-hidden="true" data-dot={state} sx={box}>
+        <Box component="span" sx={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', flexShrink: 0, bgcolor: tk.muted }} />
+      </Box>
+    );
   if (state !== 'run')
     return (
       <Box component="span" aria-hidden="true" data-dot={state} sx={box}>
@@ -245,6 +253,7 @@ export function Steps({
   const tools = items.filter((x) => x.kind === 'tool');
   const failed = tools.some((x) => x.state === 'failed');
   const guarded = tools.some((x) => x.guard); // 안전장치 차단(스펙 2026-10-24-004)
+  const llmBlocked = tools.some((x) => x.llmBlocked); // 모델 설정 때문에 막힘(스펙 2026-11-07-001 디자인 1B) — 빨강·GuardMark 를 쓰지 않는다
   const secs =
     Math.round(((items[items.length - 1].t || 0) - (items[0].t || 0)) / 1000) +
     Math.round(((tools[tools.length - 1]?.ms ?? 0) as number) / 1000);
@@ -257,7 +266,7 @@ export function Steps({
     : [
         tools.length ? t('chat.stepsCount', { count: tools.length }) : t('chat.progress'),
         secs > 0 ? t('chat.secs', { n: secs }) : '',
-        guarded ? t('chat.guardStep') : failed ? t('chat.hasFailed') : '',
+        guarded ? t('chat.guardStep') : llmBlocked ? t('chat.llmBlockedStep') : failed ? t('chat.hasFailed') : '',
       ]
         .filter(Boolean)
         .join(' · ');
@@ -281,7 +290,7 @@ export function Steps({
           '&:focus-visible': { outline: `2px solid ${FOCUS_RING}`, outlineOffset: 2, borderRadius: '4px' },
         }}
       >
-        <HeadDot state={live ? 'run' : failed ? 'bad' : 'ok'} />
+        <HeadDot state={live ? 'run' : failed ? 'muted' : 'ok'} />
         <span>{String(head).slice(0, 120)}</span>
         <ExpandMoreIcon
           aria-hidden="true"
@@ -297,9 +306,13 @@ export function Steps({
               </li>
             ) : null
           ) : (
-            <Box component="li" key={i} sx={{ position: 'relative', display: 'flex', alignItems: 'baseline', gap: 1, py: 0.25, lineHeight: 1.5 }}>
+            <Box
+              component="li"
+              key={i}
+              sx={{ position: 'relative', display: 'flex', alignItems: 'baseline', gap: 1, py: 0.25, lineHeight: 1.5, ...(it.failReason ? { flexWrap: 'wrap', rowGap: 0 } : {}) }}
+            >
               {/* 점은 줄 높이 가운데에 둔다. 고정 top 은 등폭 글꼴과 본문 글꼴의 기준선 맞춤으로 줄이 높아지면 아래로 처졌다 */}
-              <Box sx={{ position: 'absolute', left: -16, top: 0, bottom: 0, display: 'flex', alignItems: 'center' }}>
+              <Box sx={{ position: 'absolute', left: -16, top: 0, display: 'flex', alignItems: 'center', ...(it.failReason ? { height: 'calc(1.5em + 4px)' } : { bottom: 0 }) }}>
                 <StepDot state={it.kind === 'tool' ? rowState(it) : 'ok'} />
               </Box>
               {it.kind === 'tool' ? (
@@ -317,6 +330,12 @@ export function Steps({
                     <Box component="span" sx={{ color: GUARD_RED }}>{t('chat.guardRow')}</Box>
                   ) : it.state === 'failed' ? (
                     <span>{t('chat.failed')}</span>
+                  ) : null}
+                  {/* 실패 이유 한 줄(디자인 2D): 줄 아래 회색 작은 글 */}
+                  {it.state === 'failed' && it.failReason && !it.guard ? (
+                    <Box component="span" data-testid="fail-reason" sx={{ flexBasis: '100%', fontSize: chatType.tool, color: tk.muted, overflowWrap: 'anywhere' }}>
+                      {it.failReason}
+                    </Box>
                   ) : null}
                 </>
               ) : (

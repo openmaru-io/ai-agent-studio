@@ -69,6 +69,8 @@ export interface ComposerProps {
   onStop?: () => void;
   /** 참이면 멈춤 단추도 비활성이다 — 연결이 끊긴 동안 내려간 서버로 보내지 않게(스펙 2026-10-20-030 DR5) */
   stopDisabled?: boolean;
+  /** 참이면 입력칸도 끈다(끝난 대화, 스펙 2026-11-07-001 디자인 3C) */
+  disabled?: boolean;
   placeholder?: string;
   /** 입력칸의 접근성 이름 */
   inputLabel: string;
@@ -113,7 +115,7 @@ const hidden = {
 } as const;
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { value, onChange, onSend, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, placeholder, inputLabel, sendLabel, stopLabel, hint, top, leading, describedBy, compact, suggest, note, voice, readConv, variant = 'default', target },
+  { value, onChange, onSend, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, disabled, placeholder, inputLabel, sendLabel, stopLabel, hint, top, leading, describedBy, compact, suggest, note, voice, readConv, variant = 'default', target },
   ref
 ) {
   const tk = useChatTokens();
@@ -463,6 +465,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         maxRows={big ? 12 : 8}
         fullWidth
         value={value}
+        disabled={disabled}
         placeholder={placeholder}
         onChange={(e) => {
           onChange(e.target.value);

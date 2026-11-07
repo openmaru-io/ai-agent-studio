@@ -21,7 +21,7 @@ export type DrawerPage =
   | { kind: 'cronJob'; profile: string; id: string; label?: string } // 작업 서랍(JobDrawer)
   // 프로파일 서랍(ProfileDetail). pane 은 탭, extra 는 탭이 읽는 값(비밀값 key·MCP server·인증 파일 file·채널 add, 2단계)
   | { kind: 'profile'; name: string; pane?: string; extra?: Record<string, string> }
-  | { kind: 'agent'; pod: string } // AI 에이전트 작업공간 서랍(에이전트 화면)
+  | { kind: 'agent'; pod: string; focus?: 'size' } // AI 에이전트 작업공간 서랍(에이전트 화면). focus=size 면 「이 사람의 설정 → 크기」로 스크롤(스펙 2026-11-06-005 D14)
   // 목록 서랍(스펙 2026-10-28-014 D8): 모델 화면의 모델·채널 화면의 프로파일·사람 관리의 사람(행 id)
   | { kind: 'model'; id: string }
   | { kind: 'channel'; name: string }
@@ -172,7 +172,7 @@ export function pageFromLink(view: string, params?: Record<string, string | numb
   if (view === 'cron' && (tab === 'incidents' || tab === 'settled') && open) return { kind: 'cronIncident', id: open, ...(tab === 'settled' ? { settled: true } : {}) };
   if (view === 'cron' && tab === 'profiles' && open) return { kind: 'cronProfile', name: open };
   if (view === 'profiles' && params) return profilePage(params);
-  if (view === 'agents' && open) return { kind: 'agent', pod: open };
+  if (view === 'agents' && open) return { kind: 'agent', pod: open, ...(p('focus') === 'size' ? { focus: 'size' as const } : {}) };
   if (view === 'models' && open) return tab === 'profiles' ? { kind: 'profile', name: open } : !tab || tab === 'models' ? { kind: 'model', id: open } : null;
   if (view === 'channels' && open) return { kind: 'channel', name: open };
   if (view === 'users' && open) return { kind: 'user', key: open };

@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-from ..ops import activity, admin_requests, bundled_repair, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, shared_skills, slogan, card_brief, tts
+from ..ops import activity, admin_requests, bundled_repair, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, shared_skills, slogan, card_brief, tts, workspace_notices
 from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
@@ -36,7 +36,7 @@ from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, h
 from ..auth.auth import COOKIE as SESSION_COOKIE, Auth, AuthError, _cookie, _env, has_admin_session, load_users
 from ..hermes.hermes_api import HermesAPI, HermesError, job_view, run_view
 from ..common.i18n import tr
-from ..hermes.hermes_chat import ChatHub, ChatNotFound, ChatUnavailable, SessionBusy, load_settings
+from ..hermes.hermes_chat import ChatHub, ChatNotFound, ChatUnavailable, ProfileDeleting, SessionBusy, load_settings
 from ..hermes import chat_commands, hermes_reader, readers, skill_commands, stt_config, workspace
 from ..hermes.readers import remote as hermes_remote, tree_cache
 from ..common.redact import redact
@@ -167,9 +167,78 @@ def _attachment(name: str) -> str:
 
 
 def _error_body(exc: Exception) -> dict:
-    """오류 응답 본문. 문장(error)은 요청 언어로 나가고, reason 이 있으면 화면이 그것으로 종류를 가린다."""
+    """오류 응답 본문. 문장(error)은 요청 언어로 나가고, reason 이 있으면 화면이 그것으로 종류를 가린다.
+    sessions 가 있으면(지우기를 막는 대화, 스펙 2026-11-07-001 디자인 5C) 그 목록도 싣는다."""
     reason, field = getattr(exc, "reason", ""), getattr(exc, "field", "")
-    return {"error": str(exc), **({"reason": reason} if reason else {}), **({"field": field} if field else {})}
+    sessions = getattr(exc, "sessions", None)
+    return {"error": str(exc), **({"reason": reason} if reason else {}), **({"field": field} if field else {}),
+            **({"sessions": sessions} if sessions is not None else {})}
+
+
+class ProfileBusy(ValueError):
+    """지우려는 프로파일에 답하는 중·뒤에서 일하는 대화가 있다(스펙 2026-11-07-001 R3·디자인 5C). 화면은 sessions 를 목록으로 보인다."""
+    code = 409
+    reason = "busy_sessions"
+
+    def __init__(self, sessions: list[dict]):
+        super().__init__(tr(f"답하는 중이거나 뒤에서 일하는 대화 {len(sessions)}개가 있습니다. 끝나거나 멈춘 뒤 다시 하세요.",
+                            f"{len(sessions)} chat(s) are still answering or working in the background. Try again after they finish or stop."))
+        self.sessions = sessions
+
+
+class ProfileInstalling(ValueError):
+    """지우려는 프로파일에 스킬 설치가 도는 중이다 — 끝난 뒤 지운다. 겹치면 설치(Hermes CLI)가 프로파일 폴더를 다시 만든다(스펙 2026-11-07-001 §6)."""
+    code = 409
+    reason = "busy_install"
+
+    def __init__(self):
+        super().__init__(tr("이 프로파일에 스킬을 설치하는 중입니다. 1~2분 뒤 다시 하세요.",
+                            "A skill is being installed into this profile. Try again in a minute or two."))
+
+
+def _market_profile_gone(pod_id: str, profile: str) -> bool:
+    """배달기가 보내기 직전에 본다: 그 프로파일 폴더의 config.yaml 이 없거나 지우는 중이면 참. 작업공간을 모르면 거짓(판단하지 않음)."""
+    pod = next((p for p in registry().pods if p.id == pod_id), None)
+    if pod is None:
+        return False
+    h = _hubs.get(pod.id)
+    if h is not None and profile in h._deleting:
+        return True
+    try:
+        return not (pod.hermes_home / "profiles" / profile / "config.yaml").exists()
+    except Exception:                                             # noqa: BLE001 — 읽지 못하면 막지 않는다(사이드카 일시 오류)
+        return False
+
+
+def _refuse_running_install(pod: Pod, name: str) -> None:
+    if market_dispatch.pending_for(pod.id, name)[1]:
+        raise ProfileInstalling()
+
+
+OOM_REOPEN_WINDOW = 120.0                                        # 끊긴 시각 ± 이 초 안에 끝난 OOMKilled 만 원인으로 본다(스펙 2026-11-07-001 E6·E7)
+OOM_REOPEN_LOOKBACK = 6 * 3600                                   # 끊긴 지 이보다 오래되면 보지 않는다(등록부를 새로 읽지 않게)
+
+
+def _oom_restart(pod, h) -> dict | None:
+    """다시 연 대화가 메모리 초과로 끊겼는가: 허브가 끊김을 안 시각(서버 시계)과 그 작업공간의 마지막 OOMKilled 가 ±120초 안이면
+    {finished_at, limit_memory}. 판정은 작업공간 화면과 같은 agents.oom_notice(서랍 [닫기] 와 묶지 않음, R1). 등록부는 새로 읽는다 —
+    다시 뜬 직후에는 캐시에 lastTermination 이 아직 없을 수 있다(외부 검토 M4). 행은 reg.agents(다시 시작 중인 작업공간 포함)."""
+    t = float(getattr(h, "disconnected_at", 0.0) or 0.0)
+    if not t or time.time() - t > OOM_REOPEN_LOOKBACK:
+        return None
+    try:
+        reg = registry()
+        reg.refresh(ttl=5)
+        row = next((r for r in reg.agents if r.get("name") == pod.id), None)
+        n = agents.oom_notice(row) if row else None
+        if not n:
+            return None
+        ended = datetime.fromisoformat(str(n["finished_at"]).replace("Z", "+00:00")).timestamp()
+    except Exception:                                             # noqa: BLE001 — 원인 줄은 덤이다. 판정 실패로 다시 열기를 막지 않는다
+        return None
+    if abs(ended - t) > OOM_REOPEN_WINDOW:
+        return None
+    return {"finished_at": n["finished_at"], "limit_memory": n.get("limit_memory") or ""}
 
 
 class ProfileNotFound(ValueError):
@@ -1187,13 +1256,17 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
                 raise ValueError(tr("기본 프로파일은 삭제할 수 없습니다", "The default profile cannot be deleted"))
             if str(body.get("confirm") or "") != name:
                 raise ValueError(tr("확인용 이름이 맞지 않습니다", "The confirmation name does not match"))
-            if any(s["profile"] == name and not s["closed"] for s in hub(pod).status()["sessions"]):
-                raise ValueError(tr("이 프로파일과 열려 있는 대화가 있습니다. 대화를 닫고 다시 하세요.", "This profile has open chats. Close them and try again."))
+            busy = hub(pod).busy_sessions(name)                       # 쉬는 대화(숨김·회의 중계 포함)는 아래에서 닫는다(R3·E3)
+            if busy:
+                raise ProfileBusy(busy)
+            _refuse_running_install(pod, name)                        # 내보내기 전에 — 기다릴 일이면 묶음을 헛되이 만들지 않는다
             _import_guard(pod, name, cancel=False)                     # 진행 중이면 미리 내보내기 전에 거절한다(내보내기 묶음이 헛되이 남지 않게)
         where = ""
         if action == "export" or not body.get("skip_export"):
             try:                                                           # 삭제 전에는 묶음을 먼저 남긴다(실패하면 여기서 멈춘다)
-                res = api.call("POST", f"/api/profiles/{q(name)}/export", {})
+                # 파일마다 NFS 왕복이 생겨 먼 워커에서는 새 프로파일도 1분 가까이 걸린다(OKE worker-5 58초, 스펙 2026-11-07-001 §6).
+                # PC 내려받기용 내보내기(pc_import_routes)와 같은 600초를 기다린다
+                res = api.call("POST", f"/api/profiles/{q(name)}/export", {}, timeout=600)
             except HermesError as exc:
                 if action == "export":
                     raise
@@ -1205,7 +1278,30 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
             if not where:
                 raise HermesError(tr("내보내기 결과를 확인하지 못해 삭제하지 않았습니다", "The export result could not be confirmed, so nothing was deleted"), 502, reason="export_failed")
         _import_guard(pod, name)                                       # 확인 단계 묶음 취소는 미리 내보내기가 된 뒤(OMAI-1444 R1, ROV4)
-        api.call("DELETE", f"/api/profiles/{q(name)}")
+        # 쉬는 대화를 닫고 지운다(스펙 2026-11-07-001 R3·E3~E5). 닫는 자리는 내보내기 뒤 — 내보내기가 실패하면 세션을 닫지 않는다(외부 검토 M3).
+        # 지우는 동안 그 프로파일의 create·resume 은 409(E4). 닫기 답을 기다린 뒤 지운다
+        h_del = hub(pod)
+        busy = h_del.begin_delete(name)
+        if busy:
+            raise ProfileBusy(busy)
+        closed: list[str] = []
+        try:
+            _refuse_running_install(pod, name)                        # 내보내는 동안 배달이 시작됐을 수 있다
+            market_dispatch.cancel_queued(pod.id, name, tr("프로파일을 지워 설치를 취소했습니다", "Cancelled because the profile was deleted"))
+            try:
+                closed = h_del.close_for_delete(name)
+            except ChatUnavailable as exc:                             # 닫기 답이 상한(15초) 안에 오지 않았다 — 지우지 않는다(디자인 3D)
+                raise HermesError(str(exc), 503, reason="close_failed") from None
+            api.call("DELETE", f"/api/profiles/{q(name)}")
+        except BaseException:
+            h_del.announce_closed(closed, deleted=False)               # 프로파일이 남았다 — 보던 화면은 보통 끊김으로 다시 연다
+            raise
+        finally:
+            h_del.end_delete(name)
+        # 끝남 신호는 지운 뒤, 에이전트 목록 캐시를 버린 뒤에 — 화면이 바로 목록을 다시 읽는다(2026-11-07 OKE 실화면: 지운 프로파일이 남음).
+        # 부르는 쪽도 _forget 하지만 그것은 이 함수가 돌아간 뒤다
+        _forget(pod)
+        h_del.announce_closed(closed, deleted=True)
         files.forget_key(pod.id, f"agents:{name}")                     # 같은 이름으로 다시 만들면 옛 판과 비교되어 「에이전트가 고침」으로 보이지 않게
         files.forget_key(pod.id, f"soul:{name}")                       # SOUL 판도 같다(OMAI-1444 ROV9)
         pc_import.detach_profile(pod.id, name)                         # 같은 이름의 새 프로파일에 옛 가져오기 기록이 붙지 않게(R2)
@@ -2293,7 +2389,14 @@ def _profile_detail(pod: Pod, name: str, user=None) -> dict:
         return rows
     part("mcp", mcp)
     part("env", lambda: profiles.env_view(api.call("GET", "/api/env", query={"profile": prof})))
-    out["models"] = profiles.chat_models(_models(pod)["models"])
+    all_models = _models(pod)["models"]
+    out["models"] = profiles.chat_models(all_models)
+    # 이 프로파일이 AAS LiteLLM 이 아닌 주소로 부르는 모델 — 모델 고르기의 「(LiteLLM 에 없음)」 대신 「(허용되지 않은 경로)」(OMAI-1857 디자인 D11)
+    out["blocked_models"] = [m["id"] for m in all_models if any(b["profile"] == name for b in m.get("blocked_profiles") or [])]
+    try:                                                           # 지우기 확인 화면의 「열린 대화 N개도 닫힙니다」(스펙 2026-11-07-001 디자인 3D) — 이 서버 허브만 센다(R2-3)
+        out["open_chats"] = len(hub(pod).open_sessions(name))
+    except Exception:                                              # noqa: BLE001 — 허브가 없거나 연결 전이면 0
+        out["open_chats"] = 0
     out["default_model"] = profiles.default_model()               # 「<이름> (AAS 기본 모델)」 표기용
     out["gateway_shared"] = profiles.gateway_shared(in_k8s=bool(pod.sidecar_url), profile=prof)
     return out
@@ -2430,6 +2533,9 @@ def _agents_list(reg: Registry, user, auth_enabled: bool) -> dict:
     except Exception:
         recs = {}
     out["agents"] = [{**a, "primary_preparing": (recs.get(a["name"]) or {}).get("state", "templated") != "templated"} for a in out["agents"]]
+    # 메모리 초과 안내(스펙 2026-11-06-005 디자인 D3·D8·D21): 이 사람이 [닫기]·받은편지함에서 확인한 것은 뺀다. 화면은 이 값만 본다
+    seen = workspace_notices.acked(email) if email else set()
+    out["agents"] = [{**a, "oom": (lambda n: n if n and n["id"] not in seen else None)(agents.oom_notice(a))} for a in out["agents"]]
     # 프로파일 칸(스펙 2026-10-19-006): 저장된 이름만 보고 사이드카를 기다리지 않는다(R1·D5). 아직 모르면 null, 읽기는 뒤에서
     try:
         defaults = chat_default.records()
@@ -3621,11 +3727,20 @@ def _office_inbox(reg: Registry, user) -> dict:
                 lambda pod_id, prof: by_pod.get((pod_id, prof))), per_lang=False, stale_ok=False)
         except OSError:
             continue
-    label = lambda pod_id, prof: by_pod.get((pod_id, prof)) or prof     # noqa: E731
+    # 메모리 초과 안내·메모리 늘리기 요청 결과(스펙 2026-11-06-005 O2). 읽을 때 계산, reg.agents 는 다시 시작 중인 작업공간도 담는다(재검토 C1)
+    ws_agents, ws_rollouts = (x if isinstance(x, list) else [] for x in (getattr(reg, "agents", None), getattr(reg, "rollouts", None)))
+    workspace_notices.settle(ws_rollouts, ws_agents)
+    items += workspace_notices.oom_items(ws_agents, me) + workspace_notices.failed_items(ws_rollouts, me)
+    pod_names = office.agent_names_provider()
+    label = lambda pod_id, prof: (pod_names.get(pod_id) or pod_id) if prof == admin_requests.WORKSPACE else (by_pod.get((pod_id, prof)) or prof)   # noqa: E731
     admin_requests.prune()
     if reg.is_admin(user):                                              # 관리자에게 온 요청(스펙 2026-10-15-011 단계 5)
         known_people = office.people()
         items += admin_requests.admin_items(label, name_of=lambda email: office.display_name(email, known_people))
+        # 허용되지 않은 LLM 경로(OMAI-1857 디자인 D10). 설정 파일만 읽고 30초 둔다 — 10분 정리 기준(tree_cache.touch)은 치지 않는다(재검토 M4)
+        routes = _blocked_routes_by_pod(reg)
+        workspace_notices.prune_routes(routes)
+        items += workspace_notices.route_items(routes, me, label=lambda pod_id: pod_names.get(pod_id) or pod_id)
         if config.get("AAS_K8S_NAMESPACE"):                             # 지운 에이전트의 남은 데이터 볼륨(OMAI-1291)
             items += retained_volumes.notice_items(config.get("AAS_K8S_NAMESPACE"))
     if me:                                                              # 내가 낸 요청의 결과
@@ -3637,6 +3752,27 @@ def _office_inbox(reg: Registry, user) -> dict:
     # 자리 별칭이 설치본 id(자동 별칭)면 화면에 id 가 보였다 — 보일 이름(label)을 따로 준다. alias 는 답하기·이동에 그대로 쓴다(스펙 2026-10-19-003)
     seat_label = office.seat_labels()
     return {"items": [{**i, "label": seat_label.get(i["alias"], i["alias"])} if i.get("alias") else i for i in items]}
+
+
+_ROUTE_TTL = 30
+_route_cache: dict[str, tuple[float, list]] = {}
+
+
+def _blocked_routes_by_pod(reg: Registry) -> dict[str, list[dict]]:
+    """Ready 작업공간마다 models.blocked_routes(30초). 못 읽은 작업공간은 빼서 확인 기록을 지우지 않는다(L2)."""
+    out, now = {}, time.time()
+    for pod in reg.pods:
+        hit = _route_cache.get(pod.id)
+        if hit and now - hit[0] < _ROUTE_TTL:
+            out[pod.id] = hit[1]
+            continue
+        try:
+            rows = models.blocked_routes(home=pod.hermes_home)
+        except Exception:
+            continue
+        _route_cache[pod.id] = (now, rows)
+        out[pod.id] = rows
+    return out
 
 
 def _inbox_cards() -> list[dict]:
@@ -3790,6 +3926,17 @@ def _office_inbox_answer(reg: Registry, user, auth_enabled: bool, body: dict) ->
         return {"ok": True}
     if item_id.startswith(admin_requests.RESULT_PREFIX):                # 내 요청의 결과 확인: 요청자 본인만
         admin_requests.ack(item_id, str((user or {}).get("email") or "local").lower())
+        return {"ok": True}
+    if workspace_notices.owns(item_id):                             # 메모리 초과 안내(주인)·크기 바꾸기 실패(요청자) — 서랍 [닫기]도 여기(디자인 D21)
+        me = str((user or {}).get("email") or "").lower()
+        if item_id.startswith(workspace_notices.OOM_PREFIX):
+            row = next((r for r in (reg.agents if isinstance(reg.agents, list) else []) if r.get("name") == workspace_notices.pod_of(item_id)), None)
+            if auth_enabled and not (me and row and (row.get("owner") or "").lower() == me):
+                raise office_access.Denied(tr("이 알림을 확인할 수 있는 사람이 아닙니다", "You cannot acknowledge this notice"))
+        if item_id.startswith(workspace_notices.ROUTE_PREFIX) and auth_enabled and not reg.is_admin(user):
+            raise office_access.Denied(tr("관리자만 확인할 수 있습니다", "Only admins can acknowledge this"))
+        workspace_notices.ack(me or "local", item_id)
+        topics.invalidate("office:inbox:")
         return {"ok": True}
     if item_id.startswith(cron_done.PREFIX):                        # 크론 완료 알림: 이 파드의 주인이 「확인」한다
         me = str((user or {}).get("email") or "").lower()
@@ -4295,6 +4442,14 @@ def _tts_preview(body: dict, who: str) -> tuple[int, dict | bytes, dict]:
     return code, out, ({"X-Speak-Parts": "1"} if code == 200 else {})
 
 
+def _request_pod(a, user, wanted: str, current: Pod | None) -> Pod | None:
+    """관리자에게 요청할 작업공간. wanted(쿼리·본문 pod)가 있으면 그 사람이 볼 수 있는 작업공간(다시 시작 중 포함)에서만 찾고,
+    없으면 쿠키로 고른 작업공간(current). 볼 수 없는 pod 를 주면 None — _admin_request 가 403(스펙 2026-11-06-005 D6·재검토 L1·C1)."""
+    if not wanted:
+        return current
+    return next((p for p in registry().allowed(user, a.enabled, restarting=True) if p.id == wanted), None)
+
+
 def _chat_pod(a, user, wanted: str) -> Pod | None:
     """채팅 요청이 고른 에이전트(pod 인자). 허용 목록(/api/pod 와 같은 기준)에 없으면 None — 부르는 쪽이 403 을 낸다.
     registry().pick 은 모르는 이름을 첫 에이전트로 바꾸므로 쓰지 않는다: 엉뚱한 에이전트와 대화하게 된다(스펙 2026-10-19-001 리뷰 D8)."""
@@ -4304,9 +4459,13 @@ def _chat_pod(a, user, wanted: str) -> Pod | None:
 def _chat_pod_refusal(a, user, wanted: str) -> tuple[dict, int]:
     """_chat_pod 가 None 일 때의 답. 볼 수 있는 에이전트가 다시 뜨는 중(등록부에서 잠시 빠짐)이면 503 — 화면이 간격을 두고 다시 시도한다.
     403 으로 답하면 화면이 「다시 열지 못했습니다」로 바로 포기했다(OKE 2026-10-24, 스펙 2026-10-24-008)."""
-    if any(p.id == wanted for p in registry().allowed(user, a.enabled, restarting=True)):
-        return {"error": tr("AI 에이전트 작업공간이 다시 시작하는 중입니다. 1~2분쯤 뒤에 다시 시도해 주세요.",
-                            "The AI Agent Workspace is restarting. Try again in a minute or two.")}, 503
+    seen = next((p for p in registry().allowed(user, a.enabled, restarting=True) if p.id == wanted), None)
+    if seen is not None:
+        body = {"error": tr("AI 에이전트 작업공간이 다시 시작하는 중입니다. 1~2분쯤 뒤에 다시 시도해 주세요.",
+                            "The AI Agent Workspace is restarting. Try again in a minute or two.")}
+        h = _hubs.get(seen.id)                                    # 메모리 초과로 다시 시작하는 중이면 원인을 싣는다 — 다시 열기가 끝내 실패해도
+        oom = _oom_restart(seen, h) if h is not None else None    # 화면이 실패 줄 위에 원인 줄을 둔다(스펙 2026-11-07-001 디자인 2A·재검토 R2-1)
+        return ({**body, "oom": oom} if oom else body), 503
     return {"error": tr("이 AI 에이전트 작업공간을 볼 수 없습니다", "You cannot see this AI Agent Workspace")}, 403
 
 
@@ -5788,7 +5947,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/office/inbox":
                 self._json(_office_inbox(registry(), user))
             elif path == "/api/requests":                    # 내가 이 에이전트에서 처리를 기다리는 요청(막힌 자리에 「처리 대기 중」을 보인다)
-                self._json({"waiting": admin_requests.waiting_for(str((user or {}).get("email") or ""), pod.id) if user and pod else []})
+                rpod = _request_pod(a, user, (query.get("pod") or [""])[0], pod)   # 목록 줄마다 제 작업공간(스펙 2026-11-06-005 D6)
+                self._json({"waiting": admin_requests.waiting_for(str((user or {}).get("email") or ""), rpod.id) if user and rpod else []})
             elif path == "/api/office/state":
                 with store.request_memo():                   # 같은 요청 안에서 같은 DB 읽기를 한 번만(스펙 2026-10-24-006 §6)
                     self._json(_office_snapshot_for(office_access.Access(registry(), user, a.enabled)))
@@ -6030,7 +6190,9 @@ class Handler(BaseHTTPRequestHandler):
         if pod is None or not (registry().is_admin(user) or _manages_pod(pod, user, a.enabled)):
             return refuse(tr("이 AI 에이전트 작업공간의 소유자나 관리자만 요청할 수 있습니다", "Only the AI Agent Workspace's owner or an admin can send a request"), 403)
         profile = str(body.get("profile") or "")
-        if profile not in {x.name for x in cron_health.hr.profiles(pod.hermes_home)} or cron_policy.root_hidden(pod.id) and profile == primary.ROOT:
+        if str(body.get("kind") or "") == "workspace_size":           # 작업공간 단위(스펙 2026-11-06-005 O2) — 다시 시작 중이어도 받는다(재검토 C1)
+            profile = admin_requests.WORKSPACE
+        elif profile not in {x.name for x in cron_health.hr.profiles(pod.hermes_home)} or cron_policy.root_hidden(pod.id) and profile == primary.ROOT:
             return refuse(tr("없는 프로파일입니다", "Profile not found"))
         try:
             rid = admin_requests.create(pod.id, profile, str((user or {}).get("email") or ""), str(body.get("kind") or ""), str(body.get("detail") or ""))
@@ -6354,7 +6516,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"people": _office_people(office_access.Access(registry(), user, a.enabled))})   # 보기 범위로 거른다(스펙 2026-10-21-022)
                 return
             if path == "/api/requests":                      # 막힌 일을 관리자에게 요청한다(스펙 2026-10-15-011 단계 5)
-                self._admin_request(body, a, user, pod)
+                self._admin_request(body, a, user, _request_pod(a, user, str(body.get("pod") or ""), pod))
                 return
             if path == "/api/office/inbox/answer":           # 받은편지함에서 승인·되묻기에 답한다(계획 007 P4)
                 try:
@@ -6976,18 +7138,33 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/chat/session":
                 profile = _chat_profile(pod, str(body.get("profile") or ""))
                 if profile not in known_profiles:
-                    self._json({"error": tr("없는 프로파일", "Profile not found")}, 400)
+                    self._json({"error": tr("없는 프로파일", "Profile not found"), "code": "profile_not_found"}, 400)
                     return
                 store.log_usage("chat_session", profile)
                 self._json(h.create_session(profile, by=str((user or {}).get("email") or "")))
             elif path == "/api/chat/resume":
                 profile = _chat_profile(pod, str(body.get("profile") or ""))
                 stored = str(body.get("stored_id") or "")
-                if profile not in known_profiles or not stored:
+                if profile not in known_profiles:                # 지워졌거나 이름이 바뀌었다 — 화면은 「프로파일이 없어져 끝남」(재검토 R2-4)
+                    self._json({"error": tr("없는 프로파일", "Profile not found"), "code": "profile_not_found"}, 400)
+                    return
+                if not stored:
                     self._json({"error": tr("잘못된 요청", "Invalid request")}, 400)
                     return
                 store.log_usage("chat_resume", profile)
-                out = h.resume(profile, stored, by=str((user or {}).get("email") or ""))
+                try:
+                    out = h.resume(profile, stored, by=str((user or {}).get("email") or ""))
+                except (ProfileDeleting, ChatNotFound):
+                    raise
+                except ChatUnavailable as exc:                # 다시 열기 실패에도 원인을 싣는다 — 화면이 실패 줄 위에 원인 줄을 둔다(디자인 2A·재검토 R2-1)
+                    oom = _oom_restart(pod, h)
+                    if not oom:
+                        raise
+                    self._json({"error": str(exc), "oom": oom}, 503)
+                    return
+                oom = _oom_restart(pod, h)                     # 메모리 초과로 끊긴 대화면 새 세션 버퍼에 원인 줄(E6) — 새로 고침·다른 탭에도 보인다
+                if oom and out.get("session_id"):
+                    h.notice_once(str(out["session_id"]), f"oom_restart:{oom['finished_at']}", {"code": "oom_restart", **oom})
                 chat_hidden.unhide(str((user or {}).get("email") or "") if a.enabled else "", pod.id, stored)   # 다시 열면 숨김을 푼다(스펙 2026-11-06-002 E3)
                 self._json(out)
             elif path == "/api/chat/send":
@@ -7050,6 +7227,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "hidden": done})
             else:
                 self._json({"error": "not found"}, 404)
+        except ProfileDeleting as exc:              # 그 프로파일을 지우는 중 — 화면은 「지우는 중」 줄, 다시 열기를 멈춘다(스펙 2026-11-07-001 E4·디자인 2E)
+            self._json({"error": str(exc), "code": "profile_deleting"}, 409)
         except ChatNotFound as exc:                 # Hermes 에 대화가 없다 — 화면은 다시 열기를 멈춘다(스펙 2026-10-20-030 R9)
             self._json({"error": str(exc), "code": "not_found"}, 404)
         except AlreadyAnswered as exc:              # 다른 쪽이 먼저 답했다 — 카드는 답한 상태로 둔다(스펙 2026-10-28-001 §3-7 ④)
@@ -7867,6 +8046,7 @@ def start_background() -> None:
     threading.Thread(target=_lifecycle_loop, daemon=True, name="aas-lifecycle").start()
     threading.Thread(target=market_dispatch.loop, args=(k8s.client, lambda: {a["name"] for a in registry().agents}),
                      kwargs={"get_home": lambda pod: next((p.hermes_home for p in registry().pods if p.id == pod), None),   # 덮기 전에 그 POD 의 프로파일을 읽어 고친 스킬을 지킨다(스펙 2026-10-14-015)
+                             "profile_gone": _market_profile_gone,                 # 지운 프로파일에는 배달하지 않는다(스펙 2026-11-07-001 §6)
                              "on_finished": _market_request_finished, "after_tick": market_update_cycle},   # 설치가 끝나면 판 비교를 새로, 새 버전 대기 표를 요청으로(2026-10-24-003 R14·R18)
                      daemon=True, name="aas-market").start()
     threading.Thread(target=_kanban_loop, daemon=True, name="aas-office-kanban").start()

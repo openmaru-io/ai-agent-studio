@@ -58,6 +58,35 @@ describe('받은편지함(계획 007 P4)', () => {
     expect(screen.queryByText(/aas-agent-kim-1a2b/)).toBeNull();
   });
 
+  it('허용되지 않은 LLM 경로: 다음 할 일과 모델 화면 프로파일 서랍 링크(OMAI-1857 D10)', async () => {
+    const items = [{ id: 'route|p1|ma|10.0.0.151:8000', kind: 'blocked_route', alias: 'A 작업공간', text: 'qwen3', pod: 'p1', profile: 'ma', host: '10.0.0.151:8000', models: ['qwen3'] }];
+    stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items } });
+    mountScreen(<InboxPanel />, '/office');
+    expect(await screen.findByText(/프로파일 ma 이 qwen3 을 AAS LiteLLM 이 아닌 10\.0\.0\.151:8000 로/)).toBeInTheDocument();
+    expect(screen.getByText('허용되지 않은 LLM 경로', { exact: false })).toBeInTheDocument();
+  });
+
+  it('메모리 늘리기 요청·결과·메모리 초과 안내(스펙 2026-11-06-005 D14·D15·D13·D9)', async () => {
+    const items = [
+      { id: 'areq|7', kind: 'admin_request', alias: 'A 작업공간', text: '21:15 OOM', requester: 'kim@example.com', req_kind: 'workspace_size', profile: '_workspace', pod: 'hag-1', waiting_days: 0 },
+      { id: 'areq_res|8', kind: 'admin_request_result', alias: 'A 작업공간', text: '', req_kind: 'workspace_size', status: 'handled', reason: 'size:4294967296:8589934592', memory_from: 4294967296, memory_to: 8589934592 },
+      { id: 'oom|hag-1|2026-11-06T11:00:00Z', kind: 'workspace_oom', alias: 'A 작업공간', text: '', pod: 'hag-1', limit_memory: '4Gi' },
+      { id: 'sizefail|hro-1|hag-1', kind: 'size_failed', alias: 'hag-1', text: '노드 자리가 부족해 뜨지 못했습니다', pod: 'hag-1' },
+    ];
+    stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items } });
+    mountScreen(<InboxPanel />, '/office');
+    const open = await screen.findByRole('link', { name: '작업공간 크기 열기' });
+    expect(open.getAttribute('href')).toContain('open=hag-1');
+    expect(open.getAttribute('href')).toContain('focus=size');
+    const first = screen.getAllByRole('listitem').find((li) => within(li).queryByRole('link', { name: '작업공간 크기 열기' }))!;
+    expect(within(first).queryByRole('button', { name: '처리했습니다' })).toBeNull();
+    expect(within(first).queryByText('_workspace')).toBeNull();
+    expect(screen.getByText(/메모리를 4Gi에서 8Gi로 늘렸습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/size:4294967296/)).toBeNull();
+    expect(screen.getByText(/메모리 한도\(4Gi\)를 넘어 다시 시작했습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/노드 자리가 부족해 뜨지 못했습니다\. 요청은 처리 대기 중으로/)).toBeInTheDocument();
+  });
+
   it('관리자 요청: 누가 무엇을 며칠째 기다리는지 보이고, 처리했습니다는 바로, 거절은 사유를 적어 보낸다(스펙 2026-10-15-011 단계 5)', async () => {
     const items = [
       { id: 'areq|1', kind: 'admin_request', alias: 'ma', text: '모델을 바꿔 주세요', requester: 'kim@example.com', requester_name: '김영주', req_kind: 'model_change', profile: 'ma', waiting_days: 9, stale: true },

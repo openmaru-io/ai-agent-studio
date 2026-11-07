@@ -5,14 +5,16 @@
 
 // Agent-first view of the Skills screen (screens/skills/AgentSkills.tsx)
 export default {
-  'skillsAgent.byAgent': 'View by AI Agent',
+  'skillsAgent.byAgent': 'By AI Agent',
+  'skillsAgent.viewMode': 'Skills view',
   'skillsAgent.agents': 'AI Agents',
   'skillsAgent.primary': 'Default',
   'skillsAgent.primaryTip': 'The default AI Agent of this workspace. Chats and scheduled jobs that do not name an AI Agent use it.',
   'skillsAgent.agentLine': 'Own {own} · shared {shared} · {runs} recent runs',
   'skillsAgent.agentLineOld': '{n} skills',
   'skillsAgent.setupHint': '{n} skills need setup: a required environment variable has no value',
-  'skillsAgent.allTable': 'Full table',
+  'skillsAgent.viewAll': 'All skills',
+  'skillsAgent.agentMissing': 'No skills found for {name}. Showing the primary AI agent',
   'skillsAgent.resizeAgents': 'AI Agents column width',
   'skillsAgent.resizeList': 'Skills column width',
   'skillsAgent.pickSkill': 'Pick a skill in the middle column to see how it runs and what it needs.',
@@ -47,6 +49,7 @@ export default {
   'skillsAgent.agentIs': 'AI Agent {name}',
   'skillsAgent.sharedFrom': 'from {name}',
   'skillsAgent.back': 'Skill list',
+  'skillsAgent.pane.overview': 'Overview',
   'skillsAgent.pane.run': 'How it runs',
   'skillsAgent.pane.needs': 'What it needs',
   'skillsAgent.pane.files': 'Files',
@@ -70,6 +73,11 @@ export default {
   'skillsAgent.needsNote': 'Checked for AI Agent {name}. Values are never shown, only whether they are set.',
   'skillsAgent.needsNone': 'No declared environment variables, and no credentials or tools found in the code.',
   'skillsAgent.folderFiles': 'Files in the same folder',
+  'skillsAgent.folderFilesShow': 'Show',
+  'skillsAgent.folderFilesHide': 'Hide',
+  'skillsAgent.excerpt': 'Start of SKILL.md',
+  'skillsAgent.excerptMore': 'See the full file in Files',
+  'skillsAgent.setupNeeded': 'Setup needed',
   'skillsAgent.publishIntro':
     'Check runs every test a publish request runs and shows the result, the files that go into the package, and how the SKILL.md header changes. Checking saves nothing.',
   'skillsAgent.publishShared':

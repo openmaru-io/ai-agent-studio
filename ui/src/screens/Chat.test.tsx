@@ -573,6 +573,12 @@ describe('Chat: 대화 메뉴와 지난 대화', () => {
     await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toHaveLength(2)); // 에이전트를 고를 때 한 번 + 새 대화 한 번
   });
 
+  it('대화 메뉴의 「스킬」은 표(tab=all)가 아니라 그 AI 에이전트의 스킬 칸(?profile=)으로 연다(스펙 2026-11-06-003 R3·D7)', async () => {
+    const { user } = await open();
+    await user.click(screen.getByRole('button', { name: /^대화/ }));
+    expect(screen.getByRole('menuitem', { name: /^스킬$/ })).toHaveAttribute('href', '/skills?profile=ma');
+  });
+
   it('지난 대화: 기본은 크론을 빼고 보이며, 고르면 이어 쓴다', async () => {
     const { user, fn } = await open();
     await user.click(screen.getByRole('button', { name: /지난 대화 보기/ }));
@@ -682,7 +688,8 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const head = await screen.findByRole('button', { name: /마케팅 도우미/, expanded: true });
     // 프로파일이 하나뿐인 a 는 묶음 머리 없이 에이전트 이름 줄 하나 — 「지금 에이전트」는 줄로 옮겨 낭독 이름에도 들어간다(2026-10-19-013 R3·DD11)
     expect(screen.queryByRole('group', { name: /관리자 AAS/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기, 지금 AI 에이전트 작업공간/ })).toHaveTextContent('지금 AI 에이전트 작업공간');
+    // 화면에는 둘째 줄 앞 「지금 작업공간」(이름을 밀어내지 않게, 2026-11-06), 낭독 이름은 그대로
+    expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기, 지금 AI 에이전트 작업공간/ })).toHaveTextContent('지금 작업공간');
     await openRow(user, /^마케팅 도우미의 main 세션 보기/);
     // 에이전트를 고르면 그 묶음(pod b)의 main 으로 새 세션
     await waitFor(() => expect(postedTo(fn, '/api/chat/session')).toContainEqual({ profile: 'main', pod: 'b' }));
@@ -738,7 +745,7 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const line = row.textContent ?? '';
     expect(line.indexOf('나눠 받은 것')).toBeLessThan(line.indexOf('홍길동'));
     const mine = screen.getByRole('button', { name: /^관리자 AAS 세션 보기/ }).textContent ?? '';
-    expect(mine.indexOf('관리자 AAS')).toBeLessThan(mine.indexOf('지금 AI 에이전트 작업공간'));
+    expect(mine.indexOf('관리자 AAS')).toBeLessThan(mine.indexOf('지금 작업공간'));
   });
 
   it('main 을 만드는 중이면 프로파일이 하나여도 머리와 프로파일 줄을 남긴다(DD3)', async () => {
@@ -777,7 +784,7 @@ describe('Chat — 여러 에이전트 묶음', () => {
     const user = userEvent.setup();
     mount('/chat', { pod: 'a', groups: [{ pod: 'a', current: true, configured: true, name: '관리자 AAS', primary: 'main', agents: [{ name: 'main' }], sessions: [] }] });
     const row = await screen.findByRole('button', { name: /^관리자 AAS 세션 보기/ });
-    expect(row).not.toHaveTextContent('지금 AI 에이전트 작업공간');
+    expect(row).not.toHaveTextContent('지금 작업공간');
     await user.type(screen.getByRole('searchbox', { name: 'AI 에이전트 찾기' }), '관리자');
     expect(screen.getByRole('button', { name: /^관리자 AAS 세션 보기/ })).toBeInTheDocument();
   });
@@ -1495,5 +1502,75 @@ describe('Chat — 화면 다듬기(스펙 2026-11-06-002 G1·G4·G7·G9·G10·G
     expect(await within(nav).findByRole('button', { name: /첫 일/ })).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('목록에서 숨겼습니다 · 「지난 대화」에서 다시 열 수 있습니다')).not.toBeInTheDocument());
     expect(postedTo(fn, '/api/chat/sessions/hide')).toHaveLength(0);
+  });
+});
+
+// 스펙 2026-11-07-001 ①②③ 화면(디자인 1A~7A)
+describe('Chat: 메모리 초과·도구 가드·끝난 대화(2026-11-07-001)', () => {
+  const OOM = { code: 'oom_restart', finished_at: '2026-11-07T01:02:03Z', limit_memory: '4Gi' };
+  const start = async (me?: unknown) => {
+    const user = userEvent.setup();
+    const fn = mount('/chat', STATUS(), me);
+    await openRow(user, /^마케팅 세션 보기/);
+    await screen.findByRole('textbox', { name: /에게 보낼 메시지/ });
+    await user.type(input(), 'q{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: 'q' });
+    return { user, fn };
+  };
+
+  it('관리자: 노란 원인 줄(한도·시각·크기 문구)과 [크기 바꾸기]', async () => {
+    await start();
+    await emit(0, 'aas.notice', OOM);
+    const row = await screen.findByTestId('oom-row');
+    expect(row).toHaveAttribute('role', 'status');
+    expect(row).toHaveTextContent('작업공간이 메모리 한도(4Gi)를 넘어');
+    expect(row).toHaveTextContent('크기를 늘린 뒤 다시 하세요.');
+    expect(within(row).getByRole('button', { name: '크기 바꾸기' })).toBeInTheDocument();
+  });
+
+  it('사용자: 둘째 줄은 메모리 문구이고 단추는 메모리 늘리기 요청, 한도가 없으면 괄호 없는 문구', async () => {
+    await start({ auth_enabled: true, admin: false, user: { email: 'k@x.com' }, pod: { id: 'p' } });
+    await emit(0, 'aas.notice', { ...OOM, limit_memory: '' });
+    const row = await screen.findByTestId('oom-row');
+    expect(row).toHaveTextContent('작업공간이 메모리 한도를 넘어');
+    expect(row).toHaveTextContent('메모리를 늘린 뒤 다시 하세요.');
+    expect(within(row).queryByRole('button', { name: '크기 바꾸기' })).toBeNull();
+    expect(await within(row).findByRole('button', { name: /메모리 늘리기/ })).toBeInTheDocument();
+  });
+
+  it('실패한 도구가 가드에 막히면 묶음 머리 「모델 설정 때문에 막힘」과 묶음 밖 안내 한 줄·요청 단추', async () => {
+    await start();
+    const block = 'HTTP 403: BLOCKED by CogentAI AAS: x';
+    await emit(0, 'tool.start', { tool_id: 't1', name: 'text_to_speech' });
+    await emit(0, 'tool.complete', { tool_id: 't1', result: JSON.stringify({ success: false, error: block }) });
+    await emit(0, 'error', { message: block });
+    await emit(0, 'message.complete', { text: '못 했습니다' });
+    expect(screen.getByText(/작업 1단계 · 모델 설정 때문에 막힘/)).toBeInTheDocument();
+    const alerts = screen.getAllByRole('alert').filter((x) => x.textContent?.includes('AAS LiteLLM'));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent('text_to_speech 도구가 AAS LiteLLM 을 거치지 않는 설정이라 막혔습니다');
+    expect(await within(alerts[0]).findByRole('button', { name: 'text_to_speech 도구의 설정 변경을 관리자에게 요청' })).toBeInTheDocument();
+    expect(screen.queryByRole('note', { name: '안전장치가 위험한 명령을 막았습니다' })).toBeNull();
+  });
+
+  it('프로파일이 지워지면 Sky 「끝남」 줄, 입력창 꺼짐·「끝난 대화」, [새 대화]는 새 세션을 열지 않고 에이전트 고르기를 연다', async () => {
+    const { user, fn } = await start();
+    const sessions = () => postedTo(fn, '/api/chat/session').length;
+    const before = sessions();
+    await emit(0, 'aas.disconnected', { code: 'profile_deleted', text: 'x' });
+    const row = await screen.findByTestId('ended-row');
+    expect(row).toHaveAttribute('role', 'status');
+    expect(row).toHaveTextContent('이 프로파일이 없어져 대화가 끝났습니다');
+    const box = screen.getByRole('textbox', { name: /에게 보낼 메시지/ });
+    expect(box).toBeDisabled();
+    expect(box).toHaveAttribute('placeholder', '끝난 대화');
+    // 끝난 세션은 「진행 중」이 아니라 「완료」 묶음에(2026-11-07 OKE 화면에서 진행 중에 남음)
+    await waitFor(() => expect(document.querySelector('[data-sess-group="done"]')?.textContent ?? '').toMatch(/끝남/));
+    expect(document.querySelector('[data-sess-group="live"]')?.textContent ?? '').not.toMatch(/끝남/);
+    await user.click(within(row).getByRole('button', { name: '새 대화' }));
+    expect(await screen.findByRole('dialog', { name: /AI 에이전트 고르기/ })).toBeInTheDocument();
+    expect(sessions()).toBe(before);
+    expect(postedTo(fn, '/api/chat/resume')).toHaveLength(0);
   });
 });

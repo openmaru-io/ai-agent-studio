@@ -5,14 +5,16 @@
 
 // 스킬 화면의 에이전트 중심 보기 (screens/skills/AgentSkills.tsx)
 export default {
-  'skillsAgent.byAgent': 'AI 에이전트별로 보기',
+  'skillsAgent.byAgent': 'AI 에이전트별',
+  'skillsAgent.viewMode': '스킬 보기',
   'skillsAgent.agents': 'AI 에이전트',
   'skillsAgent.primary': '기본',
   'skillsAgent.primaryTip': '이 작업공간의 기본 AI 에이전트입니다. 대화·예약 작업이 AI 에이전트를 정하지 않으면 이 AI 에이전트가 맡습니다.',
   'skillsAgent.agentLine': '자기 스킬 {own} · 공용 {shared} · 최근 실행 {runs}회',
   'skillsAgent.agentLineOld': '스킬 {n}개',
   'skillsAgent.setupHint': '설정이 필요한 스킬 {n}개 — 필요한 환경변수에 값이 없습니다',
-  'skillsAgent.allTable': '전체 표',
+  'skillsAgent.viewAll': '전체 스킬',
+  'skillsAgent.agentMissing': '{name} 의 스킬을 찾지 못해 주 AI 에이전트를 보입니다',
   'skillsAgent.resizeAgents': 'AI 에이전트 칸 폭',
   'skillsAgent.resizeList': '스킬 칸 폭',
   'skillsAgent.pickSkill': '가운데에서 스킬을 고르면 어떻게 동작하는지, 무엇이 필요한지 보입니다.',
@@ -47,6 +49,7 @@ export default {
   'skillsAgent.agentIs': 'AI 에이전트 {name}',
   'skillsAgent.sharedFrom': '{name}에서 가져옴',
   'skillsAgent.back': '스킬 목록',
+  'skillsAgent.pane.overview': '개요',
   'skillsAgent.pane.run': '동작',
   'skillsAgent.pane.needs': '필요한 것',
   'skillsAgent.pane.files': '파일',
@@ -70,6 +73,11 @@ export default {
   'skillsAgent.needsNote': 'AI 에이전트 {name} 기준입니다. 값은 보이지 않고 채워져 있는지만 보입니다.',
   'skillsAgent.needsNone': '선언한 환경변수도, 코드에서 찾은 자격증명·도구도 없습니다.',
   'skillsAgent.folderFiles': '같은 폴더의 파일',
+  'skillsAgent.folderFilesShow': '펼치기',
+  'skillsAgent.folderFilesHide': '접기',
+  'skillsAgent.excerpt': 'SKILL.md 앞부분',
+  'skillsAgent.excerptMore': '파일에서 전체 보기',
+  'skillsAgent.setupNeeded': '설정이 필요합니다',
   'skillsAgent.publishIntro':
     '「점검」을 누르면 게시 요청과 같은 검사를 모두 돌려 결과와 묶음에 들어갈 파일, SKILL.md 머리말이 어떻게 바뀌는지 보여 줍니다. 점검은 아무것도 저장하지 않습니다.',
   'skillsAgent.publishShared':

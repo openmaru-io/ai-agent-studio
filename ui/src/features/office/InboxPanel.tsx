@@ -16,6 +16,7 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import MarkEmailReadOutlinedIcon from '@mui/icons-material/MarkEmailReadOutlined';
+import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
 import RateReviewOutlinedIcon from '@mui/icons-material/RateReviewOutlined';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
@@ -50,6 +51,9 @@ const KIND: Record<InboxItem['kind'], string> = {
   retained_volume: 'office.inboxRetained',
   pc_import: 'profiles.pcImport.action',
   connection: 'conn.inboxKind',
+  workspace_oom: 'office.inboxOom',
+  size_failed: 'office.inboxSizeFailed',
+  blocked_route: 'office.inboxBlockedRoute',
 };
 
 /** 줄 왼쪽의 종류 아이콘. 색은 실패한 예약 작업만 오류색이고 나머지는 무채색(DESIGN §1-1) */
@@ -66,10 +70,15 @@ const KIND_ICON: Record<InboxItem['kind'], SvgIconComponent> = {
   retained_volume: StorageOutlinedIcon,
   pc_import: ComputerOutlinedIcon,
   connection: LinkOutlinedIcon,
+  workspace_oom: MemoryOutlinedIcon,
+  size_failed: MemoryOutlinedIcon,
+  blocked_route: BlockOutlinedIcon,
 };
 
 /** 확인만 하면 사라지는 알림. 서버는 답 없이({}) 보내면 지운다. 나머지는 답(승인·질문·요청 처리)을 해야 사라진다 */
-const NOTICE: ReadonlySet<InboxItem['kind']> = new Set(['cron_done', 'pc_import', 'connection', 'admin_request_result']);
+const NOTICE: ReadonlySet<InboxItem['kind']> = new Set(['cron_done', 'pc_import', 'connection', 'admin_request_result', 'workspace_oom', 'size_failed', 'blocked_route']);
+const GIB = 2 ** 30;
+const gib = (n?: number) => (n ? `${Math.round((n / GIB) * 10) / 10}Gi` : '?');
 export const isNotice = (i: InboxItem) => NOTICE.has(i.kind);
 
 /** Claude Code 연결 알림 문장(스펙 2026-10-28-001 §3-7 ③, 디자인 D10·D19). 서버는 상태 코드만 준다 */
@@ -155,14 +164,23 @@ function AdminRequestActions({
         </Stack>
       ) : (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
-          {item.profile && (
-            <LinkChip to="profiles" params={{ name: item.profile }} page>
-              {t('office.inboxAdminOpen')}
+          {item.req_kind === 'workspace_size' ? (
+            // 메모리 늘리기(D14·D15): 크기 구역으로 바로 보내고 「처리했습니다」는 두지 않는다 — 크기 롤아웃이 끝나면 자동으로 닫힌다(R10)
+            <LinkChip to="agents" params={{ open: item.pod ?? '', focus: 'size' }} page>
+              {t('office.inboxSizeOpen')}
             </LinkChip>
+          ) : (
+            <>
+              {item.profile && (
+                <LinkChip to="profiles" params={{ name: item.profile }} page>
+                  {t('office.inboxAdminOpen')}
+                </LinkChip>
+              )}
+              <Button size="small" variant="outlined" disabled={busy} onClick={() => run({ choice: 'handled' })}>
+                {t('office.inboxAdminDone')}
+              </Button>
+            </>
           )}
-          <Button size="small" variant="outlined" disabled={busy} onClick={() => run({ choice: 'handled' })}>
-            {t('office.inboxAdminDone')}
-          </Button>
           <Button size="small" disabled={busy} onClick={() => setDeclining(true)}>
             {t('office.inboxAdminDecline')}
           </Button>
@@ -320,9 +338,34 @@ function Row({
         {item.kind === 'retained_volume' && <RetainedVolumes item={item} busy={busy} run={run} />}
         {item.kind === 'admin_request_result' && (
           <Typography variant="body2" sx={{ mt: 0.5 }}>
-            {t(item.status === 'declined' ? 'office.inboxAdminDeclined' : 'office.inboxAdminHandled')}
-            {item.reason ? ` — ${item.reason}` : ''}
+            {item.req_kind === 'workspace_size' && item.status === 'handled' && item.memory_to
+              ? t('office.inboxSizeRaised', { from: gib(item.memory_from), to: gib(item.memory_to) })
+              : t(item.status === 'declined' ? 'office.inboxAdminDeclined' : 'office.inboxAdminHandled')}
+            {item.reason && !(item.req_kind === 'workspace_size' && item.memory_to) ? ` — ${item.reason}` : ''}
           </Typography>
+        )}
+        {item.kind === 'blocked_route' && (
+          // 다음 할 일과 모델 화면 프로파일 탭(그 프로파일 서랍)으로 가는 길(D10)
+          <>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              {t('office.inboxBlockedRouteText', { profile: item.profile ?? '', host: item.host ?? '', models: (item.models ?? []).join(', ') })}
+            </Typography>
+            <Links>
+              <ProfileLink item={item} view="models" params={{ tab: 'profiles', open: item.profile ?? '' }} label={t('office.inboxBlockedRouteOpen')} />
+            </Links>
+          </>
+        )}
+        {(item.kind === 'workspace_oom' || item.kind === 'size_failed') && (
+          <>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              {item.kind === 'workspace_oom' ? t('office.inboxOomText', { limit: item.limit_memory || '?' }) : t('office.inboxSizeFailedText', { reason: item.text })}
+            </Typography>
+            <Links>
+              <LinkChip to="agents" params={{ open: item.pod ?? '' }} page>
+                {t('office.inboxWorkspaceOpen')}
+              </LinkChip>
+            </Links>
+          </>
         )}
         {item.kind === 'pc_import' && (
           <Links>
@@ -413,27 +456,27 @@ function McpLoginLink({ item }: { item: InboxItem }) {
 }
 
 /** 프로파일 상세로 가는 링크. 다른 POD 의 항목이면 그 POD 로 전환한 뒤 연다(MCP 로그인·PC 가져오기 알림이 함께 쓴다) */
-function ProfileLink({ item, params, label }: { item: InboxItem; params: Record<string, string>; label: string }) {
+function ProfileLink({ item, params, label, view = 'profiles' }: { item: InboxItem; params: Record<string, string>; label: string; view?: 'profiles' | 'models' }) {
   const me = useMe().data;
   const { enqueueSnackbar } = useSnackbar();
   const other = !!item.pod && !!me?.pod?.id && me.pod.id !== item.pod;
   if (!other)
     return (
-      <LinkChip to="profiles" params={params} page>
+      <LinkChip to={view} params={params} page>
         {label}
       </LinkChip>
     );
   const go = async () => {
     try {
       await switchPod(item.pod ?? '');
-      window.location.hash = `#/profiles?${new URLSearchParams(params)}`;
+      window.location.hash = `#/${view}?${new URLSearchParams(params)}`;
       window.location.reload();
     } catch (e) {
       enqueueSnackbar((e as Error).message, { variant: 'error' });
     }
   };
   return (
-    <LinkChip view="profiles" onClick={() => void go()}>
+    <LinkChip view={view} onClick={() => void go()}>
       {label}
     </LinkChip>
   );

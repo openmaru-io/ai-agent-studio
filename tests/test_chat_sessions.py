@@ -249,3 +249,52 @@ class ChatSessionsRouteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeleteProfileSessionsTest(unittest.TestCase):
+    """프로파일 지우기의 세션 분류·막음·닫기(스펙 2026-11-07-001 R3·E3~E5)."""
+
+    def setUp(self):
+        self.ws = FakeWS()
+        self.hub = ChatHub(SETTINGS, connect=lambda: self.ws, reconnect_delays=())
+
+    def tearDown(self):
+        self.ws.close()
+
+    def test_busy_and_open_sessions(self):
+        now = time.time()
+        self.hub.sessions.update({
+            "idle": {"profile": "p", "created": 1.0, "title": "쉬는"},
+            "hid": {"profile": "p", "created": 1.0, "title": "", "hidden": True},
+            "relay": {"profile": "p", "created": 1.0, "title": "", "relay": True},
+            "run": {"profile": "p", "created": 1.0, "title": "답하는", "running": now},
+            "wait": {"profile": "p", "created": 1.0, "title": "", "requests": {"r": {"method": "clarify"}}},
+            "goal": {"profile": "p", "created": 1.0, "title": "목표", "control": {"goal": {"status": "active"}}},
+            "relayrun": {"profile": "p", "created": 1.0, "title": "", "relay": True, "turn_open": True},
+            "done": {"profile": "p", "created": 1.0, "title": "", "closed": True},
+            "other": {"profile": "q", "created": 1.0, "title": "", "running": now},
+        })
+        self.assertEqual(sorted(self.hub.open_sessions("p")), ["goal", "hid", "idle", "relay", "relayrun", "run", "wait"])
+        self.assertEqual(sorted((b["title"], b["kind"]) for b in self.hub.busy_sessions("p")),
+                         [("", "chat"), ("", "relay"), ("답하는", "chat"), ("목표", "chat")])
+
+    def test_deleting_refuses_create_and_resume(self):
+        from aas.hermes.hermes_chat import ProfileDeleting
+        self.assertEqual(self.hub.begin_delete("p"), [])
+        with self.assertRaises(ProfileDeleting):
+            self.hub.create_session("p")
+        with self.assertRaises(ProfileDeleting):
+            self.hub.resume("p", "st-1")
+        self.hub.create_session("q")                                   # 다른 프로파일은 그대로
+        self.hub.end_delete("p")
+        self.hub.create_session("p")
+        self.hub.sessions["b"] = {"profile": "p", "created": 1.0, "title": "", "running": time.time()}
+        self.assertEqual(len(self.hub.begin_delete("p")), 1)
+        self.assertNotIn("p", self.hub._deleting, "일하는 세션이 있으면 막음 표시를 거둔다")
+
+    def test_notice_once(self):
+        self.hub.sessions["s"] = {"profile": "p", "created": 1.0, "title": ""}
+        self.assertTrue(self.hub.notice_once("s", "oom_restart:x", {"code": "oom_restart"}))
+        self.assertFalse(self.hub.notice_once("s", "oom_restart:x", {"code": "oom_restart"}))
+        self.assertFalse(self.hub.notice_once("missing", "k", {"code": "x"}))
+        self.assertEqual([e["payload"]["code"] for e in self.hub.events_after("s", 0, wait=0) if e["type"] == "aas.notice"], ["oom_restart"])

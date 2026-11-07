@@ -19,6 +19,10 @@ describe('스킬 화면으로 가는 링크', () => {
       text.split('\n').forEach((line, i) => {
         if (!LINK.test(line)) return;
         seen += 1;
+        // 프로파일만 넘기는 링크는 표가 아니라 그 에이전트의 스킬 칸(에이전트 보기)으로 연다 — 「내 스킬」 보기 문제가 없어 tab 을 적지 않는다
+        // (채팅 대화 메뉴 「스킬」, 스펙 2026-11-06-003 R3·D7). 검색어·호출 대상·서랍처럼 표로 여는 값이 있으면 지금처럼 tab 을 적는다
+        const agentView = /profile[=:,\s}]/.test(line) && !/\b(q|lens|open|chip|tag|view)[=:]/.test(line);
+        if (agentView) return;
         if (!/tab[=:]/.test(line) && !/tab: '/.test(line)) missing.push(`${file}:${i + 1}: ${line.trim()}`);
         // 프로파일도 넘긴다(스펙 2026-10-27-013 §4-5·OV7). open 만 넘기는 링크는 화면이 찾은 줄의 프로파일을 고른다(R4)
         else if (!/profile[=:,\s}]/.test(line) && !/open[=:]/.test(line)) noProfile.push(`${file}:${i + 1}: ${line.trim()}`);

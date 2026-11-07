@@ -15,7 +15,29 @@ import { useMe } from '@/lib/data';
 
 export interface InboxItem {
   id: string;
-  kind: 'approval' | 'clarify' | 'review' | 'blocked' | 'cron_failed' | 'cron_done' | 'admin_request' | 'admin_request_result' | 'mcp_login' | 'retained_volume' | 'pc_import' | 'connection';
+  kind:
+    | 'approval'
+    | 'clarify'
+    | 'review'
+    | 'blocked'
+    | 'cron_failed'
+    | 'cron_done'
+    | 'admin_request'
+    | 'admin_request_result'
+    | 'mcp_login'
+    | 'retained_volume'
+    | 'pc_import'
+    | 'connection'
+    | 'workspace_oom'
+    | 'size_failed'
+    | 'blocked_route';
+  /** workspace_oom·size_failed·workspace_size(스펙 2026-11-06-005 O2): 메모리 초과 때 한도, 결과의 이전·새 메모리(바이트). 작업공간은 pod */
+  limit_memory?: string;
+  /** blocked_route(OMAI-1857 D10): 막힌 주소(host:port)와 그 주소로 부르는 모델 */
+  host?: string;
+  models?: string[];
+  memory_from?: number;
+  memory_to?: number;
   alias: string;
   /** 화면에 보일 이름(서버가 준다). 자동 별칭(설치본 id)이면 에이전트 이름(스펙 2026-10-19-003). alias 는 이동·검색에 쓴다 */
   label?: string;

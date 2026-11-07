@@ -28,6 +28,12 @@ describe('rowMeta — 세션 줄 둘째 줄', () => {
     expect(local).not.toContain('대기');
   });
 
+  it('프로파일이 없어져 끝난 세션은 완료 줄에도 「끝남」(2026-11-07-001 디자인 3C, G7 의 예외)', () => {
+    const p = rowMeta(row({ state: 'ended' }), { oneAgent: false, done: true });
+    expect(p.map((x) => x.text)).toContain('끝남');
+    expect(rowMeta(row({ state: 'closed' }), { oneAgent: true, done: true }).map((x) => x.key)).not.toContain('state');
+  });
+
   it('G8: 빈 조각은 빼고 잇는다 — 답 필요만 있으면 조각 하나, 앞 구분점이 없다', () => {
     const p = rowMeta(row({ state: 'waiting' }), { oneAgent: true, done: false });
     expect(p).toEqual([{ key: 'state', text: '답 필요', tone: 'warn' }]);

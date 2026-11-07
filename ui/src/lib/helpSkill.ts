@@ -16,7 +16,7 @@ import { guideSub, guideTitle, guideWhat, guideWhen, stepBody, stepTitle } from 
 import { VIEWS, viewVisible } from './views';
 
 function section(): string {
-  const out: string[] = [`## ${t('helpSkill.title')} (${t('helpSkill.lang')})`, '', t('helpSkill.intro'), '', t('helpSkill.notices'), '', `### ${t('helpSkill.menu')}`, ''];
+  const out: string[] = [`## ${t('helpSkill.title')} (${t('helpSkill.lang')})`, '', t('helpSkill.intro'), '', t('helpSkill.notices'), '', t('helpSkill.troubles'), '', `### ${t('helpSkill.menu')}`, ''];
   const user = { admin: false };
   const groups = new Map<string, string[]>();
   for (const v of VIEWS) {

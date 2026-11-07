@@ -232,7 +232,12 @@ function Overview({ d, onDirty }: { d: ProfileDetailData; onDirty: Dirty }) {
                 <option key={m} value={m}>
                   {m === DEFAULT_MODEL_REF
                     ? modelLabel(m, d.default_model)
-                    : m + (d.models.includes(m) ? '' : ' ' + t('profiles.notInLitellm'))}
+                    : m +
+                      (d.blocked_models?.includes(m)
+                        ? ' ' + t('profiles.blockedRoute')
+                        : d.models.includes(m)
+                        ? ''
+                        : ' ' + t('profiles.notInLitellm'))}
                 </option>
               ))}
             </NativeSelect>

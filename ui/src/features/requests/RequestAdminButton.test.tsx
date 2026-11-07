@@ -31,13 +31,13 @@ describe('관리자에게 요청 단추(스펙 2026-10-15-011 단계 5)', () => 
     expect(screen.queryByRole('button', { name: '관리자에게 요청' })).toBeNull();
   });
 
-  it('서버가 거절하면 대화 상자에 이유를 보인다(중복·상한)', async () => {
+  it('대기 요청 상한(429)이면 대화 상자에 서버 이유를 보인다', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((_url: string, init?: RequestInit) =>
         Promise.resolve(
           init?.method === 'POST'
-            ? new Response(JSON.stringify({ error: '이미 같은 요청이 처리를 기다리고 있습니다' }), { status: 409 })
+            ? new Response(JSON.stringify({ error: '처리를 기다리는 요청이 10건 있습니다' }), { status: 429 })
             : new Response(JSON.stringify({ waiting: [] }), { status: 200 })
         )
       )
@@ -45,6 +45,36 @@ describe('관리자에게 요청 단추(스펙 2026-10-15-011 단계 5)', () => 
     mountScreen(<RequestAdminButton profile="ma" kind="other" />, '/');
     await userEvent.click(await screen.findByRole('button', { name: '관리자에게 요청' }));
     await userEvent.click(await screen.findByRole('button', { name: '요청 보내기' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('이미 같은 요청이 처리를 기다리고 있습니다');
+    expect(await screen.findByRole('alert')).toHaveTextContent('처리를 기다리는 요청이 10건 있습니다');
+  });
+
+  it('이미 같은 요청이 대기 중(409)이면 오류 대신 대기 표시로 바꾼다(스펙 2026-11-06-005 D7)', async () => {
+    let gets = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify({ error: '이미 같은 요청이' }), { status: 409 }));
+        gets += 1;
+        const waiting = gets > 1 ? [{ profile: 'ma', kind: 'other', waiting_days: 0 }] : [];
+        return Promise.resolve(new Response(JSON.stringify({ waiting }), { status: 200 }));
+      })
+    );
+    mountScreen(<RequestAdminButton profile="ma" kind="other" />, '/');
+    await userEvent.click(await screen.findByRole('button', { name: '관리자에게 요청' }));
+    await userEvent.click(await screen.findByRole('button', { name: '요청 보내기' }));
+    expect(await screen.findByText('오늘 요청함')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('pod 를 주면 그 작업공간으로 묻고 보낸다, 이름은 aria-label(D6·D20)', async () => {
+    const fn = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({ waiting: [], ok: true }), { status: 200 })));
+    vi.stubGlobal('fetch', fn);
+    mountScreen(<RequestAdminButton profile="_workspace" kind="workspace_size" pod="aas-agent-b" label="관리자에게 메모리 늘리기 요청" ariaLabel="B 메모리 요청" />, '/');
+    await userEvent.click(await screen.findByRole('button', { name: 'B 메모리 요청' }));
+    expect(screen.getByText('처리되면 작업공간이 한 번 다시 시작됩니다.')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: '요청 보내기' }));
+    expect(fn.mock.calls.some(([u]) => String(u).includes('/api/requests?pod=aas-agent-b'))).toBe(true);
+    const post = fn.mock.calls.find(([, i]) => i?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ pod: 'aas-agent-b', kind: 'workspace_size', profile: '_workspace' });
   });
 });

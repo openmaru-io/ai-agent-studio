@@ -1,7 +1,7 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.9
+version: 1.0.10
 author: OPENMARU, Inc.
 ---
 
@@ -11,6 +11,11 @@ author: OPENMARU, Inc.
 사용자가 AAS 화면에서 무엇을 어디서 하는지 물으면 아래 내용으로 답한다. 화면 이름과 탭 이름은 화면에 보이는 그대로 쓴다. 여기에 없는 관리자 일(사용자·부서·모델 관리 등)은 관리자에게 요청하라고 안내한다.
 
 화면 맨 위(상단 막대 위) 띠는 관리자가 기간·종류·대상(전체 또는 부서)을 정해 「관리 › 공지」에서 올린 공지다. 점검·장애 공지는 끝 시각을 함께 보인다. 닫은 공지는 계정 메뉴의 「지금 공지」에서 다시 띠에 보이게 할 수 있다. 공지를 올리거나 고치는 일은 관리자에게 요청하라고 안내한다.
+
+이럴 때는(사용자가 겪는 상황과 할 일):
+- 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
+- 대화의 작업 단계에 「모델 설정 때문에 막힘」이 보이거나 「BLOCKED by CogentAI AAS」가 나오면: 프로파일이나 도구(음성·그림 등)가 AAS LiteLLM 을 거치지 않는 모델 서버를 부르도록 설정되어 막힌 것이다. 같은 줄의 「관리자에게 요청」으로 설정 변경을 요청하라고 안내한다.
+- 프로파일을 지울 때: 그 프로파일로 열린 대화도 함께 닫힌다. 답하는 중이거나 뒤에서 일하는 대화, 진행 중인 스킬 설치가 있으면 지우지 않으니 끝난 뒤 다시 하라고 안내한다. 지워진 프로파일의 대화에는 「이 프로파일이 없어져 대화가 끝났습니다」가 보이고, 「새 대화」로 다른 AI 에이전트를 골라 이어 간다. 터미널의 hermes profile delete 는 그 프로파일로 열린 대화가 있으면 아무것도 지우지 않고 거절하므로 화면에서 지우라고 안내한다.
 
 ### 메뉴 구조
 
@@ -186,7 +191,7 @@ AI 에이전트가 어떤 말투와 역할로 답할지 정합니다.
 
 관리자에게 모델 변경 요청을 보냅니다.
 
-주 모델은 AI 에이전트가 답을 만들 때 쓰는 AI 모델입니다. 모델에 따라 답의 품질과 속도가 달라집니다. 모델은 관리자만 바꿀 수 있어서, 사용자는 화면에서 변경 요청을 보냅니다.
+주 모델은 AI 에이전트가 답을 만들 때 쓰는 AI 모델입니다. 모델에 따라 답의 품질과 속도가 달라집니다. 모델은 관리자만 바꿀 수 있어서, 사용자는 화면에서 변경 요청을 보냅니다. 모든 모델 호출은 AAS LiteLLM 을 거칩니다. 프로파일 설정 파일(config.yaml)에 다른 모델 서버 주소를 직접 적으면 호출이 막히고(「BLOCKED by CogentAI AAS」), 모델 화면에 「허용되지 않은 경로」로 보입니다. 사내 모델 서버의 모델을 써야 하면 그 모델을 AAS LiteLLM 에 등록해 달라고 요청합니다.
 
 언제 쓰나: 답이 자주 틀리거나 너무 느릴 때, 특정 모델을 써야 하는 업무가 생겼을 때 요청합니다.
 
@@ -356,6 +361,11 @@ AI 에이전트가 쓰는 키와 토큰을 넣습니다.
 When the user asks what to do or where something is in the AAS screens, answer from the content below. Use screen and tab names exactly as shown on screen. For admin tasks not covered here (users, departments, models), tell the user to ask an administrator.
 
 The band at the very top of the screen (above the top bar) shows notices an administrator posted in "Admin › Notices" with a period, type and audience (everyone or departments). Maintenance and outage notices also show their end time. A closed notice can be shown in the band again from "Current notices" in the account menu. Tell the user to ask an administrator to post or edit a notice.
+
+When this happens (situations users run into and what to do):
+- If the workspace list shows "Restarted: out of memory" or a chat shows "The workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the workspace restarts once and a result notice arrives.
+- If a chat step shows "blocked by model settings" or "BLOCKED by CogentAI AAS": the profile or a tool (voice, images and so on) is set to call a model server that bypasses AAS LiteLLM, so the call was blocked. Tell the user to ask for a settings change with "Ask an admin" on that line.
+- When deleting a profile: chats open with that profile are closed too. If a chat is still answering or working in the background, or a skill is being installed, nothing is deleted, so tell the user to try again after it finishes. A chat whose profile was deleted shows "This profile no longer exists, so the chat has ended"; use "New chat" to pick another AI Agent. hermes profile delete in a terminal refuses without deleting anything while chats are open with that profile, so tell the user to delete it from the screen.
 
 ### Menu structure
 
@@ -531,7 +541,7 @@ Steps:
 
 Send a model change request to an administrator.
 
-The main model is the AI model the AI Agent uses to write its answers. The model affects answer quality and speed. Only administrators can change it, so users send a change request from the screen.
+The main model is the AI model the AI Agent uses to write its answers. The model affects answer quality and speed. Only administrators can change it, so users send a change request from the screen. Every model call goes through AAS LiteLLM. If a profile settings file (config.yaml) points directly at another model server, the call is blocked ("BLOCKED by CogentAI AAS") and the Models screen shows "Route not allowed". To use a model from an in-house model server, ask for it to be registered in AAS LiteLLM.
 
 When to use: Request a change when answers are often wrong or too slow, or when your work needs a specific model.
 

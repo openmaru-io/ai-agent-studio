@@ -5,7 +5,7 @@
 
 // 채팅·회의·오피스 장면 대화가 함께 쓰는 토큰(스펙 2026-10-15-010 §3).
 // shellTokens.ts 는 COP Console 복사본이라 값을 바꾸지 않는다. 그래서 대화 화면 값은 이 파일에 둔다.
-// 색은 DESIGN.md §1-1.2 의 단색 wash 체계를 따른다. 파랑·브랜드 빨강을 상태 표시에 쓰지 않는다.
+// 색은 DESIGN.md §1-1.2 의 단색 wash 체계를 따른다. 브랜드 빨강을 상태 표시에 쓰지 않는다. 파랑은 Sky 정보 줄(info*)에만 쓴다(스펙 2026-11-07-001 디자인 5B).
 
 export interface ChatTokens {
   /** 대화 영역 바탕. 페이지 배경과 같다. 컴포넌트는 칠하지 않고 대비 시험에서만 쓴다. */
@@ -30,6 +30,10 @@ export interface ChatTokens {
   warnLine: string;
   errWash: string;
   errLine: string;
+  /** 정보 줄(Sky, DESIGN.md: 어두운 #60a5fa, 밝은 #2563eb)의 아이콘 색·바탕·테두리 — 「프로파일이 없어져 끝남」 줄(디자인 3C·5B) */
+  info: string;
+  infoWash: string;
+  infoLine: string;
   /** 단색 아바타 타일 바탕(채팅·AgentChat). 색조 타일은 회의에서만 쓴다. */
   monoTile: string;
   /** 움푹한 칸(승인 카드의 명령) */
@@ -70,6 +74,9 @@ export const chatTokens: { dark: ChatTokens; light: ChatTokens } = {
     warnLine: 'rgba(245, 158, 11, 0.28)',
     errWash: 'rgba(239, 83, 80, 0.06)',
     errLine: 'rgba(239, 83, 80, 0.30)',
+    info: '#60a5fa',
+    infoWash: 'rgba(96, 165, 250, 0.06)',
+    infoLine: 'rgba(96, 165, 250, 0.28)',
     monoTile: 'rgba(255, 255, 255, 0.08)',
     sunken: 'rgba(0, 0, 0, 0.25)',
     popup: {
@@ -100,6 +107,9 @@ export const chatTokens: { dark: ChatTokens; light: ChatTokens } = {
     warnLine: 'rgba(245, 158, 11, 0.35)',
     errWash: 'rgba(239, 83, 80, 0.06)',
     errLine: 'rgba(239, 83, 80, 0.30)',
+    info: '#2563eb',
+    infoWash: 'rgba(96, 165, 250, 0.08)',
+    infoLine: 'rgba(96, 165, 250, 0.35)',
     monoTile: 'rgba(17, 24, 39, 0.08)',
     sunken: 'rgba(17, 24, 39, 0.06)',
     popup: {

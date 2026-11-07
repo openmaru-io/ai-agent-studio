@@ -146,6 +146,8 @@ export interface ProfileDetailData {
   /** 탭별 권한과 막힌 이유 코드(서버가 정한다, 디자인 결정 1A). 문장은 capWhy 가 코드로 고른다 */
   caps?: Record<string, { can: boolean; reason: string }>;
   places?: { seats: number; rooms: number; channels?: number } | null;
+  /** 이 프로파일로 열린 대화 수(이 서버 허브만, 숨김·회의 중계 포함). 지우면 함께 닫힌다(스펙 2026-11-07-001 디자인 3D·재검토 R2-3). 옛 서버는 없다 */
+  open_chats?: number;
   /** SOUL 을 저장하면 알림이 갈 열린 방: 내가 구성원인 방 이름과 그 밖의 방 수(관리자·주인에게만) */
   rooms?: { names: string[]; others: number } | null;
   secure: boolean;
@@ -153,6 +155,8 @@ export interface ProfileDetailData {
   /** 이 작업공간이 다시 뜨는 중(스펙 2026-10-23-008). 그동안 읽지 못한 부분은 notes 대신 안내 한 줄로 보인다 */
   restarting?: boolean;
   models: string[];
+  /** 이 프로파일이 AAS LiteLLM 이 아닌 주소로 부르는 모델(OMAI-1857 D11). 옛 서버는 없다 */
+  blocked_models?: string[];
   /** 지금 AAS 기본 모델 이름(서버 설정의 HERMES_LLM_MODEL). 모르면 빈 문자열 */
   default_model?: string;
   /** 이 프로파일의 게이트웨이를 루트 게이트웨이가 함께 돌린다(쿠버네티스의 이름 있는 프로파일, 2026-10-14) */

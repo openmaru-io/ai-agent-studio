@@ -4,7 +4,7 @@
  */
 
 // 스킬 화면의 에이전트 중심 보기: AI 에이전트 | 그 에이전트의 스킬 | 동작·필요한 것·파일·게시
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -231,6 +231,37 @@ const CHECK = {
   },
 };
 
+const SUM = {
+  one_line: '주간 보고서를 만든다',
+  use_when: ['금요일 보고'],
+  what_it_does: ['일정을 모은다'],
+  strengths: [],
+  requires: [],
+  cautions: [],
+};
+/** /api/skill/summary 응답. 요약이 켜져 있어야(enabled) AiSummary 가 보인다(스펙 2026-11-06-003 OV-C2) */
+const sumView = (over: Record<string, unknown> = {}) => ({
+  enabled: true,
+  lang: 'ko',
+  summary: SUM,
+  at: '2026-11-06T10:00:00+0900',
+  model: 'cogentai-aas',
+  stale: false,
+  src: '',
+  other: null,
+  ...over,
+});
+/** 머리말 + 빈 줄이 섞인 본문 20줄. 개요의 대신 보기는 머리말을 떼고 빈 줄을 뺀 15줄만 보인다 */
+const SKILL_MD = [
+  '---',
+  'name: weekly',
+  'description: 머리말 설명',
+  '---',
+  '',
+  '# 주간 보고',
+  ...Array.from({ length: 19 }, (_, i) => (i % 2 ? '' : `본문 ${i + 1}`)).flatMap((x, i) => [x, `줄 ${i + 1}`]),
+];
+
 afterEach(() => vi.unstubAllGlobals());
 
 function mount(at = '/skills', over: Record<string, unknown> = {}) {
@@ -248,7 +279,8 @@ function mount(at = '/skills', over: Record<string, unknown> = {}) {
     '/api/market/publish': (url: string, body: Record<string, unknown>) =>
       body.name ? { ok: true, request: { id: 'r1' } } : { items: [], can: true },
     '/api/profile/action': { ok: true },
-    '/api/skill/summary': { state: 'none' },
+    // 기본은 요약이 꺼진 서버(LLM 미설정). 요약을 보는 시험은 sumView 로 바꾼다
+    '/api/skill/summary': sumView({ enabled: false, summary: null }),
     ...over,
   });
   mountScreen(<Skills />, at);
@@ -285,11 +317,14 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
     expect(screen.getByTestId('loc')).toHaveTextContent('f=setup');
   });
 
-  it('스킬을 고르면 동작 띠(시작 → 코드 → 도구 → 자격증명)와 근거가 보인다', async () => {
+  // 기본 탭이 「개요」가 되어(스펙 2026-11-06-003 D2) 동작 띠는 「동작」 탭을 눌러 본다. 누르면 주소에 pane=run 이 남는다(OV-M5)
+  it('스킬을 고르고 「동작」 탭을 누르면 동작 띠(시작 → 코드 → 도구 → 자격증명)와 근거가 보인다', async () => {
     const user = userEvent.setup();
     mount('/skills?profile=ma');
     await user.click(await screen.findByRole('button', { name: /weekly/ }));
     const panel = await screen.findByTestId('skill-panel');
+    await user.click(within(panel).getByRole('tab', { name: '동작' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('pane=run'));
     expect(await within(panel).findByRole('region', { name: '시작' })).toHaveTextContent('weekly-report');
     expect(within(panel).getByRole('region', { name: '코드' })).toHaveTextContent('run.py');
     expect(within(panel).getByRole('region', { name: '부르는 도구' })).toHaveTextContent('api.example.com');
@@ -344,19 +379,55 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
     );
   });
 
-  it('「전체 표」는 POD 전체 표로 바꾸고, 표에서 다시 에이전트별 보기로 돌아온다', async () => {
+  // 「전체 표」 단추와 표 도구 줄의 「AI 에이전트별로 보기」를 머리의 두 칸 전환 하나로 바꿨다(스펙 2026-11-06-003 R2·D4)
+  it('머리 전환: 「전체 스킬」은 표로, 표의 「AI 에이전트별」은 에이전트 화면으로 돌아오고 표에서 고른 에이전트가 남는다', async () => {
     const user = userEvent.setup();
-    mount('/skills?profile=ma');
-    await user.click(await screen.findByRole('button', { name: '전체 표' }));
+    mount('/skills?profile=ma&skill=ma%3Aprofiles%2Fma%2Fskills%2Fweekly&pane=needs');
+    const group = await screen.findByRole('group', { name: '스킬 보기' });
+    const byAgent = within(group).getByRole('button', { name: 'AI 에이전트별' });
+    expect(byAgent).toHaveAttribute('aria-pressed', 'true');
+    await user.click(byAgent); // 눌린 칸을 다시 눌러도 그대로
+    expect(screen.getByTestId('agent-skills')).toBeInTheDocument();
+    expect(screen.getByTestId('loc')).toHaveTextContent('pane=needs');
+    await user.click(within(group).getByRole('button', { name: '전체 스킬' }));
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('view=table'));
-    await user.click(await screen.findByRole('button', { name: 'AI 에이전트별로 보기' }));
+    expect(screen.getByTestId('loc')).toHaveTextContent('profile=*');
+    expect(screen.getByTestId('loc')).not.toHaveTextContent('skill=');
+    expect(screen.getByTestId('loc')).not.toHaveTextContent('pane=');
+    const tableGroup = await screen.findByRole('group', { name: '스킬 보기' });
+    const all = within(tableGroup).getByRole('button', { name: '전체 스킬' });
+    expect(all).toHaveAttribute('aria-pressed', 'true');
+    await user.click(all);
+    expect(screen.getByTestId('loc')).toHaveTextContent('view=table');
+    expect(screen.queryByRole('button', { name: 'AI 에이전트별로 보기' })).toBeNull(); // 도구 줄의 옛 단추는 없다
+    // 표에서 에이전트를 고른 뒤 돌아오면 그 에이전트가 남는다
+    const picker = await screen.findByRole('combobox', { name: '프로파일' });
+    await user.selectOptions(picker, 'ma');
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=ma'));
+    await user.click(within(screen.getByRole('group', { name: '스킬 보기' })).getByRole('button', { name: 'AI 에이전트별' }));
     await waitFor(() => expect(screen.getByTestId('agent-skills')).toBeInTheDocument());
+    expect(screen.getByTestId('loc')).toHaveTextContent('/skills?profile=ma');
   });
 
   it('옛 주소(lens·tab·open)는 표로 연다', async () => {
     mount('/skills?tab=all');
-    await screen.findByRole('button', { name: 'AI 에이전트별로 보기' });
+    const group = await screen.findByRole('group', { name: '스킬 보기' });
+    expect(within(group).getByRole('button', { name: '전체 스킬' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByTestId('agent-skills')).not.toBeInTheDocument();
+  });
+
+  it('에이전트 상태 값이 없는 옛 서버는 늘 표로 열고 전환을 숨긴다(OV-H2)', async () => {
+    mount('/skills', { '/api/skills': { ...LIST, agents: undefined } });
+    expect(await screen.findByRole('heading', { name: /스킬/ })).toBeInTheDocument();
+    await screen.findAllByRole('row');
+    expect(screen.queryByRole('group', { name: '스킬 보기' })).toBeNull();
+    expect(screen.queryByTestId('agent-skills')).not.toBeInTheDocument();
+  });
+
+  it('주소의 에이전트가 목록에 없으면 주 에이전트로 바꾸고 한 번 알린다(D10)', async () => {
+    mount('/skills?profile=gone');
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=ma'));
+    expect(await screen.findAllByText('gone 의 스킬을 찾지 못해 주 AI 에이전트를 보입니다')).toHaveLength(1);
   });
 });
 
@@ -412,7 +483,7 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
     expect(screen.getByTestId('loc')).toHaveTextContent('skill=ma%3Aprofiles%2Fma%2Fskills%2Fgif');
   });
 
-  it('G16: 채팅과 같은 에이전트 이름, 「주」 대신 「기본」, 표로 가는 길은 머리 「전체 표」 하나', async () => {
+  it('G16: 채팅과 같은 에이전트 이름, 「주」 대신 「기본」, 표로 가는 길은 머리 「전체 스킬」 하나', async () => {
     mount('/skills?profile=ma', {
       '/api/chat/status': { configured: true, pod: 'p1', agents: [{ name: 'ma', title: '마케팅 도우미' }, { name: 'ops', title: '' }] },
     });
@@ -422,7 +493,7 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
     expect(within(nav).queryByText('주')).toBeNull();
     expect(await screen.findByText('마케팅 도우미의 스킬')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '모든 AI 에이전트의 스킬 표' })).toBeNull();
-    expect(screen.getAllByRole('button', { name: '전체 표' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: '전체 스킬' })).toHaveLength(1); // 이름을 「전체 표」에서 바꿨다(스펙 2026-11-06-003 R2)
   });
 
   it('G17: 켜고 끄기가 실패하면 스위치를 원래대로 두고 오류를 알린다', async () => {
@@ -439,7 +510,7 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
   });
 
   it('G18: 비었거나 만료된 자격증명 카드와 「설정 필요」 줄에 API 키·토큰 화면 링크', async () => {
-    mount(WEEKLY);
+    mount(WEEKLY + '&pane=run'); // 기본 탭이 개요가 되어 동작 탭을 주소로 연다(스펙 2026-11-06-003 D2)
     const panel = await screen.findByTestId('skill-panel');
     const card = (await within(panel).findByRole('region', { name: '자격증명' })).querySelector('[data-node="cred:.env:REPORT_TOKEN"]') as HTMLElement;
     expect(within(card).getByRole('link', { name: 'API 키·토큰 화면에서 고치기' })).toHaveAttribute('href', '/credentials?tab=all&profile=ma');
@@ -453,7 +524,7 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
   });
 
   it('G19: 「등록됨」 근거 칩은 중립색(호박색 아님)', async () => {
-    mount(WEEKLY, {
+    mount(WEEKLY + '&pane=run', {
       '/api/flow?': {
         ...FLOW,
         nodes: [...FLOW.nodes, { id: 'skill:report', kind: 'skill', label: 'report', sub: '', badges: ['등록됨'], depth: 2, meta: {} }], // i18n-ignore: 서버 배지 값
@@ -464,5 +535,183 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
     const chip = within(card).getByText('등록됨').closest('.MuiChip-root') as HTMLElement;
     expect(chip).not.toHaveClass('MuiChip-colorWarning');
     expect(chip).toHaveClass('MuiChip-colorDefault');
+  });
+});
+
+describe('스킬 — 개요 탭(스펙 2026-11-06-003 R1)', () => {
+  const WEEKLY = '/skills?profile=ma&skill=ma%3Aprofiles%2Fma%2Fskills%2Fweekly';
+  const GIF_ID = 'ma:profiles/ma/skills/gif';
+  const FILE = { name: 'SKILL.md', path: 'profiles/ma/skills/weekly/SKILL.md', lines: SKILL_MD, siblings: ['run.py'] };
+
+  it('파일 탭의 SKILL.md 는 스킬 연결도 「코드」 탭과 같은 편집기를 읽기 전용으로 쓴다(2026-11-06)', async () => {
+    mount(WEEKLY + '&pane=files', { '/api/skill/summary': sumView(), '/api/file?': FILE });
+    const panel = await screen.findByTestId('skill-panel');
+    const viewer = await within(panel).findByRole('textbox', { name: 'SKILL.md 코드' });
+    expect(viewer).toHaveAttribute('readonly');
+    expect(viewer).toHaveAttribute('data-language', 'markdown');
+    expect((viewer as HTMLTextAreaElement).value).toContain('본문 1');
+  });
+
+  it('같은 폴더의 파일은 접혀 있다가 누르면 한 줄에 하나, 스킬 폴더 안 경로로 보인다(2026-11-06)', async () => {
+    const siblings = ['profiles/ma/skills/weekly/SKILL.md', 'profiles/ma/skills/weekly/scripts/run.py', 'other/x.md'];
+    mount(WEEKLY + '&pane=files', { '/api/skill/summary': sumView(), '/api/file?': { ...FILE, siblings } });
+    // 처음에는 접혀 있고 「펼치기」를 눌러야 보인다
+    const toggle = await screen.findByRole('button', { name: '펼치기' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('folder-files')).toBeNull();
+    await userEvent.setup().click(toggle);
+    expect(screen.getByRole('button', { name: '접기' })).toHaveAttribute('aria-expanded', 'true');
+    const list = await screen.findByTestId('folder-files');
+    const items = within(list).getAllByRole('listitem');
+    expect(items.map((li) => li.textContent)).toEqual(['SKILL.md', 'scripts/run.py', 'other/x.md']);
+    expect(items[1]).toHaveAttribute('title', 'profiles/ma/skills/weekly/scripts/run.py');
+  });
+
+  it('머리의 「새 스킬」은 전체 스킬 화면처럼 제목 옆 아이콘 단추다(2026-11-06)', async () => {
+    mount(WEEKLY, { '/api/skill/summary': sumView(), '/api/file?': FILE });
+    const add = await screen.findByRole('button', { name: '새 스킬' });
+    expect(add).not.toHaveTextContent('새 스킬'); // 글자 없이 아이콘만, 이름은 aria-label
+  });
+
+  it('스킬을 고르면 기본 탭은 「개요」이고, 요약은 개요에 있고 파일 탭에는 없다', async () => {
+    const user = userEvent.setup();
+    const fn = mount(WEEKLY, { '/api/skill/summary': sumView(), '/api/file?': FILE });
+    const panel = await screen.findByTestId('skill-panel');
+    expect(within(panel).getByRole('tab', { name: '개요' })).toHaveAttribute('aria-selected', 'true');
+    const overview = within(panel).getByTestId('skill-overview');
+    expect(await within(overview).findByTestId('ai-summary')).toHaveTextContent('주간 보고서를 만든다');
+    expect(within(overview).queryByTestId('skill-excerpt')).toBeNull(); // 요약이 있으면 대신 보기는 없다
+    expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
+    await user.click(within(panel).getByRole('tab', { name: '파일' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('pane=files'));
+    expect(await within(panel).findByText(/본문 1/)).toBeInTheDocument();
+    expect(within(panel).queryByTestId('ai-summary')).toBeNull();
+    // 개요로 돌아가면 기본 탭이라 주소에서 pane 이 지워진다
+    await user.click(within(panel).getByRole('tab', { name: '개요' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).not.toHaveTextContent('pane='));
+  });
+
+  it('pane=files 주소는 파일 탭을 연다', async () => {
+    mount(WEEKLY + '&pane=files');
+    const panel = await screen.findByTestId('skill-panel');
+    expect(within(panel).getByRole('tab', { name: '파일' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('요약이 없으면 개요를 1.5초 본 뒤에만 한 번 만들고, 그 전에 다른 스킬로 옮기면 앞 스킬은 만들지 않는다(D3)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const fn = mount(WEEKLY, {
+        '/api/skill/summary': (_u: string, b: Record<string, unknown>) => (b.id ? sumView() : sumView({ summary: null })),
+        '/api/file?': FILE,
+      });
+      const panel = await screen.findByTestId('skill-panel');
+      await within(panel).findByTestId('skill-excerpt');
+      await act(() => vi.advanceTimersByTimeAsync(500));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
+      // 1.5초가 되기 전에 다른 스킬로 옮긴다
+      await user.click(within(screen.getByRole('region', { name: '이 AI 에이전트의 스킬' })).getByRole('button', { name: /gif/ }));
+      await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('skill=ma%3Aprofiles%2Fma%2Fskills%2Fgif'));
+      await screen.findByTestId('skill-excerpt');
+      await act(() => vi.advanceTimersByTimeAsync(800));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
+      await act(() => vi.advanceTimersByTimeAsync(800));
+      await waitFor(() => expect(postedTo(fn, '/api/skill/summary')).toEqual([{ id: GIF_ID, refresh: false }]));
+      // 만든 요약이 오면 대신 보기는 사라진다(D8)
+      expect(await screen.findByTestId('ai-summary')).toHaveTextContent('주간 보고서를 만든다');
+      await waitFor(() => expect(screen.queryByTestId('skill-excerpt')).toBeNull());
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('1.5초 안에 다른 탭으로 옮기면 요약을 만들지 않는다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const fn = mount(WEEKLY, { '/api/skill/summary': sumView({ summary: null }), '/api/file?': FILE });
+      const panel = await screen.findByTestId('skill-panel');
+      await within(panel).findByTestId('skill-excerpt');
+      await user.click(within(panel).getByRole('tab', { name: '필요한 것' }));
+      await act(() => vi.advanceTimersByTimeAsync(2000));
+      expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  const excerptCases: [string, Record<string, unknown>][] = [
+    ['요약 꺼짐', { '/api/skill/summary': sumView({ enabled: false, summary: null }) }],
+    ['요약 경로가 없는 옛 서버(질의 오류)', { '/api/skill/summary': () => new Response('{}', { status: 404 }) }],
+    [
+      '만들기 실패',
+      {
+        '/api/skill/summary': (_u: string, b: Record<string, unknown>) =>
+          b.id ? new Response(JSON.stringify({ error: 'x', reason: 'llm_failed' }), { status: 502 }) : sumView({ summary: null }),
+      },
+    ],
+  ];
+  it.each(excerptCases)('%s: SKILL.md 앞부분(머리말 없음, 빈 줄 빼고 15줄)과 「파일에서 전체 보기」', async (_name, over) => {
+    const user = userEvent.setup();
+    mount(WEEKLY, { '/api/file?': FILE, ...over });
+    const box = await screen.findByTestId('skill-excerpt', {}, { timeout: 4000 });
+    const text = await within(box).findByText(/# 주간 보고/);
+    const lines = (text.textContent ?? '').split('\n');
+    expect(lines).toHaveLength(15);
+    expect(lines[0]).toBe('# 주간 보고');
+    expect(lines.every((l) => l.trim())).toBe(true);
+    expect(box).not.toHaveTextContent('description: 머리말 설명');
+    expect(box).not.toHaveTextContent('name: weekly');
+    await user.click(within(box).getByRole('button', { name: '파일에서 전체 보기' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('pane=files'));
+  });
+
+  it('요약 만들기가 실패하면 경고와 「다시 요약」이 요약 자리에 남고 SKILL.md 앞부분도 그대로 보인다(D8)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      mount(WEEKLY, {
+        '/api/file?': FILE,
+        '/api/skill/summary': (_u: string, b: Record<string, unknown>) =>
+          b.id ? new Response(JSON.stringify({ error: 'x', reason: 'llm_failed' }), { status: 502 }) : sumView({ summary: null }),
+      });
+      await screen.findByTestId('skill-excerpt');
+      await act(() => vi.advanceTimersByTimeAsync(1600));
+      const sum = await screen.findByTestId('ai-summary');
+      expect(await within(sum).findByRole('alert')).toBeInTheDocument();
+      expect(within(sum).getByRole('button', { name: '다시 요약' })).toBeInTheDocument();
+      expect(screen.getByTestId('skill-excerpt')).toHaveTextContent('# 주간 보고');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('SKILL.md 를 읽지 못하면 대신 보기 자리에 경고', async () => {
+    mount(WEEKLY, { '/api/file?': () => new Response(JSON.stringify({ error: '읽기 실패' }), { status: 500 }) });
+    const box = await screen.findByTestId('skill-excerpt');
+    expect(await within(box).findByRole('alert')).toBeInTheDocument();
+  });
+
+  it('설정 필요 스킬의 개요에 빠진 환경변수와 고치기 링크, 「AI 에게 더 묻기」는 개요에, 「고치기 요청」은 파일 탭에', async () => {
+    const user = userEvent.setup();
+    mount('/skills?profile=ma&skill=ma%3Aprofiles%2Fma%2Fskills%2Fgif');
+    const panel = await screen.findByTestId('skill-panel');
+    const setup = await within(panel).findByTestId('skill-setup');
+    expect(setup).toHaveTextContent('GIF_KEY');
+    expect(within(setup).getByRole('link', { name: 'API 키·토큰 화면에서 고치기' })).toHaveAttribute('href', '/credentials?tab=all&profile=ma');
+    const overview = within(panel).getByTestId('skill-overview');
+    expect(await within(overview).findByRole('button', { name: 'AI 에게 더 묻기' })).toBeInTheDocument();
+    expect(within(overview).queryByRole('button', { name: '고치기 요청' })).toBeNull();
+    await user.click(within(panel).getByRole('tab', { name: '파일' }));
+    expect(await within(panel).findByRole('button', { name: '고치기 요청' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'AI 에게 더 묻기' })).toBeNull();
+  });
+
+  it('설정이 필요 없는 스킬에는 설정 필요 줄이 없다', async () => {
+    mount(WEEKLY);
+    const panel = await screen.findByTestId('skill-panel');
+    await within(panel).findByRole('button', { name: 'AI 에게 더 묻기' });
+    expect(within(panel).queryByTestId('skill-setup')).toBeNull();
   });
 });

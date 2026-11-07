@@ -35,6 +35,29 @@ class ModuleTest(unittest.TestCase):
     def setUp(self):
         clear()
 
+    def test_workspace_size_closes_only_on_its_pods_and_keeps_numbers(self):
+        # 스펙 2026-11-06-005 O2·디자인 D16·재검토 R10·M2: 작업공간 단위 요청, 메모리가 커진 크기 롤아웃이 끝나면 그 사람 작업공간 것만 닫는다
+        a = ar.create("pod-a", ar.WORKSPACE, OWNER, "workspace_size", "OOMKilled 21:15, 4Gi")
+        b = ar.create("pod-b", ar.WORKSPACE, OWNER, "workspace_size", "")
+        other = ar.create("pod-c", ar.WORKSPACE, OTHER, "workspace_size", "")
+        with self.assertRaises(ar.RequestError):          # 같은 작업공간의 대기 요청은 하나(부분 유니크 색인)
+            ar.create("pod-a", ar.WORKSPACE, OWNER, "workspace_size", "again")
+        model = ar.create("pod-a", "main", OWNER, "model_change", "")
+        self.assertEqual(ar.close_workspace_size(["pod-a", "pod-b"], 4 * 2**30, 8 * 2**30), 2)
+        self.assertEqual(ar.close_workspace_size([], 1, 2), 0)
+        self.assertEqual(ar.close_workspace_size(["pod-a"], 1, 2), 0, "이미 닫힌 요청은 다시 닫지 않는다")
+        rows = {r["id"]: r for r in ar.result_items(OWNER, LABEL)}
+        got = rows[f"{ar.RESULT_PREFIX}{a}"]
+        self.assertEqual((got["status"], got["memory_from"], got["memory_to"]), ("handled", 4 * 2**30, 8 * 2**30))
+        self.assertIn(f"{ar.RESULT_PREFIX}{b}", rows)
+        pending = {r["id"] for r in ar.admin_items(LABEL)}
+        self.assertEqual(pending, {f"{ar.ADMIN_PREFIX}{other}", f"{ar.ADMIN_PREFIX}{model}"}, "다른 사람·다른 종류는 그대로")
+
+    def test_size_change_parses_only_its_own_reason(self):
+        self.assertEqual(ar.size_change("size:1:2"), {"memory_from": 1, "memory_to": 2})
+        for bad in ("", "size:x:2", "자리 부족", "size:1", "other:1:2"):
+            self.assertIsNone(ar.size_change(bad), bad)
+
     def test_create_validates_kind_and_redacts_detail(self):
         with self.assertRaises(ar.RequestError):
             ar.create("p", "ma", OWNER, "nope", "x")
@@ -214,3 +237,13 @@ class ServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KindsMatchScreenTest(unittest.TestCase):
+    def test_server_kinds_equal_screen_request_kinds(self):
+        # 손으로 맞추는 목록(스펙 2026-11-06-005 Section 2 #1): 서버 KINDS 와 화면 REQUEST_KINDS 가 같아야 한다
+        import re
+        src = (Path(__file__).resolve().parents[1] / "ui" / "src" / "features" / "requests" / "RequestAdminButton.tsx").read_text(encoding="utf-8")
+        m = re.search(r"REQUEST_KINDS: readonly RequestKind\[\] = \[([^\]]*)\]", src)
+        self.assertIsNotNone(m)
+        self.assertEqual(tuple(re.findall(r"'([a-z_]+)'", m.group(1))), ar.KINDS)

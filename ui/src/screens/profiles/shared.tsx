@@ -94,17 +94,31 @@ export function mergeMcpLogin(d: ProfileDetailData | undefined, v: McpLoginTopic
   return changed ? { ...d, mcp } : d;
 }
 
+/** 서버가 _forget(pod) 로 그 작업공간의 캐시를 모두 버리는 동작(server.py profile action) — 화면도 프로파일 목록 쿼리를 다시 읽는다 */
+const PROFILE_SET_ACTIONS = new Set(['create', 'rename', 'delete']);
+
 export function useProfileAct(name: string) {
   const qc = useQueryClient();
   // 화면이 보던 에이전트를 함께 보낸다. 다른 탭에서 에이전트가 바뀌었으면 서버가 409 로 거절한다(스펙 2026-10-19-011 R1 ③)
   const pod = useMe().data?.pod?.id;
   const act = useCallback(
     <T = unknown,>(action: string, extra?: Record<string, unknown>) =>
-      post<T>('/api/profile/action', { name, action, ...extra, ...(pod ? { expect_pod: pod } : {}) }).catch((e: unknown) => {
-        // 서랍 안 경고를 띄운다(디자인 D10). 오류는 그대로 던져 부른 쪽의 알림·편집기 처리를 바꾸지 않는다
-        if (e instanceof ApiError && e.status === 409 && e.reason === 'agent_changed') qc.setQueryData(['profile-agent-changed'], true);
-        throw e;
-      }),
+      post<T>('/api/profile/action', { name, action, ...extra, ...(pod ? { expect_pod: pod } : {}) }).then(
+        (r) => {
+          // 프로파일 목록이 바뀌는 동작은 스킬 화면 목록도 다시 읽는다(OMAI-1855, 스펙 2026-11-06-005 §4 R2). ['skills'] 는 staleTime 120초라
+          // 무효화하지 않으면 이름을 바꾼 옛 프로파일이 스킬 화면 프로파일 고르기에 「중지」로 남았다(서버·Hermes 는 이미 새 이름).
+          if (PROFILE_SET_ACTIONS.has(action)) {
+            void qc.invalidateQueries({ queryKey: ['skills'] });
+            void qc.invalidateQueries({ queryKey: ['profiles'] });
+          }
+          return r;
+        },
+        (e: unknown) => {
+          // 서랍 안 경고를 띄운다(디자인 D10). 오류는 그대로 던져 부른 쪽의 알림·편집기 처리를 바꾸지 않는다
+          if (e instanceof ApiError && e.status === 409 && e.reason === 'agent_changed') qc.setQueryData(['profile-agent-changed'], true);
+          throw e;
+        }
+      ),
     [name, pod, qc]
   );
   const refresh = useCallback(async () => {

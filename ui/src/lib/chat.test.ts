@@ -3,11 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { setLang } from '@/i18n';
 
 import { applyEvent, groupItems, guardBlockReason, newSession, pending, Session } from './chat';
+import { isLlmBlocked, LLM_BLOCK_MARK } from './llmBlock';
 
 const sess = (): Session => newSession({ session_id: 's1', profile: 'ma', title: '', running: false });
 const ev = (type: string, payload: Record<string, unknown> = {}) => ({ type, payload });
@@ -415,3 +419,158 @@ describe('승인·되묻기 취소와 짝 맞추기', () => {
   });
 });
 
+
+describe('LLM 가드 거절(OMAI-1857 D17·M6)', () => {
+  // 가드가 OKE 카나리에서 실제로 낸 문구. 서버 시험(tests/test_workspace_notices.py LlmBlockTest)도 같은 파일을 읽는다
+  const FIXTURE = readFileSync(resolve(__dirname, '../../../tests/fixtures/llm_guard_block.txt'), 'utf-8').trim();
+  const ev = (type: string, payload: Record<string, unknown>) => ({ type, payload }) as Parameters<typeof applyEvent>[1];
+
+  it('오류 이벤트의 거절은 번역 안내 한 줄로, 연달아 와도 한 줄', () => {
+    expect(isLlmBlocked(FIXTURE)).toBe(true);
+    const S = sess();
+    applyEvent(S, ev('error', { message: FIXTURE }));
+    applyEvent(S, ev('message.complete', { status: 'error', text: FIXTURE }));
+    const errs = S.items.filter((x) => x.kind === 'error');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].llmBlocked).toBe(true);
+    expect(errs[0].text).not.toContain(LLM_BLOCK_MARK);
+  });
+
+  it('모델 답 본문이 구절을 인용해도 바꾸지 않고, 다른 오류는 원문', () => {
+    const S = sess();
+    applyEvent(S, ev('message.complete', { status: 'complete', text: `가드는 "${LLM_BLOCK_MARK}" 라고 답합니다` }));
+    applyEvent(S, ev('error', { message: 'timeout' }));
+    expect(S.items.find((x) => x.kind === 'assistant')?.text).toContain(LLM_BLOCK_MARK);
+    expect(S.items.find((x) => x.kind === 'error')).toMatchObject({ text: 'timeout' });
+    expect(S.items.find((x) => x.kind === 'error')?.llmBlocked).toBeUndefined();
+  });
+});
+
+// 스펙 2026-11-07-001 ②: 도구 실패 정의(E8)·도구의 LLM 가드 막힘(E2)·턴 단위 안내 한 줄(디자인 1A)
+describe('도구 실패와 가드 막힘(2026-11-07-001 E2·E8)', () => {
+  const FIXTURE = readFileSync(resolve(__dirname, '../../../tests/fixtures/llm_guard_block.txt'), 'utf-8').trim();
+  const run = (S: Session, name: string, result: unknown, id = name) => {
+    applyEvent(S, ev('tool.start', { tool_id: id, name }));
+    applyEvent(S, ev('tool.complete', { tool_id: id, result }));
+    return S.items.filter((x) => x.kind === 'tool').at(-1)!;
+  };
+  const guidance = (S: Session) =>
+    groupItems(S).filter((b) => b.type === 'item' && b.item.kind === 'error' && b.item.llmBlocked).map((b) => (b.type === 'item' ? b.item : null));
+
+  it('TTS 의 success:false 는 실패, 터미널 exit_code 1 은 실패, 성공은 완료', () => {
+    const S = sess();
+    expect(run(S, 'text_to_speech', JSON.stringify({ success: false, error: 'no key\nmore' }))).toMatchObject({ state: 'failed', failReason: 'no key' });
+    expect(run(S, 'terminal', { output: 'x', exit_code: 1 }).state).toBe('failed');
+    expect(run(S, 'image_generate', { status: 'error' }).state).toBe('failed');
+    expect(run(S, 'terminal', JSON.stringify({ output: 'ok', exit_code: 0 })).state).toBe('done');
+    expect(run(S, 'text_to_speech', { success: true, file: 'a.mp3' }).state).toBe('done');
+    expect(run(S, 'web_search', 'plain text result').state).toBe('done');
+  });
+
+  it('실패 이유는 error 첫 줄 80자', () => {
+    const S = sess();
+    expect(run(S, 'x', { error: 'e'.repeat(120) }).failReason).toHaveLength(80);
+  });
+
+  it('실패한 도구의 error·output 에 구절이 있으면 llmBlocked, 묶음 바깥에 도구용 안내 한 줄', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '읽어 줘' }));
+    expect(run(S, 'text_to_speech', JSON.stringify({ success: false, error: FIXTURE }))).toMatchObject({ state: 'failed', llmBlocked: true });
+    expect(run(S, 'terminal', { output: `Traceback...\n${FIXTURE}`, exit_code: 1 }).llmBlocked).toBe(true);
+    applyEvent(S, ev('message.complete', { text: '못 했습니다' }));
+    const blocks = groupItems(S);
+    const at = blocks.findIndex((b) => b.type === 'steps');
+    expect(blocks[at + 1]).toMatchObject({ type: 'item', item: { kind: 'error', code: 'tool_blocked', name: 'text_to_speech' } });
+    expect(guidance(S)).toHaveLength(1);
+    expect(guidance(S)[0]?.text).toBe('text_to_speech 도구가 AAS LiteLLM 을 거치지 않는 설정이라 막혔습니다. 관리자에게 설정 변경을 요청하세요.');
+  });
+
+  it('성공한 도구 출력이 구절을 인용해도 안내가 없다(M6 유지)', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: 'cat' }));
+    const it2 = run(S, 'terminal', JSON.stringify({ output: `문서: ${FIXTURE}`, exit_code: 0 }));
+    expect(it2.state).toBe('done');
+    expect(it2.llmBlocked).toBeUndefined();
+    expect(guidance(S)).toHaveLength(0);
+  });
+
+  it('같은 턴의 채팅 오류 거절과 겹치면 안내는 한 번. 다음 턴은 다시 보인다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '1' }));
+    run(S, 'text_to_speech', { success: false, error: FIXTURE });
+    applyEvent(S, ev('error', { message: FIXTURE }));
+    expect(S.items.filter((x) => x.kind === 'error')).toHaveLength(0); // 도구 줄이 이미 안내를 낸다
+    expect(guidance(S)).toHaveLength(1);
+    applyEvent(S, ev('aas.user', { text: '2' }));
+    applyEvent(S, ev('error', { message: FIXTURE }));
+    run(S, 'text_to_speech', { success: false, error: FIXTURE }, 'tts2');
+    expect(guidance(S)).toHaveLength(2); // 둘째 턴: 채팅 오류 줄 하나만(도구용 안내는 붙지 않는다)
+    expect(guidance(S)[1]?.code).toBeUndefined();
+  });
+
+  it('안전장치 차단은 guard 로 남고 llmBlocked 가 붙지 않는다(겹침 없음)', () => {
+    const S = sess();
+    const it2 = run(S, 'terminal', { status: 'blocked', error: 'BLOCKED (hardline): rm -rf. x' });
+    expect(it2).toMatchObject({ state: 'failed', guard: 'rm -rf' });
+    expect(it2.llmBlocked).toBeUndefined();
+  });
+
+  it('지난 대화(history)의 llm_blocked·failed 를 따른다', () => {
+    const S = sess();
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: 'a' },
+          { role: 'tool', name: 'text_to_speech', llm_blocked: true },
+          { role: 'tool', name: 'image_generate', failed: true },
+          { role: 'tool', name: 'web_search' },
+        ],
+      })
+    );
+    const tools = S.items.filter((x) => x.kind === 'tool');
+    expect(tools.map((x) => [x.state, !!x.llmBlocked])).toEqual([
+      ['failed', true],
+      ['failed', false],
+      ['done', false],
+    ]);
+    expect(guidance(S)).toHaveLength(1);
+  });
+});
+
+// 스펙 2026-11-07-001 ①③: 메모리 초과 원인 줄·끝난 대화·지우는 중
+describe('다시 연 대화의 원인 줄(2026-11-07-001 ①③)', () => {
+  const OOM = { code: 'oom_restart', finished_at: '2026-11-07T01:02:03Z', limit_memory: '4Gi' };
+
+  it('oom_restart 는 한 번만 넣고 앞선 hub_disconnected 오류 줄을 회색 줄로 바꾼다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: 'a' }));
+    applyEvent(S, ev('aas.disconnected', { code: 'hub_disconnected', text: 'x' }));
+    applyEvent(S, ev('aas.notice', OOM));
+    applyEvent(S, ev('aas.notice', OOM));
+    expect(S.items.filter((x) => x.code === 'oom_restart')).toHaveLength(1);
+    expect(S.items.find((x) => x.code === 'oom_restart')?.oom).toEqual({ finished_at: OOM.finished_at, limit_memory: '4Gi' });
+    expect(S.items.some((x) => x.kind === 'error')).toBe(false);
+    expect(S.items.find((x) => x.code === 'reconnected')).toMatchObject({ kind: 'notice' });
+  });
+
+  it('다시 열기 실패에 oom 이 있으면 원인 줄이 실패 줄 위에', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.reconnect.failed', { code: 'expired', oom: { finished_at: OOM.finished_at, limit_memory: '' } }));
+    expect(S.items.map((x) => x.code ?? x.kind)).toEqual(['oom_restart', 'error']);
+    expect(S.items[1]).toMatchObject({ text: '이 대화를 다시 열지 못했습니다.', reopen: true });
+  });
+
+  it('profile_deleted·profile_not_found 는 끝난 대화(줄 하나), profile_deleting 은 회색 줄', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.disconnected', { code: 'profile_deleted', text: 'x' }));
+    applyEvent(S, ev('aas.reconnect.failed', { code: 'profile_not_found' }));
+    expect(S.ended).toBe(true);
+    expect(S.closed).toBe(true);
+    expect(S.items.map((x) => x.code)).toEqual(['profile_ended']);
+    const D = sess();
+    applyEvent(D, ev('aas.reconnect.failed', { code: 'profile_deleting' }));
+    expect(D.ended).toBeUndefined();
+    expect(D.items.map((x) => [x.kind, x.code])).toEqual([['notice', 'profile_deleting']]);
+  });
+});

@@ -62,6 +62,7 @@ const STATE_LABEL: Record<SessionState, string> = {
   done: 'chat.sessDone',
   idle: 'chat.sessIdle',
   closed: 'chat.sessClosed',
+  ended: 'chat.sessEnded',
 };
 /** 저장 세션의 출처 표시(AAS 가 아닌 것만 보인다) */
 const SOURCE_LABEL: Record<string, string> = { aas: 'chat.srcAas', telegram: 'chat.srcTelegram', buzz: 'chat.srcBuzz' };
@@ -117,10 +118,14 @@ export function rowMeta(r: SessionRow, { oneAgent, done }: { oneAgent: boolean; 
     // 완료 줄은 한 형식: 채널 · 메시지 n · 마지막 활동. 상태 라벨(대기 등)은 넣지 않는다(G7)
     const src = r.source || 'aas';
     out.push({ key: 'src', text: SOURCE_LABEL[src] ? t(SOURCE_LABEL[src]) : src === 'cli' ? 'CLI' : src });
+    // 예외: 프로파일이 없어져 끝난 세션은 완료 묶음에서도 「끝남」을 보인다 — 왜 멈췄는지 목록에서 알 수 있게(2026-11-07-001 디자인 3C)
+    if (r.state === 'ended') out.push({ key: 'state', text: t(STATE_LABEL.ended) });
     if (r.count) out.push({ key: 'count', text: t('chat.sessPastMeta', { n: r.count }) });
     out.push({ key: 'when', text: whenOf(r.at) });
   } else if (live(r.state)) {
     out.push({ key: 'state', text: t(STATE_LABEL[r.state]), tone: r.state === 'waiting' ? 'warn' : 'info' });
+  } else if (r.state === 'ended') {
+    out.push({ key: 'state', text: t(STATE_LABEL.ended) }); // 프로파일이 없어져 끝남(스펙 2026-11-07-001 디자인 3C) — 에이전트가 여럿이어도 보인다
   } else if (oneAgent && !r.stored) {
     out.push({ key: 'state', text: t(STATE_LABEL[r.state]) });
   }
@@ -135,7 +140,7 @@ export function StateMark({ state }: { state: SessionState }) {
   if (state === 'running') return <Box sx={box}><CircularProgress size={13} thickness={5} sx={{ color: theme.palette.info.main }} aria-hidden /></Box>;
   if (state === 'waiting') return <Box sx={box}><HelpOutlineRoundedIcon aria-hidden sx={{ fontSize: 18, color: theme.palette.warning.main }} /></Box>;
   if (state === 'done') return <Box sx={box}><Box aria-hidden sx={{ width: 9, height: 9, borderRadius: '50%', bgcolor: theme.palette.success.main }} /></Box>;
-  if (state === 'closed') return <Box sx={box}><Box aria-hidden sx={{ width: 8, height: 8, borderRadius: '50%', border: `1.5px solid ${tk.muted}` }} /></Box>;
+  if (state === 'closed' || state === 'ended') return <Box sx={box}><Box aria-hidden sx={{ width: 8, height: 8, borderRadius: '50%', border: `1.5px solid ${tk.muted}` }} /></Box>;
   return <Box sx={box}><Box aria-hidden sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: tk.line }} /></Box>;
 }
 
@@ -403,9 +408,9 @@ export function SessionList({
   // 모든 AI 에이전트 보기의 완료는 이 서버에서 끝난 세션뿐이라 기간을 따지지 않는다 — 칩도 숨긴다(G4)
   const inRange = (r: SessionRow) => !f || ageOf(r) < (range === '7d' ? 7 : 2);
   const pinned = rows.filter((r) => r.pinned);
-  // 진행 중: 답 필요 → 실행 중 → 아직 열려 있는(이 서버가 받고 있는) 세션 중 오늘 활동한 것. 끝난 세션은 완료로
+  // 진행 중: 답 필요 → 실행 중 → 아직 열려 있는(이 서버가 받고 있는) 세션 중 오늘 활동한 것. 끝난 세션(닫힘·프로파일이 없어져 끝남)은 완료로
   const liveRows = rows.filter((r) => !r.pinned && live(r.state));
-  const openToday = rows.filter((r) => !r.pinned && !live(r.state) && !r.stored && r.state !== 'closed' && (r.id === store.currentId || r.state === 'done'));
+  const openToday = rows.filter((r) => !r.pinned && !live(r.state) && !r.stored && r.state !== 'closed' && r.state !== 'ended' && (r.id === store.currentId || r.state === 'done'));
   const progress = [...liveRows.filter((r) => r.state === 'waiting'), ...liveRows.filter((r) => r.state === 'running'), ...openToday];
   const progressIds = new Set(progress.map((r) => r.id));
   const doneAll = rows.filter((r) => !r.pinned && !progressIds.has(r.id)).sort((a, b) => b.at - a.at);

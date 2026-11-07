@@ -140,6 +140,31 @@ describe('Agents', () => {
         .map((dt) => [dt.textContent ?? '', dt.nextElementSibling?.textContent ?? ''])
     );
 
+  // 스펙 2026-11-06-005 화면 설계 U1(D3·D4·D20): 메모리 초과 안내
+  const OOM = { id: 'oom|hag-kim-1|2026-11-06T11:00:00Z', finished_at: '2026-11-06T11:00:00Z', limit_memory: '4Gi' };
+
+  it('메모리 초과 안내가 있으면 상태 칸에 알약, 서랍에 세 줄 안내와 요청 단추(사용자)', async () => {
+    const user = userEvent.setup();
+    mount({ ...BASE, agents: [{ ...AGENTS[0], oom: OOM }, AGENTS[1]] }, { '/api/requests': { waiting: [] } });
+    expect(await screen.findByText('메모리 초과로 재시작')).toBeInTheDocument();
+    await user.click(await rowByName(/마케팅/));
+    const dlg = await screen.findByRole('dialog', { name: '마케팅' });
+    expect(within(dlg).getByText(/메모리 한도 4Gi를 넘어/)).toBeInTheDocument();
+    expect(within(dlg).getByText('그때 진행 중이던 대화·작업은 중단되었습니다.')).toBeInTheDocument();
+    expect(within(dlg).getByRole('button', { name: /작업공간의 메모리 늘리기를 관리자에게 요청/ })).toBeInTheDocument();
+  });
+
+  it('관리자에게는 요청 대신 크기 바꾸기, [닫기]는 받은편지함 확인으로 보낸다(D21)', async () => {
+    const user = userEvent.setup();
+    const fn = mount({ ...BASE, admin: true, limits: {}, agents: [{ ...AGENTS[0], oom: OOM }, AGENTS[1]] }, { '/api/office/inbox/answer': { ok: true } });
+    await user.click(await rowByName(/마케팅/));
+    const dlg = await screen.findByRole('dialog', { name: '마케팅' });
+    expect(within(dlg).getByRole('button', { name: '크기 바꾸기' })).toBeInTheDocument();
+    expect(within(dlg).queryByRole('button', { name: /메모리 늘리기를 관리자에게 요청/ })).toBeNull();
+    await user.click(within(dlg).getByRole('button', { name: '메모리 초과 안내 닫기' }));
+    await waitFor(() => expect(postedTo(fn, '/api/office/inbox/answer')).toEqual([{ id: OOM.id, choice: 'ack' }]));
+  });
+
   it('서랍의 기본 정보에 에이전트 이름과 ID 가 따로 있다', async () => {
     const user = userEvent.setup();
     mount({ ...BASE, admin: true });

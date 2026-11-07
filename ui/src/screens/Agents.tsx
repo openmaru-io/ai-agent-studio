@@ -14,7 +14,7 @@ import { Alert, Box, Button, InputAdornment, LinearProgress, NativeSelect, Stack
 import { visuallyHidden } from '@mui/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { AddAction, AddIconButton } from '@/components/AddIconButton';
 import { AgentChips } from '@/components/AgentChip';
@@ -42,6 +42,7 @@ import { useFocusOnMount } from '@/lib/useFocusOnMount';
 import { useTopic } from '@/lib/ws';
 
 import { capacityAvailable, capacityCard, CapacityData, CapacityPanel, DefaultSizePanel, ownerSizeChanges, SizeDialog, SizeForm, sizeKv, sizeShort, useCapacity, useSizes } from './agents/capacity';
+import { OomAlert, type OomNotice, OomPill } from './agents/oom';
 import { dismissedRollouts, dismissRollout, rolloutBanner, RolloutData, RolloutDetail, RolloutInfo, RolloutLive, RolloutStartForm, shortDigest, useRolloutActions, VersionCell, VersionFields } from './agents/rollout';
 
 interface AgentRow extends VersionFields {
@@ -69,6 +70,8 @@ interface AgentRow extends VersionFields {
   size_differs?: boolean;
   /** 대화 중(busy-until). 크기 저장 확인 창의 목록이 보인다(3A) */
   busy?: boolean;
+  /** 이 사람이 닫지 않은 메모리 초과 안내(서버 agents.oom_notice, 스펙 2026-11-06-005 D3·D8) */
+  oom?: OomNotice | null;
 }
 interface AgentsData extends RolloutData {
   enabled: boolean;
@@ -534,13 +537,20 @@ function ProfilesCell({ x, max }: { x: AgentRow; max?: number }) {
 const prevOf = (d: AgentsData, name: string) => d.rollout?.agents.find((a) => a.name === name)?.previous ?? '';
 
 /** AI 에이전트 작업공간 서랍 본문. 목록이 연 서랍과 서랍 안 페이지(AgentPage)가 함께 쓴다 */
-function AgentDetail({ x, d }: { x: AgentRow; d: AgentsData }) {
+function AgentDetail({ x, d, focus }: { x: AgentRow; d: AgentsData; focus?: 'size' }) {
   const sizes = useSizes(!!d.admin);
   const people = usePeople(!!d.admin);
   const nameOf = (e: string) => people.find((p) => p.email === e)?.name;
   const mine = d.agents.filter((a) => a.owner && a.owner === x.owner);
+  const sizeRef = useRef<HTMLDivElement>(null);
+  const toSize = () => sizeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // 받은편지함 「작업공간 크기 열기」(D14)는 이 구역으로 바로 연다 — 크기 폼이 그려진 뒤
+  useEffect(() => {
+    if (focus === 'size' && sizes.data) toSize();
+  }, [focus, sizes.data]);
   return (
     <>
+      {x.oom && <OomAlert pod={x.name} label={agentLabel(rowRef(x), nameOf)} oom={x.oom} admin={!!d.admin} onSize={toSize} />}
       <KV
         pairs={[
           // 이름은 에이전트 이름(없으면 ID), ID 는 따로. 예전에는 「이름」 행이 ID 였고 이름은 서랍 제목에만 있었다(2026-10-18)
@@ -585,7 +595,7 @@ function AgentDetail({ x, d }: { x: AgentRow; d: AgentsData }) {
           </Typography>
           <OwnerLimit x={x} d={d} />
           {x.owner && (
-            <Box sx={{ mt: 3 }}>
+            <Box sx={{ mt: 3 }} ref={sizeRef}>
               <Typography variant="body2" component="h4" sx={{ fontWeight: 600, m: 0, mb: 1 }}>
                 {t('agents.ownerSize')}
               </Typography>
@@ -617,7 +627,7 @@ export function AgentPage({ page }: { page: PageOf<'agent'> }) {
   const x = q.data?.agents?.find((a) => a.name === page.pod);
   useDrawerHead(x ? { title: x.display_name || x.name, sub: phaseText(x.phase) } : null);
   if (!q.data || !x) return q.data ? <Alert severity="warning">{t('agents.notFound', { id: page.pod })}</Alert> : <ScreenLoading title={page.pod} error={q.error?.message} />;
-  return <AgentDetail x={x} d={q.data} />;
+  return <AgentDetail x={x} d={q.data} focus={page.focus} />;
 }
 
 export function Agents() {
@@ -683,6 +693,9 @@ export function Agents() {
             <Pill tone="warn">
               {x.suspended_reason ? reasonText(x.suspended_reason, t('agents.phaseSuspended')) : t('agents.phaseSuspended')}
             </Pill>
+          ) : x.oom ? (
+            // 메모리 초과로 다시 시작(D3) — 멈춤 다음, 자리 기다림·바꾸는 중보다 앞. 「문제」 탭에는 넣지 않는다
+            <OomPill />
           ) : x.wait_reason ? (
             // 노드 자리가 없어 기다린다(스펙 2026-10-30-003 2C, 무채색). 「문제」 탭에도 넣는다
             <Pill>{t('sizes.waitingPill')}</Pill>

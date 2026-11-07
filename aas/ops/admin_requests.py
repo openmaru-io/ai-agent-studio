@@ -24,7 +24,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS admin_requests_pending ON admin_requests (pod,
 CREATE INDEX IF NOT EXISTS admin_requests_status ON admin_requests (status, created_at);
 CREATE INDEX IF NOT EXISTS admin_requests_requester ON admin_requests (requester, status);
 """
-KINDS = ("model_change", "profile_limit", "office_seat", "archive_restore", "channel_apply", "other")
+KINDS = ("model_change", "profile_limit", "office_seat", "archive_restore", "channel_apply", "workspace_size", "other")
+# workspace_size(메모리 늘리기, 스펙 2026-11-06-005 O2)는 작업공간 단위라 프로파일 칸에 이 자리표시를 쓴다 — 이름 바꾸기와 무관하게 중복 방지가 유지된다
+WORKSPACE = "_workspace"
 DETAIL_MAX, REASON_MAX = 300, 300
 ADMIN_LIST_MAX = 200
 STALE_DAYS = 7
@@ -89,6 +91,38 @@ def create(pod: str, profile: str, requester: str, kind: str, detail: str, now: 
     return int(made[0])
 
 
+def close_workspace_size(pods: list[str], old_memory: float | None, new_memory: float | None, now: datetime | None = None) -> int:
+    """메모리가 커진 크기 롤아웃이 그 작업공간들에서 끝났다(스펙 2026-11-06-005 디자인 D16·재검토 R10). 대기 중인 workspace_size 요청을
+    「처리됨」으로 닫는다. reason 은 숫자만 「size:<이전 바이트>:<새 바이트>」 — 화면이 사용자 언어로 옮긴다(재검토 M2). 닫은 수를 돌려준다."""
+    pods = [p for p in pods if p]
+    if not pods:
+        return 0
+    reason = f"size:{int(old_memory or 0)}:{int(new_memory or 0)}"
+    marks = ",".join("?" * len(pods))
+    with _conn() as conn:
+        cur = conn.execute(f"UPDATE admin_requests SET status='handled', handled_by='auto:size', handled_at=?, reason=? "
+                           f"WHERE status='pending' AND kind='workspace_size' AND pod IN ({marks})", (_iso(now or _now()), reason, *pods))
+        return cur.rowcount or 0
+
+
+def waiting_pods(requester: str | None, kind: str) -> list[dict]:
+    """대기 중인 이 종류의 요청이 있는 작업공간 [{pod, requester}]. requester 가 None 이면 모든 요청자."""
+    sql, args = "SELECT DISTINCT pod, requester FROM admin_requests WHERE status='pending' AND kind=?", [kind]
+    if requester is not None:
+        sql, args = sql + " AND requester=?", args + [(requester or "").lower()]
+    with _conn() as conn:
+        return [{"pod": r[0], "requester": r[1]} for r in conn.execute(sql, args)]
+
+
+def size_change(reason: str) -> dict | None:
+    """close_workspace_size 의 reason → {memory_from, memory_to}(바이트) 또는 None."""
+    head, _, rest = (reason or "").partition(":")
+    a, _, b = rest.partition(":")
+    if head != "size" or not a.isdigit() or not b.isdigit():
+        return None
+    return {"memory_from": int(a), "memory_to": int(b)}
+
+
 def prune(now: datetime | None = None) -> None:
     """처리·거절된 지 보관 기간이 지난 행을 지운다."""
     cut = _iso((now or _now()) - timedelta(days=keep_days()))
@@ -128,6 +162,7 @@ def result_items(requester: str, label_of, now: datetime | None = None) -> list[
                                               "AND handled_at >= ? ORDER BY handled_at, id", ((requester or "").lower(), cut))]
     return [{"id": f"{RESULT_PREFIX}{r['id']}", "kind": "admin_request_result", "req_kind": r["kind"], "status": r["status"], "pod": r["pod"],
              "profile": r["profile"], "alias": label_of(r["pod"], r["profile"]), "text": r["detail"], "reason": r["reason"] or "",
+             **(size_change(r["reason"] or "") or {} if r["kind"] == "workspace_size" else {}),
              "at": datetime.fromisoformat(r["handled_at"]).timestamp()} for r in rows]
 
 

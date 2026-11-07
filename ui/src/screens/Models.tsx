@@ -27,6 +27,9 @@ interface ModelInfo {
   id: string;
   in_litellm: boolean | null;
   aas_model?: boolean;
+  /** 프로파일 하나라도 AAS LiteLLM 이 아닌 주소로 이 모델을 부른다(OMAI-1857 D5·D19). 가드가 막는다 */
+  blocked_route?: boolean;
+  blocked_profiles?: { profile: string; host: string }[];
   primary: string[];
   fallback: string[];
   auxiliary: string[];
@@ -59,6 +62,7 @@ interface ModelsData {
     profiles_with_warn: number;
     fallback_trace_jobs: number;
     unused_models: number;
+    blocked_routes?: number;
   };
   models: ModelInfo[];
   profiles: ProfileModels[];
@@ -74,8 +78,13 @@ const who = (a: string[]) =>
   a.length ? (a.length > 4 ? t('models.profileCount', { count: a.length }) : a.join(', ')) : t('models.none');
 const seconds = (p: Probe) => t('models.responseSeconds', { seconds: ((p.ms ?? 0) / 1000).toFixed(1) });
 
+/** 허용되지 않은 경로가 「LiteLLM 에 없음」·「AAS 모델 아님」보다 앞선다 — 경고 하나만(D5) */
 const InLitellm = ({ m }: { m: ModelInfo }) =>
-  m.in_litellm === true ? (
+  m.blocked_route ? (
+    <span title={t('models.blockedRouteTip', { hosts: blockedHosts(m) })}>
+      <Tag tone="bad">{t('models.blockedRoute')}</Tag>
+    </span>
+  ) : m.in_litellm === true ? (
     <Tag tone="good">{t('models.inLitellm')}</Tag>
   ) : m.in_litellm === false ? (
     <Tag tone="bad">{t('models.notInLitellm')}</Tag>
@@ -83,10 +92,11 @@ const InLitellm = ({ m }: { m: ModelInfo }) =>
     <Tag>{t('models.litellmUnknown')}</Tag>
   );
 
+const blockedHosts = (m: ModelInfo) => [...new Set((m.blocked_profiles ?? []).map((b) => b.host))].join(', ');
 const litellmText = (m: ModelInfo) =>
-  m.in_litellm === true ? t('models.inLitellm') : m.in_litellm === false ? t('models.notInLitellm') : t('models.litellmUnknown');
+  m.blocked_route ? t('models.blockedRoute') : m.in_litellm === true ? t('models.inLitellm') : m.in_litellm === false ? t('models.notInLitellm') : t('models.litellmUnknown');
 const litellmTone = (m: ModelInfo): Tone | undefined =>
-  m.in_litellm === true ? 'good' : m.in_litellm === false ? 'bad' : undefined;
+  m.blocked_route ? 'bad' : m.in_litellm === true ? 'good' : m.in_litellm === false ? 'bad' : undefined;
 const levelOf = (p: ProfileModels): [string, Tone] =>
   p.issues.some((i) => i.level === 'bad')
     ? [t('models.levelBad'), 'bad']
@@ -95,7 +105,7 @@ const levelOf = (p: ProfileModels): [string, Tone] =>
     : [t('models.levelOk'), 'good'];
 
 const NotAas = ({ m }: { m: ModelInfo }) =>
-  m.aas_model === false ? <Tag tone="warn">{t('models.notAasModel')}</Tag> : null;
+  m.aas_model === false && !m.blocked_route ? <Tag tone="warn">{t('models.notAasModel')}</Tag> : null;
 
 const Names = ({ names }: { names: string[] }) =>
   names.length ? (
@@ -149,9 +159,18 @@ function ProbePanel({
   };
   return (
     <>
-      <Button startIcon={<NetworkCheckOutlinedIcon />} variant="contained" size="small" disabled={m.in_litellm === false || !!p?.pending} onClick={run}>
-        {t('models.probe')}
-      </Button>
+      {/* 막히는 경로는 시험 호출이 AAS LiteLLM 으로 가서 프로파일의 실제 경로를 보지 못한다 — 누르지 못하게 하고 이유를 보인다(D19) */}
+      <span title={m.blocked_route ? t('models.probeBlockedTip') : undefined}>
+        <Button
+          startIcon={<NetworkCheckOutlinedIcon />}
+          variant="contained"
+          size="small"
+          disabled={m.in_litellm === false || !!m.blocked_route || !!p?.pending}
+          onClick={run}
+        >
+          {t('models.probe')}
+        </Button>
+      </span>
       <div>
         {p?.pending ? (
           <Typography color="text.secondary">{t('models.calling')}</Typography>
@@ -199,6 +218,21 @@ function ModelDetail({ m }: { m: ModelInfo }) {
           [t('models.auxCron'), [...m.auxiliary, ...m.cron].join(', ')],
         ]}
       />
+      {m.blocked_route && (
+        <Section title={t('models.blockedRoute')}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {t('models.blockedRouteText')}
+          </Typography>
+          {(m.blocked_profiles ?? []).map((b) => (
+            <Typography key={b.profile} variant="body2">
+              <LinkChip to="models" params={{ tab: 'profiles', q: b.profile }}>
+                {b.profile}
+              </LinkChip>{' '}
+              <code>{b.host}</code>
+            </Typography>
+          ))}
+        </Section>
+      )}
       <Section title={t('models.primaryProfiles')}>
         <Names names={m.primary} />
       </Section>
@@ -249,7 +283,7 @@ const modelColumns = (probes: Record<string, Probe>, defaultModel?: string): Gri
       const p = probes[m.id];
       return (
         <>
-          {m.aas_model === false && <Pill tone="warn">{t('models.notAasModel')}</Pill>}
+          {m.aas_model === false && !m.blocked_route && <Pill tone="warn">{t('models.notAasModel')}</Pill>}
           {m.primary.length + m.fallback.length === 0 && <Pill>{t('models.unused')}</Pill>}
           {p &&
             (p.pending ? (

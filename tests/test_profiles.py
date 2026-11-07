@@ -28,6 +28,8 @@ class Fake(BaseHTTPRequestHandler):
     soul = "# 마케팅 에이전트\n규칙 하나\n"
     profiles = ["default", "ma", "sa"]
     export_ok = True
+    delete_hook = None                 # DELETE /api/profiles/<이름> 을 받을 때 부른다(지우기 순서 시험)
+    delete_fail = False
     gets: list = []                                                    # GET 요청 경로(캐시 시험용)
     catalog_extra: dict = {}                                           # GET /api/env 에 더할 변수(주인 시험용: 모델 제공자 키 등)
     env_down = False                                                   # GET /api/env 가 실패하는가(카탈로그를 못 읽는 경우)
@@ -97,6 +99,11 @@ class Fake(BaseHTTPRequestHandler):
             return self._send(200, {"path": "/opt/data/exports/x.tar.gz"}) if Fake.export_ok else self._send(500, {"detail": "disk full"})
         if u.path.endswith("/test"):
             return self._send(200, {"ok": True, "tools": [1, 2, 3]})
+        if method == "DELETE" and u.path.startswith("/api/profiles/"):
+            if Fake.delete_hook:
+                Fake.delete_hook()
+            if Fake.delete_fail:
+                return self._send(500, {"detail": "Device or resource busy"})
         if method == "PATCH" and body.get("new_name") == "busy":
             return self._send(400, {"detail": "gateway is running"})
         return self._send(200, {"ok": True})
@@ -134,6 +141,7 @@ class ProfileTest(unittest.TestCase):
 
     def setUp(self):
         Fake.calls.clear(); Fake.export_ok = True; Fake.profiles = ["default", "ma", "sa"]
+        Fake.delete_hook = None; Fake.delete_fail = False
         self.seed()
         self.old_forget = server._forget
         server._forget = lambda pod, keep=("flow",): (self.old_forget(pod, keep), self.seed())     # 수집기 대신 채워 둔 값을 쓴다
@@ -269,12 +277,109 @@ class ProfileTest(unittest.TestCase):
         code, out = self.act("sa", "delete", confirm="sa")
         self.assertEqual((code, out["deleted"], out["archive"]), (200, "sa", "/opt/data/exports/x.tar.gz"))
         self.assertEqual([(c[0], c[1]) for c in Fake.calls], [("POST", "/api/profiles/sa/export"), ("DELETE", "/api/profiles/sa")])
-        server._hubs[self.pod.id].sessions["s1"] = {"profile": "ma", "title": "", "created": 1.0}
+
+    def test_delete_closes_idle_chats_and_refuses_busy_ones(self):
+        """스펙 2026-11-07-001 R3·E3~E5·디자인 5C: 쉬는 대화(숨김·회의 중계 포함)는 닫고 지운다. 답하는 중·뒤에서 일하는 대화가 있으면
+        409 busy_sessions 와 목록. 닫는 RPC 답을 기다린 뒤 지우고, 닫힌 세션에는 profile_deleted 를 보낸다."""
+        import time as _t
+        from aas.hermes import hermes_chat
+        h = server._hubs[self.pod.id]
+        closed = []
+        orig = h.request
+        h.request = lambda method, params=None, timeout=None: closed.append((method, params)) or {}
         try:
-            code, out = self.act("ma", "delete", confirm="ma")
-            self.assertEqual(code, 400); self.assertIn("열려 있는 대화", out["error"])
+            h.sessions.update({"s1": {"profile": "ma", "title": "숨긴 대화", "created": 1.0, "hidden": True},
+                               "r1": {"profile": "ma", "title": "", "created": 1.0, "relay": True},
+                               "o1": {"profile": "sa", "title": "다른 프로파일", "created": 1.0}})
+            h.sessions["b1"] = {"profile": "ma", "title": "긴 보고서를 쓰는 중인 대화 제목이 아주 깁니다 정말로 아주 길어요", "created": 1.0, "running": _t.time()}
+            Fake.calls.clear()
+            code, out = self.act("ma", "delete", confirm="ma", skip_export=True)
+            self.assertEqual((code, out.get("reason")), (409, "busy_sessions"))
+            self.assertEqual(out["sessions"], [{"title": "긴 보고서를 쓰는 중인 대화 제목이 아주 깁니다 정말로 아주 길어요"[:40], "kind": "chat"}])
+            self.assertFalse(any(c[0] == "DELETE" for c in Fake.calls), "남는 대화가 있으면 지우지 않는다")
+            self.assertFalse(h.sessions["s1"].get("closed"), "거절할 때는 아무 대화도 닫지 않는다")
+            h.sessions["b1"].pop("running")
+            h.sessions["b1"]["control"] = {"goal": {"status": "active"}}       # 뒤에서 일함(목표)도 남는다
+            self.assertEqual(self.act("ma", "delete", confirm="ma", skip_export=True)[1].get("reason"), "busy_sessions")
+            del h.sessions["b1"]
+            code, out = self.act("ma", "delete", confirm="ma", skip_export=True)
+            self.assertEqual((code, out["deleted"]), (200, "ma"))
+            self.assertTrue(h.sessions["s1"]["closed"] and h.sessions["r1"]["closed"], "숨긴 대화·회의 중계도 닫는다")
+            self.assertFalse(h.sessions["o1"].get("closed"), "다른 프로파일 대화는 그대로")
+            self.assertEqual(sorted(p["session_id"] for m, p in closed if m == "session.close"), ["r1", "s1"])
+            ev = [e for e in h.events_after("s1", 0, wait=0) if e["type"] == "aas.disconnected"]
+            self.assertEqual(ev[-1]["payload"]["code"], "profile_deleted")
+            self.assertEqual([c[0] for c in Fake.calls], ["DELETE"])
+            self.assertNotIn("ma", h._deleting, "지우기가 끝나면 막음 표시를 푼다")
+            # 닫기 답이 상한 안에 오지 않으면 지우지 않는다
+            h.sessions["s2"] = {"profile": "sa", "title": "", "created": 1.0}
+            h.request = lambda method, params=None, timeout=None: _t.sleep(2) or {}
+            Fake.calls.clear()
+            orig_total = hermes_chat.DELETE_CLOSE_TOTAL
+            hermes_chat.DELETE_CLOSE_TOTAL = 0.2
+            try:
+                code, out = self.act("sa", "delete", confirm="sa", skip_export=True)
+            finally:
+                hermes_chat.DELETE_CLOSE_TOTAL = orig_total
+            self.assertEqual(code, 503); self.assertIn("지우지 않았습니다", out["error"])
+            self.assertFalse(any(c[0] == "DELETE" for c in Fake.calls))
+            self.assertNotIn("sa", h._deleting)
         finally:
-            server._hubs[self.pod.id].sessions.clear()
+            h.request = orig
+            h.sessions.clear()
+
+    def test_profile_deleted_signal_is_sent_after_the_delete_and_cache_reset(self):
+        """끝남 신호는 Hermes 가 실제로 지운 뒤, 이 서버의 에이전트 목록 캐시를 버린 뒤에 보낸다. 먼저 보내면 화면이 목록을 다시 읽을 때
+        아직 그 프로파일이 있어 채팅 왼쪽 줄에 남았다(2026-11-07 OKE 실화면). 지우기가 실패하면 「끝남」이 아니라 보통 끊김으로 알려 다시 연다."""
+        h = server._hubs[self.pod.id]
+        orig_req, orig_push = h.request, h._push
+        seen = []
+        h.request = lambda method, params=None, timeout=None: {}
+        def push(sid, etype, payload, *a, **k):
+            if etype == "aas.disconnected":
+                hit = server._cache.get(f"{self.pod.id}:agents")     # 목록 캐시에 지운 프로파일이 남아 있는가(버렸거나 지운 뒤 다시 만든 것이면 없다)
+                seen.append((sid, payload.get("code"), bool(hit) and any(r.get("name") == "sa" for r in hit[1])))
+            return orig_push(sid, etype, payload, *a, **k)
+        h._push = push
+        at_delete = []
+        Fake.delete_hook = lambda: at_delete.append(list(seen))
+        try:
+            h.sessions["s1"] = {"profile": "sa", "title": "", "created": 1.0}
+            server._cache[f"{self.pod.id}:agents"] = (9e18, [{"name": "sa"}])
+            code, _ = self.act("sa", "delete", confirm="sa", skip_export=True)
+            self.assertEqual(code, 200)
+            self.assertEqual(at_delete, [[]], "지우기 요청 전에는 아무 신호도 보내지 않는다")
+            self.assertEqual(seen, [("s1", "profile_deleted", False)], "지운 뒤, 목록 캐시에 지운 프로파일이 없을 때 끝남 신호")
+            self.assertTrue(h.sessions["s1"]["closed"])
+            # 지우기가 실패하면 보통 끊김 — 화면이 다시 연다(프로파일은 그대로 있다)
+            seen.clear(); Fake.delete_fail = True
+            h.sessions["s2"] = {"profile": "sa", "title": "", "created": 1.0}
+            code, _ = self.act("sa", "delete", confirm="sa", skip_export=True)
+            self.assertNotEqual(code, 200)
+            self.assertEqual([(sid, c) for sid, c, _ in seen], [("s2", "hub_disconnected")])
+        finally:
+            h.request, h._push = orig_req, orig_push
+            h.sessions.clear()
+
+    def test_delete_waits_for_a_running_skill_install_and_cancels_queued_ones(self):
+        """지우기와 겹친 스킬 설치가 Hermes CLI 로 프로파일 폴더를 다시 만들었다(OKE 2026-11-07). 도는 설치가 있으면 409 로 기다리게 하고,
+        아직 보내지 않은 요청은 취소한 뒤 지운다(스펙 2026-11-07-001 §6)."""
+        from aas.market import market_dispatch
+        for d in ("queue", "done"):
+            for f in market_dispatch.marketplace._dir(d).glob("*.json"):
+                f.unlink()
+        base = {"namespace": "free", "name": "hello", "package": "free/hello", "version": "1.0.0", "pod": self.pod.id, "profile": "sa",
+                "kind": "skill", "mode": "install", "status": "queued"}
+        market_dispatch._write("queue", {**base, "id": "20261107151100000001-abcdef", "task": "aas-market-x", "status": "running"})
+        Fake.calls.clear()
+        code, out = self.act("sa", "delete", confirm="sa", skip_export=True)
+        self.assertEqual((code, out.get("reason")), (409, "busy_install"))
+        self.assertFalse(any(c[0] == "DELETE" for c in Fake.calls))
+        (market_dispatch.marketplace._dir("queue") / "20261107151100000001-abcdef.json").unlink()
+        market_dispatch._write("queue", {**base, "id": "20261107151100000002-abcdef"})
+        code, out = self.act("sa", "delete", confirm="sa", skip_export=True)
+        self.assertEqual(code, 200)
+        self.assertEqual(market_dispatch.pending_for(self.pod.id, "sa"), ([], []), "보내지 않은 요청은 취소된다")
 
     def test_soul_edit_keeps_versions_and_can_revert(self):
         Fake.soul = "# 마케팅 에이전트\n규칙 하나\n"
@@ -893,6 +998,21 @@ class ProfileTest(unittest.TestCase):
             spy.slow = True
             code, out = self.act("ma", "mcp_test", target="OMDM")
         self.assertEqual((code, out["test"]["ok"], out["test"].get("timeout")), (200, False, True))
+
+    def test_export_waits_as_long_as_the_pc_export(self):
+        """내보내기는 파일마다 NFS 왕복이 생겨 먼 워커(oke-worker-5)에서 새 프로파일도 58초 걸렸다. 30초에 끊어 지우기가 늘 실패했다
+        (스펙 2026-11-07-001 §6). PC 내려받기용 내보내기와 같은 600초를 기다린다."""
+        from unittest import mock
+        from aas.hermes.hermes_api import HermesAPI
+        orig, seen = HermesAPI.call, []
+        def spy(self, method, path, body=None, query=None, timeout=30):
+            if path.endswith("/export"):
+                seen.append(timeout)
+            return orig(self, method, path, body, query, timeout)
+        with mock.patch.object(HermesAPI, "call", spy):
+            self.act("ma", "export")
+            self.act("sa", "delete", confirm="sa")
+        self.assertEqual(seen, [600, 600])
 
     def test_non_owner_cannot_use_secret_or_channel_actions(self):
         on = self.as_owner()

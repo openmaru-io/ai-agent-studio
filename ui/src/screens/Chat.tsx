@@ -50,8 +50,10 @@ import { ChatFrame } from '@/components/chat/ChatFrame';
 import { CommandCard } from '@/components/chat/CommandCard';
 import { CommandRows, SlashNote } from '@/components/chat/CommandRows';
 import { Composer, ComposerHandle } from '@/components/chat/Composer';
+import { EndedRow } from '@/components/chat/EndedRow';
 import { ErrorRow } from '@/components/chat/ErrorRow';
 import { MessageRow } from '@/components/chat/MessageRow';
+import { OomRow } from '@/components/chat/OomRow';
 import { answerKeys, ReadAloudButton, readPinned, useReadScope, useReadSnap } from '@/components/chat/ReadAloud';
 import { ReconnectRow, statusRowSx } from '@/components/chat/ReconnectRow';
 import { planSlash, skillSuggestItems, slashItems, slashSource } from '@/components/chat/skillSuggest';
@@ -64,12 +66,13 @@ import { teamOwnerName, TeamStatusRow } from '@/components/TeamTargetNote';
 import { tier1, tier2 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
 import { useOpenParam, useParamPatch, useRouteDrawerValue } from '@/components/useRouteDrawer';
+import { RequestAdminButton } from '@/features/requests/RequestAdminButton';
 import { t } from '@/i18n';
 import { setCardAreaTop } from '@/lib/cardArea';
 import { groupItems, isAsk, pending, Session } from '@/lib/chat';
 import { AgentInfo, ChatGroup, ChatStatus, ChatStore, chatStore, groupLabel, rowTitle, SessionRow, singleProfile, targetTitle, useChat } from '@/lib/chatStore';
 import { chatColumn, chatColumnPad, chatMetrics, chatType, coarseTouch, hueOf } from '@/lib/chatTokens';
-import { useMe } from '@/lib/data';
+import { useIsAdmin, useMe } from '@/lib/data';
 import { fmtClock, zonedDate } from '@/lib/format';
 import { CH } from '@/lib/labels';
 import { MONO_FONT } from '@/lib/monoFont';
@@ -236,7 +239,8 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
         dot={a.running === false ? 'off' : a.running ? 'on' : undefined}
       />
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        {/* 순서: 이름 → · 주인 → 지금 에이전트 → 꺼짐. 좁으면 주인부터 줄고(flexShrink 100 : 1) 뱃지·꺼짐은 줄지 않는다(DD10).
+        {/* 순서: 이름 → · 주인 → 꺼짐. 좁으면 주인부터 줄고(flexShrink 100 : 1) 꺼짐은 줄지 않는다(DD10).
+            「지금 작업공간」·「내 팀」은 둘째 줄 앞으로 옮겼다 — 줄지 않는 뱃지가 칸이 좁으면 이름을 한 글자로 밀어냈다(2026-11-06).
             이름에 최소 폭(4em)을 주면 짧은 이름 뒤에 빈칸이 생겨 두지 않는다(가짜 서버 캡처 2026-10-19) */}
         <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.5, minWidth: 0, fontSize: chatType.name, fontWeight: 500 }}>
           <Box
@@ -262,16 +266,6 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
               {store.status.owner_name}
             </Typography>
           ) : null}
-          {headless && group?.current ? (
-            <Box component="span" sx={{ flexShrink: 0, alignSelf: 'center' }}>
-              <SubtleBadge>{t('chat.currentAgent')}</SubtleBadge>
-            </Box>
-          ) : null}
-          {headless && group?.team ? (
-            <Box component="span" sx={{ flexShrink: 0, alignSelf: 'center' }}>
-              <SubtleBadge>{t('chat.myTeam')}</SubtleBadge>
-            </Box>
-          ) : null}
           {a.running === false ? (
             <Box component="span" sx={{ flexShrink: 0 }}>
               <Tag>{t('chat.off')}</Tag>
@@ -279,6 +273,17 @@ function AgentRow({ store, a, group, headless, onPicked }: { store: ChatStore; a
           ) : null}
         </Box>
         <Typography variant="body2" noWrap sx={{ color: tk.muted, fontSize: 12 }}>
+          {headless && group?.current ? (
+            <Box component="span" sx={{ color: tk.text, fontWeight: 500 }}>
+              {t('chat.currentAgentShort')}
+            </Box>
+          ) : null}
+          {headless && group?.team ? (
+            <Box component="span" sx={{ color: tk.text, fontWeight: 500 }}>
+              {(headless && group?.current ? ' · ' : '') + t('chat.myTeam')}
+            </Box>
+          ) : null}
+          {headless && (group?.current || group?.team) && text ? ' · ' : ''}
           {text}
         </Typography>
       </Box>
@@ -872,8 +877,25 @@ function AgentList({
   );
 }
 
-function Messages({ S, store, profile, onPanel }: { S: Session | null; store: ChatStore; profile: string; onPanel: OpenPanel }) {
+function Messages({
+  S,
+  store,
+  profile,
+  onPanel,
+  compact,
+  onPickAgent,
+}: {
+  S: Session | null;
+  store: ChatStore;
+  profile: string;
+  onPanel: OpenPanel;
+  compact?: boolean;
+  /** 「끝남」 줄의 [새 대화]: 에이전트(프로파일) 고르기(디자인 3C) */
+  onPickAgent: () => void;
+}) {
   const tk = useChatTokens();
+  const admin = useIsAdmin();
+  const navigate = useNavigate();
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const first = useRef(true);
@@ -1092,7 +1114,16 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
                   key={i}
                   inset
                   action={
-                    it.retry ? (
+                    it.llmBlocked && store.profile ? (
+                      // 모델 설정이 AAS LiteLLM 을 거치지 않는다 — 고칠 수 있는 사람은 관리자다(D17). 도구가 막힌 줄은 도구 이름·프로파일을 미리 채운다(디자인 3B)
+                      <RequestAdminButton
+                        profile={store.profile}
+                        kind="model_change"
+                        pod={store.status?.pod || undefined}
+                        detail={it.code === 'tool_blocked' ? t('chat.toolLlmBlockedDetail', { tool: it.name || 'tool', profile: store.profile }) : t('chat.llmBlockedDetail')}
+                        ariaLabel={it.code === 'tool_blocked' ? t('chat.toolLlmBlockedAsk', { tool: it.name || 'tool' }) : undefined}
+                      />
+                    ) : it.retry ? (
                       <Button startIcon={<SendOutlinedIcon />} size="small" variant="outlined" color="inherit" sx={tier2 as object} onClick={() => resend(it)}>
                         {t('chat.resend')}
                       </Button>
@@ -1122,6 +1153,37 @@ function Messages({ S, store, profile, onPanel }: { S: Session | null; store: Ch
                   {t('chat.files.notice.rewind_failed')}
                 </Box>
               );
+            if (it.kind === 'notice' && it.code === 'oom_restart' && it.oom) {
+              // 메모리 초과로 다시 시작해 중단됐다(스펙 2026-11-07-001 ①). 관리자는 그 작업공간 서랍의 크기 칸으로, 팝업에서는 새 탭으로(디자인 7A)
+              const pod = S?.pod || store.status?.pod || '';
+              const sizeUrl = `/agents?${new URLSearchParams({ open: pod, focus: 'size' })}`;
+              return (
+                <OomRow
+                  key={i}
+                  oom={it.oom}
+                  pod={pod || undefined}
+                  label={store.group(pod)?.name || pod}
+                  admin={admin}
+                  compact={compact}
+                  onSize={() => (compact ? window.open(`${window.location.pathname}#${sizeUrl}`, '_blank', 'noopener') : navigate(sizeUrl))}
+                />
+              );
+            }
+            if (it.kind === 'notice' && it.code === 'reconnected')
+              // 메모리 초과 원인 줄이 온 뒤의 앞선 끊김 줄(디자인 1C) — 할 일이 없어 회색 한 줄
+              return (
+                <Box key={i} role="note" sx={{ my: 1, textAlign: 'center', fontSize: chatType.meta, color: tk.muted }}>
+                  {t('chat.reconnectedNote')}
+                </Box>
+              );
+            if (it.kind === 'notice' && it.code === 'profile_deleting')
+              // 이 프로파일을 지우는 중이라 다시 열지 않았다(디자인 2E)
+              return (
+                <Box key={i} role="status" sx={{ my: 1, textAlign: 'center', fontSize: chatType.meta, color: tk.muted }}>
+                  {t('chat.profileDeleting')}
+                </Box>
+              );
+            if (it.kind === 'notice' && it.code === 'profile_ended') return <EndedRow key={i} compact={compact} onNewChat={onPickAgent} />;
             if (it.kind === 'notice') return <NoticeLine key={i} code={it.code} name={it.name} reason={it.reason} text={it.text} />;
             if (it.kind === 'divider')
               // 지난 대화 경계: 선 + 글자, 아래 둘째 줄 안내(스펙 §4-3). 장식 대시(—)는 쓰지 않는다
@@ -1234,8 +1296,23 @@ function conversationKey(S: object | null): string {
 
 /** 대화 하나(머리·메시지·입력). 채팅 화면과 대화 팝업(OMAI-1115)이 함께 쓴다. onBack 이 없으면 뒤로 단추를 두지 않는다. compact 는 팝업: 단추 글자와 키 안내를 숨긴다.
  *  onPanel 은 채팅 화면이 「지난 대화」·「파일」 서랍을 주소로 열 때 준다(useChatPanel). 없으면(팝업) 주소 없이 바로 연다 */
-export function Conversation({ store, onBack, compact, onPanel }: { store: ChatStore; onBack?: () => void; compact?: boolean; onPanel?: OpenPanel }) {
+export function Conversation({
+  store,
+  onBack,
+  compact,
+  onPanel,
+  onPickAgent,
+}: {
+  store: ChatStore;
+  onBack?: () => void;
+  compact?: boolean;
+  onPanel?: OpenPanel;
+  /** 다른 에이전트를 골라 새 대화(끝난 대화의 [새 대화], 디자인 3C). 없으면(팝업) 채팅 화면으로 간다 — 고르기 목록이 거기에 있다 */
+  onPickAgent?: () => void;
+}) {
   const tk = useChatTokens();
+  const navigate = useNavigate();
+  const pickAgent = onPickAgent ?? (() => navigate('/chat'));
   const profile = store.profile;
   const a = store.agent(profile);
   const S = store.current();
@@ -1267,6 +1344,7 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
   // 연결이 끊긴 동안(스펙 2026-10-20-030 4-10): 입력 칸 위 줄, 보내기·멈춤 막기, 상태가 바뀔 때만 알림
   const view = store.reconnectView(S);
   const blocked = store.blocked(S);
+  const ended = !!S?.ended; // 프로파일이 없어져 끝난 대화 — 입력창을 끈다(디자인 3C)
   const rowFocus = useRef(false);
   // 보낼 대상이 팀원 에이전트면 입력 칸 위에 누구의 에이전트인지 회색 줄로 알린다. 기준은 쿠키가 아니라 이 대화의 묶음이다(스펙 2026-10-22-001 DD5)
   const target = store.group();
@@ -1528,6 +1606,7 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
         {/* 가이드(OMAI-1274 user.past-chat·user.file-viewer)가 강조하는 자리 */}
         <Box component="span" data-guide="chat.new" sx={{ display: 'inline-flex' }}>
           {barBtn(t('chat.newSessionSame'), t('chat.newSession'), <AddCommentOutlinedIcon sx={{ fontSize: 18 }} />, () => {
+            if (S?.ended) return pickAgent(); // 없어진 프로파일로 새로 열면 실패한다(디자인 3C)
             store.newChat();
             refocus();
           })}
@@ -1558,14 +1637,15 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
           </Typography>
           {link(`/profiles?name=${encodeURIComponent(profile)}`, t('chat.linkProfile'))}
           {link(`/cron?${new URLSearchParams({ tab: 'profiles', q: profile })}`, t('chat.linkCron'))}
-          {link(`/skills?${new URLSearchParams({ tab: 'all', profile })}`, t('chat.linkSkills'))}
+          {/* 표(tab=all)가 아니라 그 에이전트의 스킬 칸으로 연다. 없는 에이전트면 스킬 화면이 주 에이전트로 바꾸고 알린다(스펙 2026-11-06-003 R3·D7·D10) */}
+          {link(`/skills?${new URLSearchParams({ profile })}`, t('chat.linkSkills'))}
           {link(`/channels?${new URLSearchParams({ tab: 'all', q: profile })}`, t('chat.linkChannels'))}
           {link(`/credentials?${new URLSearchParams({ tab: 'all', profile })}`, t('chat.linkCredentials'))}
         </Menu>
       </Stack>
       {store.notice && <Alert severity="error">{store.notice}</Alert>}
       {showConversation(store, S, compact) ? (
-        <Messages S={S} store={store} profile={profile} onPanel={panel} />
+        <Messages S={S} store={store} profile={profile} onPanel={panel} compact={compact} onPickAgent={pickAgent} />
       ) : (
         // 아직 보내지 않은 새 세션: 가운데 큰 안내 + 아래 큰 입력 카드(Claude·Gemini 첫 화면처럼)
         <Box data-testid="new-session-hero" sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', px: 2, pb: 2, textAlign: 'center' }}>
@@ -1699,12 +1779,13 @@ export function Conversation({ store, onBack, compact, onPanel }: { store: ChatS
             onChange={setInput}
             onSend={send}
             sendOn="enter"
-            canSend={canSend && !blocked}
+            canSend={canSend && !blocked && !ended}
+            disabled={ended}
             busy={busy || compressing}
             sendWhileBusy={busy && !!plan.command}
             onStop={() => store.interrupt()}
             stopDisabled={blocked || compressing}
-            placeholder={t('chat.inputPlaceholderSkills', { title })}
+            placeholder={ended ? t('chat.endedPlaceholder') : t('chat.inputPlaceholderSkills', { title })}
             inputLabel={t('chat.inputLabel', { title })}
             sendLabel={t('chat.send')}
             stopLabel={t('chat.interrupt')}
@@ -1883,7 +1964,7 @@ export function Chat({ store = chatStore }: { store?: ChatStore }) {
     </Box>
   );
   const conversation = hasAgent ? (
-    <Conversation key={`${store.status?.pod ?? ''}|${store.profile}`} store={store} onBack={back} onPanel={openPanel} />
+    <Conversation key={`${store.status?.pod ?? ''}|${store.profile}`} store={store} onBack={back} onPanel={openPanel} onPickAgent={() => setPicking(true)} />
   ) : (
     <Box sx={{ mt: 8, px: 3, textAlign: 'center' }}>
       <Typography sx={{ color: tk.muted }}>{narrow ? t('chat.pickSession') : filter ? t('chat.pickInAgent') : t('chat.pickAgentHint')}</Typography>

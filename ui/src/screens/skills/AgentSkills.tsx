@@ -8,12 +8,11 @@
 // 상태 값(켜짐·사용 기록·설정 필요·동작 형태)은 서버가 /api/skills 의 줄마다 붙인다(aas/assets/agent_skills.py).
 // 화면 다듬기(스펙 2026-11-06-002 §8): 1280px 미만 아바타 띠 G12, 탭 G13, 게시 단계 G14, 에이전트 요약 G15, 에이전트 이름 G16,
 // 켜고 끄기 G17, 자격증명 고칠 곳 링크 G18, 「등록됨」 중립색 G19.
-import AddIcon from '@mui/icons-material/Add';
+// 개요 탭(기본 탭, AI 요약은 1.5초 머문 뒤)·머리의 「AI 에이전트별 | 전체 스킬」 전환·없는 에이전트 알림(스펙 2026-11-06-003 R1~R3).
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import SearchIcon from '@mui/icons-material/Search';
-import TableRowsOutlinedIcon from '@mui/icons-material/TableRowsOutlined';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
   Alert,
@@ -34,13 +33,16 @@ import {
 } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
-import { ReactNode, useEffect, useId, useMemo, useState } from 'react';
+import { ReactNode, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { AiSummary } from '@/components/AiSummary';
+import { AddIconButton } from '@/components/AddIconButton';
+import { AiSummary, useSummaryView } from '@/components/AiSummary';
 import { ChatChip, KV, LinkChip, Mono, monoFont, Section, Tag } from '@/components/bits';
 import { useChatTokens } from '@/components/chat/useChatTokens';
+import { languageOf } from '@/components/codeLanguage';
 import { DisclosureButton } from '@/components/DisclosureButton';
+import { LazyCodeEditor } from '@/components/LazyCodeEditor';
 import { PageTitle } from '@/components/PageTitle';
 import { useFillHeight } from '@/components/useFillHeight';
 import { t } from '@/i18n';
@@ -55,6 +57,7 @@ import { AgentAvatar } from '@/screens/chat/parts';
 import { Toggle } from '@/screens/profiles/Panes';
 import { useProfileAct } from '@/screens/profiles/shared';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
 export type Readiness = 'ok' | 'setup' | 'unused' | 'off';
 export type RunMode = 'cron' | 'script' | 'mcp' | 'rest' | 'chat';
@@ -109,8 +112,14 @@ interface SkillOne {
 
 const FILTERS = ['all', 'on', 'off', 'setup', 'unused'] as const;
 type Filter = (typeof FILTERS)[number];
-const PANES = ['run', 'needs', 'files', 'publish'] as const;
+// 「개요」가 맨 앞이고 기본 탭이다(스펙 2026-11-06-003 R1·D2). 기본 탭이면 주소에서 pane 을 지운다
+const PANES = ['overview', 'run', 'needs', 'files', 'publish'] as const;
 type Pane = (typeof PANES)[number];
+const DEFAULT_PANE: Pane = 'overview';
+/** 개요에서 요약을 스스로 만들기 전에 같은 스킬을 보고 있어야 하는 시간(D3) */
+const SUMMARY_DWELL_MS = 1500;
+/** 요약 대신 보이는 SKILL.md 앞부분 줄 수(빈 줄 빼고, D5·OV-L1) */
+const EXCERPT_LINES = 15;
 const LAYOUT_KEY = 'aas-skills-layout';
 const LIMITS = { agents: [200, 360] as const, list: [300, 560] as const };
 
@@ -180,15 +189,7 @@ export function agentOrder(g: AgentSkillsData): string[] {
   );
 }
 
-export function AgentSkills({
-  g,
-  onTable,
-  onNew,
-}: {
-  g: AgentSkillsData;
-  onTable: () => void;
-  onNew: (profile: string) => void;
-}) {
+export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile: string) => void }) {
   const [params, setParams] = useSearchParams();
   const narrow = useMediaQuery('(max-width:899.98px)');
   // 900~1279px 는 에이전트 칸을 아바타 띠로 접는다 — 채팅과 같은 규칙(G12). 세 칸이면 상세가 눌려 탭이 잘렸다
@@ -204,7 +205,7 @@ export function AgentSkills({
   const skillId = params.get('skill') ?? '';
   const pane: Pane = (PANES as readonly string[]).includes(params.get('pane') ?? '')
     ? (params.get('pane') as Pane)
-    : 'run';
+    : DEFAULT_PANE;
   const set = (patch: Record<string, string | null>) =>
     setParams(
       (prev) => {
@@ -214,8 +215,17 @@ export function AgentSkills({
       },
       { replace: true }
     );
+  // 주소의 에이전트가 목록에 없으면(다른 작업공간의 에이전트 등) 주 에이전트로 바꾸고 한 번 알린다(D10).
+  // 표 화면의 없는 프로파일 알림(useProfileScope)과 같은 방식 — 주소에 적혀 온 것만 알리고, 주소가 비어 있으면 조용히
+  const { enqueueSnackbar } = useSnackbar();
+  const told = useRef('');
   useEffect(() => {
-    if (want !== agent) set({ profile: agent });
+    if (want === agent) return;
+    if (want && told.current !== want) {
+      told.current = want;
+      enqueueSnackbar(t('skillsAgent.agentMissing', { name: want }), { variant: 'info' });
+    }
+    set({ profile: agent });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [want, agent]);
   const rows = g.skills.filter((s) => s.profile === agent);
@@ -244,7 +254,7 @@ export function AgentSkills({
       key={picked.id}
       row={picked}
       pane={pane}
-      onPane={(p) => set({ pane: p === 'run' ? null : p })}
+      onPane={(p) => set({ pane: p === DEFAULT_PANE ? null : p })}
       onBack={narrow ? () => set({ skill: null }) : undefined}
     />
   ) : (
@@ -254,23 +264,16 @@ export function AgentSkills({
   const title = (
     <PageTitle
       gutterBottom
+      wrap
       action={
-        <Stack direction="row" spacing={1}>
+        <>
+          {/* 「새 스킬」은 전체 스킬 화면과 같은 제목 옆 + 아이콘 단추(2026-11-06 사용자 지시) */}
           <Box component="span" data-guide="skills.new" sx={{ display: 'inline-flex' }}>
-            <Button
-              size="small"
-              variant="outlined"
-              color="inherit"
-              startIcon={<AddIcon />}
-              onClick={() => onNew(agent)}
-            >
-              {t('skills.newSkill')}
-            </Button>
+            <AddIconButton label={t('skills.newSkill')} onClick={() => onNew(agent)} />
           </Box>
-          <Button size="small" color="inherit" startIcon={<TableRowsOutlinedIcon />} onClick={onTable}>
-            {t('skillsAgent.allTable')}
-          </Button>
-        </Stack>
+          {/* 표 화면과 같은 자리·같은 부품(R2). 「전체 표」 단추를 대신한다 */}
+          <SkillsViewToggle value="agent" />
+        </>
       }
     >
       {t('skills.title')}
@@ -875,6 +878,7 @@ function SkillPanel({
         ))}
       </Tabs>
       <Box sx={{ pt: 2 }}>
+        {pane === 'overview' && <OverviewPane row={row} one={one.data} onFiles={() => onPane('files')} />}
         {pane === 'run' && <RunPane row={row} flow={flow.data} loading={flow.isLoading} error={flow.error?.message} />}
         {pane === 'needs' && <NeedsPane row={row} one={one.data} flow={flow.data} />}
         {pane === 'files' && <FilesPane row={row} one={one.data} />}
@@ -1197,14 +1201,101 @@ interface FileData {
   siblings?: string[];
 }
 
-/** 「파일」: SKILL.md 와 같은 폴더의 파일, 내려받기, AI 에이전트에게 설명·고치기 부탁 */
-function FilesPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
+/** 고른 스킬의 SKILL.md(같은 폴더 파일 목록 포함). 개요와 파일 탭이 같은 질의 키를 써 요청이 하나다(스펙 2026-11-06-003 §8-6) */
+function useSkillFile(one?: SkillOne) {
   const path = one ? `${one.path}/SKILL.md` : '';
-  const f = useQuery<FileData>({
+  return useQuery<FileData>({
     queryKey: ['file', path, 'siblings'],
     queryFn: () => get<FileData>(`/api/file?siblings=1&path=${encodeURIComponent(path)}`),
     enabled: !!path,
   });
+}
+
+/** SKILL.md 머리말(맨 앞 --- 블록)을 떼고 빈 줄을 뺀 앞 n 줄(OV-L1) */
+function skillExcerpt(lines: string[], n = EXCERPT_LINES): string[] {
+  let body = lines;
+  if (lines[0]?.trim() === '---') {
+    const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
+    body = end > 0 ? lines.slice(end + 1) : [];
+  }
+  return body.filter((l) => l.trim()).slice(0, n);
+}
+
+/**
+ * 「개요」(기본 탭, R1): AI 요약 → (요약이 없을 때) SKILL.md 앞부분 → 설정 필요 줄 → 「AI 에게 더 묻기」.
+ * 요약은 같은 스킬의 개요를 1.5초 볼 때만 만든다(D3). 스킬을 바꾸면 SkillPanel 이 새로 생기고 탭을 바꾸면 이 칸이 닫혀 타이머가 지워진다.
+ * 요약이 꺼짐·읽기 오류(요약 경로가 없는 옛 서버)·아직 없음(기다리는 동안·만드는 동안)·만들기 실패면 SKILL.md 앞부분을 보이고, 요약이 생기면 숨긴다(D5·D8)
+ */
+function OverviewPane({ row, one, onFiles }: { row: AgentSkillRow; one?: SkillOne; onFiles: () => void }) {
+  const target = { id: row.id };
+  const sv = useSummaryView(target);
+  const f = useSkillFile(one);
+  const summaryOn = !!sv.data?.enabled;
+  const showExcerpt = !!sv.error || (!!sv.data && (!sv.data.enabled || !sv.data.summary));
+  const excerpt = f.data ? skillExcerpt(f.data.lines) : [];
+  const missing = row.missing_env ?? [];
+  return (
+    <Box data-testid="skill-overview">
+      {summaryOn && (
+        <Section title={t('market.summary.title')}>
+          <AiSummary target={target} autoDelay={SUMMARY_DWELL_MS} />
+        </Section>
+      )}
+      {showExcerpt && (
+        <Section title={t('skillsAgent.excerpt')}>
+          <Box data-testid="skill-excerpt">
+            {f.data ? (
+              excerpt.length > 0 && (
+                // 원문은 신뢰할 수 없어 마크다운으로 렌더하지 않고 글자 그대로 보인다(AiSummary 와 같은 규칙)
+                <Typography component="div" variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {excerpt.join('\n')}
+                </Typography>
+              )
+            ) : f.error ? (
+              <Alert severity="warning">{f.error.message}</Alert>
+            ) : (
+              <LinearProgress aria-label={t('skillsAgent.loading')} />
+            )}
+            <Button size="small" onClick={onFiles} sx={{ mt: 0.5, px: 0 }}>
+              {t('skillsAgent.excerptMore')}
+            </Button>
+          </Box>
+        </Section>
+      )}
+      {missing.length > 0 && (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          useFlexGap
+          flexWrap="wrap"
+          data-testid="skill-setup"
+          sx={{ mt: 2 }}
+        >
+          <WarningAmberIcon color="warning" fontSize="small" aria-hidden />
+          <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+            {`${t('skillsAgent.setupNeeded')} — ${t('skillsAgent.overviewMissing', { names: missing.join(', ') })}`}
+          </Typography>
+          <CredsFixLink profile={row.profile} />
+        </Stack>
+      )}
+      {/* 「AI 에게 더 묻기」는 파일 탭에서 옮겼다. 「고치기 요청」은 파일 탭에 남는다(OV-L2) */}
+      {one && (
+        <Box sx={{ mt: 2 }}>
+          <ChatChip agent={row.profile} text={t('skills.explainPrompt', { name: one.name, path: one.path })}>
+            {t('skills.explainAction')}
+          </ChatChip>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/** 「파일」: SKILL.md 와 같은 폴더의 파일, 내려받기, AI 에이전트에게 고치기 부탁. AI 요약·「AI 에게 더 묻기」는 개요 탭으로 옮겼다(R1) */
+function FilesPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
+  const f = useSkillFile(one);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const filesId = useId();
   if (!one) return <LinearProgress aria-label={t('skillsAgent.loading')} />;
   const talkTo = row.profile;
   return (
@@ -1217,48 +1308,57 @@ function FilesPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
         ]}
       />
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ my: 1 }}>
-        <ChatChip agent={talkTo} text={t('skills.explainPrompt', { name: one.name, path: one.path })}>
-          {t('skills.explainAction')}
-        </ChatChip>
         <ChatChip agent={talkTo} text={t('skills.editPrompt', { name: one.name, path: one.path })}>
           {t('skills.editAction')}
         </ChatChip>
       </Stack>
       {!one.shared_from && one.origin !== 'aas' && <DownloadSkill s={one} />}
       {!!f.data?.siblings?.length && (
-        <Section title={t('skillsAgent.folderFiles')} count={f.data.siblings.length}>
-          <Typography component="div" sx={{ fontFamily: monoFont, fontSize: 12 }}>
-            {f.data.siblings.join('  ')}
-          </Typography>
+        <Section
+          title={t('skillsAgent.folderFiles')}
+          count={f.data.siblings.length}
+          action={
+            // 처음에는 접어 둔다 — 파일이 수십 개면 목록이 SKILL.md 를 화면 밖으로 밀어냈다(2026-11-06 사용자 지시)
+            <DisclosureButton
+              open={filesOpen}
+              onToggle={() => setFilesOpen((v) => !v)}
+              label={filesOpen ? t('skillsAgent.folderFilesHide') : t('skillsAgent.folderFilesShow')}
+              controls={filesId}
+              sx={{ ml: 1 }}
+            />
+          }
+        >
+          {filesOpen && (
+            // 한 줄에 하나, 스킬 폴더 안 경로로 보인다 — 빈칸으로 이어 붙여 긴 경로가 한 덩어리로 보였다(2026-11-06 사용자 지시)
+            <Box component="ul" id={filesId} data-testid="folder-files" sx={{ m: 0, p: 0, listStyle: 'none', fontFamily: monoFont, fontSize: 12 }}>
+              {f.data.siblings.map((p) => (
+                <Box component="li" key={p} title={p} sx={{ py: 0.25, overflowWrap: 'anywhere' }}>
+                  {one && p.startsWith(one.path + '/') ? p.slice(one.path.length + 1) : p}
+                </Box>
+              ))}
+            </Box>
+          )}
         </Section>
       )}
       <Section title="SKILL.md">
         {f.data ? (
-          <Box
-            component="pre"
-            sx={{
-              m: 0,
-              p: 1.5,
-              bgcolor: 'action.hover',
-              borderRadius: 1,
-              fontFamily: monoFont,
-              fontSize: 12,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: 480,
-              overflow: 'auto',
-            }}
-          >
-            {f.data.lines.join('\n')}
-          </Box>
+          // 스킬 연결도 「코드」 탭과 같은 편집기(Monaco)를 읽기 전용으로 쓴다 — 줄 번호·색칠·찾기(2026-11-06 사용자 지시)
+          <Suspense fallback={<LinearProgress aria-label={t('skillsAgent.loading')} />}>
+            <LazyCodeEditor
+              readOnly
+              value={f.data.lines.join('\n')}
+              onChange={() => undefined}
+              language={languageOf('SKILL.md', true)}
+              ariaLabel={t('flows.codeOf', { name: 'SKILL.md' })}
+              minRows={3}
+              tabIndents={false}
+            />
+          </Suspense>
         ) : f.error ? (
           <Alert severity="warning">{f.error.message}</Alert>
         ) : (
           <LinearProgress aria-label={t('skillsAgent.loading')} />
         )}
-      </Section>
-      <Section title={t('market.summary.title')}>
-        <AiSummary target={{ id: row.id }} />
       </Section>
     </Box>
   );

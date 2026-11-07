@@ -222,3 +222,47 @@ class CopyChoiceRulesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeletedProfileTest(unittest.TestCase):
+    """지운 프로파일에 설치 요청이 배달되지 않는다(스펙 2026-11-07-001 §6, OKE 2026-11-07: 지우기와 겹친 기본 스킬 배달이
+    Hermes CLI 로 프로파일 폴더를 다시 만들어 지운 프로파일 폴더가 남음)."""
+
+    def setUp(self):
+        for d in ("queue", "done"):
+            for p in market_dispatch.marketplace._dir(d).glob("*.json"):
+                p.unlink()
+
+    def _row(self, n, **kw):
+        row = {"id": f"2026110715110000000{n}-abcdef", "pod": "p1", "namespace": "free", "name": "hello", "package": "free/hello",
+               "version": "2.0.0", "profile": "gone", "kind": "skill", "mode": "install", "status": "queued", **kw}
+        market_dispatch._write("queue", row)
+        return row
+
+    def test_request_for_a_profile_that_is_gone_is_closed_without_a_task(self):
+        row = self._row(1)
+        client = mock.MagicMock()
+        with mock.patch.object(ms, "prepare") as prep:
+            out = market_dispatch._dispatch(client, row, {"p1"}, get_home=lambda pod: Path("/x"), profile_gone=lambda pod, prof: prof == "gone")
+        self.assertEqual(out["status"], "failed")
+        self.assertIn("없어 설치하지 않았습니다", out["message"])
+        self.assertFalse(client.create_task.called)
+        self.assertFalse(prep.called)
+        # 새 프로파일을 만드는 에이전트 설치는 아직 프로파일이 없어도 보낸다
+        agent = self._row(2, kind="agent")
+        res = {"payload": "", "manifest": {"distribution_owned": ["x"]}, "backup": "", "skipped": []}
+        with mock.patch.object(ms, "prepare", return_value=res), mock.patch.object(market_dispatch.marketplace, "installed", return_value=[]), \
+                mock.patch.object(market_dispatch, "_send", side_effect=lambda c, r, m, n, stage="": {**r, "status": "running"}):
+            out = market_dispatch._dispatch(client, agent, {"p1"}, get_home=lambda pod: Path("/x"), profile_gone=lambda pod, prof: True)
+        self.assertEqual(out["status"], "running")
+
+    def test_pending_for_and_cancel_queued(self):
+        self._row(3)
+        self._row(4, task="aas-market-x", status="running")
+        self._row(5, profile="other")
+        queued, running = market_dispatch.pending_for("p1", "gone")
+        self.assertEqual((len(queued), len(running)), (1, 1))
+        self.assertEqual(market_dispatch.cancel_queued("p1", "gone", "프로파일을 지워 취소했습니다"), 1)
+        queued, running = market_dispatch.pending_for("p1", "gone")
+        self.assertEqual((len(queued), len(running)), (0, 1))
+        self.assertEqual(len(market_dispatch.pending_for("p1", "other")[0]), 1)

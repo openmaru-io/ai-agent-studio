@@ -5,6 +5,11 @@
 
 export default {
   'agents.phaseReady': 'Ready',
+  'agents.oomPill': 'Restarted: out of memory',
+  'agents.oomLine1': 'Restarted at {at} after exceeding the memory limit {limit}',
+  'agents.oomLine2': 'Conversations and work in progress at that time were stopped.',
+  'agents.oomSizeLink': 'Change size',
+  'agents.oomClose': 'Dismiss the out-of-memory notice',
   'agents.limitReset': 'Reset the AI Agent Workspace limit of {owner} to the default ({n})',
   'agents.phasePending': 'Preparing',
   'agents.phaseProvisioning': 'Creating',

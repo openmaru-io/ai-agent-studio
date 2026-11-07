@@ -1,0 +1,1 @@
+HTTP 403: BLOCKED by CogentAI AAS: LLM 호출은 AAS LiteLLM 으로만 할 수 있습니다. 프로파일의 모델 설정을 AAS 모델로 바꾸세요. / LLM calls must go through AAS LiteLLM; change this profile's model to an AAS model.

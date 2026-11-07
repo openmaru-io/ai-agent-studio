@@ -120,6 +120,10 @@ def install(pods: list, profiles_of, reader_of, writer_of) -> list[str]:
                     if not row and read(f"{base}/SKILL.md") is not None:
                         _put(pod.id, profile, name, version, "kept")
                         continue
+                # 목록을 읽은 뒤 지워진 프로파일이면 쓰지 않는다 — 파일을 쓰면 상위 폴더가 다시 생겨 지운 프로파일 폴더가 남는다
+                # (2026-11-07 OKE: 서버가 다시 뜬 직후 이 일과 지우기가 겹쳐 profiles/<이름>/skills/market/… 가 생김, 스펙 2026-11-07-001 §6)
+                if read(f"profiles/{profile}/config.yaml") is None:
+                    break
                 why = _write_all(base, files, write)
                 if why:
                     _put(pod.id, profile, name, version, "failed", manifest(row), why)

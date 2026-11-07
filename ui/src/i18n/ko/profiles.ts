@@ -100,6 +100,7 @@ export default {
   'profiles.aboutTooLong': '소개는 600자까지 쓸 수 있습니다',
   'profiles.mainModel': '주 모델',
   'profiles.notInLitellm': '(LiteLLM 에 없음)',
+  'profiles.blockedRoute': '(허용되지 않은 경로)',
   'profiles.defaultModel': 'AAS 기본 모델',
   'profiles.defaultModelNamed': '{name} (AAS 기본 모델)',
   'profiles.sameModel': '현재 모델과 같습니다',
@@ -821,4 +822,14 @@ export default {
   'profiles.agents.why.truncated': '파일이 커서 앞부분만 보입니다. 여기서 고칠 수 없습니다.',
   'profiles.agents.reload': '다시 읽기',
   'profiles.defaultTip': 'AI 에이전트 작업공간이 처음 만들어질 때 생긴 프로파일입니다. 오피스 자리·복제 원본에 쓰이고 바꿀 수 없습니다',
+  // 지우기와 열린 대화(스펙 2026-11-07-001 디자인 3D·5C)
+  'profiles.deleteOpenChats_other': '이 프로파일로 열린 대화 {count}개도 닫힙니다.',
+  'profiles.deleteClosingChats': '열린 대화를 닫는 중…',
+  'profiles.deleteExportingClosingChats': '묶음 파일을 내보내고 열린 대화를 닫는 중… 1분 넘게 걸릴 수 있습니다',
+  'profiles.deleteExporting': '묶음 파일을 내보내는 중… 1분 넘게 걸릴 수 있습니다',
+  'profiles.deleteBusy_other': '답하는 중이거나 뒤에서 일하는 대화 {count}개가 있습니다. 끝나거나 멈춘 뒤 다시 하세요.',
+  'profiles.deleteBusyUntitled': '제목 없는 대화',
+  'profiles.deleteBusyRelay': '회의 중계',
+  'profiles.deleteBusyMore_other': '외 {count}개',
+  'profiles.deleteCloseFailed': '열린 대화를 닫지 못해 지우지 않았습니다. 잠시 뒤 다시 하세요.',
 } as Record<string, string>;

@@ -1646,6 +1646,55 @@ describe('Profiles 상세: 머리 동작 단추(COP Drawer 처럼)', () => {
       ])
     );
     expect(await screen.findByText('/data/x.tgz')).toBeInTheDocument();
+    expect(screen.queryByText(/\{name\}/)).toBeNull(); // 묶음 서랍 제목에 이름이 들어간다(2026-11-07 OKE 화면에서 「{name}」 그대로 보임)
+  });
+
+  // 스펙 2026-11-07-001 디자인 3D·5C: 열린 대화 수·닫는 중·남은 대화 목록·닫기 실패
+  const deleteWith = async (detail: Record<string, unknown>, reply: () => Promise<Response>) => {
+    const user = userEvent.setup();
+    const base = mount('/profiles?name=ma', DETAIL(detail));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => (url.startsWith('/api/profile/action') && String(init?.body).includes('"delete"') ? reply() : base(url, init)))
+    );
+    await user.click(await screen.findByRole('button', { name: '삭제' }));
+    const dlg = await screen.findByRole('dialog', { name: '프로파일 삭제' });
+    await user.type(within(dlg).getByRole('textbox', { name: '확인용 이름' }), 'ma');
+    return { user, dlg };
+  };
+
+  it('열린 대화가 있으면 경고에 「열린 대화 N개도 닫힙니다」, 지우는 동안 「묶음 파일을 내보내고 열린 대화를 닫는 중…」', async () => {
+    let release: (r: Response) => void = () => {};
+    const { user, dlg } = await deleteWith({ open_chats: 2 }, () => new Promise<Response>((r) => (release = r)));
+    expect(within(dlg).getByText(/이 프로파일로 열린 대화 2개도 닫힙니다/)).toBeInTheDocument();
+    await user.click(within(dlg).getByRole('button', { name: '영구 삭제' }));
+    expect(await within(dlg).findByRole('status')).toHaveTextContent('묶음 파일을 내보내고 열린 대화를 닫는 중…'); // 내보내기가 먼저 돈다
+    release(new Response(JSON.stringify({ deleted: 'ma' }), { status: 200 }));
+  });
+
+  it('열린 대화가 없으면 그 문장이 없다', async () => {
+    const { dlg } = await deleteWith({ open_chats: 0 }, () => Promise.resolve(new Response('{}')));
+    expect(within(dlg).queryByText(/열린 대화/)).not.toBeInTheDocument();
+  });
+
+  it('busy_sessions 거절은 경고 상자에 최대 3개 목록과 「외 N개」(제목 없음·회의 중계 표기)', async () => {
+    const sessions = [{ title: '보고서 작성', kind: 'chat' }, { title: '', kind: 'chat' }, { title: '방', kind: 'relay' }, { title: '넷', kind: 'chat' }, { title: '다섯', kind: 'chat' }];
+    const { user, dlg } = await deleteWith({ open_chats: 5 }, () =>
+      Promise.resolve(new Response(JSON.stringify({ error: 'x', reason: 'busy_sessions', sessions }), { status: 409 }))
+    );
+    await user.click(within(dlg).getByRole('button', { name: '영구 삭제' }));
+    const box = await within(dlg).findByTestId('delete-busy');
+    expect(box).toHaveTextContent('답하는 중이거나 뒤에서 일하는 대화 5개가 있습니다. 끝나거나 멈춘 뒤 다시 하세요.');
+    expect(within(box).getAllByRole('listitem').map((x) => x.textContent)).toEqual(['보고서 작성', '제목 없는 대화', '회의 중계', '외 2개']);
+    expect(box.closest('.MuiAlert-standardWarning, .MuiAlert-colorWarning')).not.toBeNull();
+  });
+
+  it('close_failed(503)면 「열린 대화를 닫지 못해 지우지 않았습니다」', async () => {
+    const { user, dlg } = await deleteWith({ open_chats: 1 }, () =>
+      Promise.resolve(new Response(JSON.stringify({ error: 'timeout', reason: 'close_failed' }), { status: 503 }))
+    );
+    await user.click(within(dlg).getByRole('button', { name: '영구 삭제' }));
+    expect(await within(dlg).findByText('열린 대화를 닫지 못해 지우지 않았습니다. 잠시 뒤 다시 하세요.')).toBeInTheDocument();
   });
 
   it('삭제 전 내보내기가 실패하면(reason 코드) 문장이 영어여도 내보내기 없이 삭제하는 선택지를 보인다', async () => {

@@ -69,13 +69,33 @@ def _record(pod: str, row: dict) -> dict | None:
     return next((r for r in marketplace.installed(pod) if r["profile"] == row.get("profile") and r["package"] == row.get("package")), None)
 
 
-def _dispatch(client: k8s.K8s, row: dict, agent_names: set[str], get_home=None, copied: bool = False) -> dict:
+def pending_for(pod: str, profile: str) -> tuple[list[dict], list[dict]]:
+    """그 프로파일의 줄에 선 요청: (아직 보내지 않은 것, HermesTask 로 보내 도는 것). 프로파일 지우기가 본다(스펙 2026-11-07-001 §6)."""
+    rows = [r for r in (marketplace._read(p) for p in sorted(marketplace._dir("queue").glob("*.json")))
+            if r and r.get("pod") == pod and r.get("profile") == profile]
+    return [r for r in rows if not r.get("task")], [r for r in rows if r.get("task")]
+
+
+def cancel_queued(pod: str, profile: str, message: str) -> int:
+    """그 프로파일의 아직 보내지 않은 요청을 끝낸다(지운 프로파일에 배달되면 Hermes CLI 가 폴더를 다시 만든다). 끝낸 수."""
+    queued, _ = pending_for(pod, profile)
+    for row in queued:
+        _close(row, "failed", message)
+    return len(queued)
+
+
+def _dispatch(client: k8s.K8s, row: dict, agent_names: set[str], get_home=None, copied: bool = False, profile_gone=None) -> dict:
     """아직 보내지 않은 요청을 HermesTask 로 만든다. 반환: 갱신한 행.
     get_home(pod 이름) = 그 POD 의 Hermes 데이터 폴더 — 있으면 덮기 전에 고친 스킬·같은 이름을 검사하고 덮일 것을 백업한다(스펙 2026-10-14-015)."""
     if not _RID.match(str(row.get("id") or "")):
         return _close(row, "failed", "요청 번호가 올바르지 않습니다")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
     if row.get("pod") not in agent_names:
         return _close(row, "failed", f"Hermes {row.get('pod')} 가 없습니다")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+    # 지운 프로파일에는 보내지 않는다 — Hermes CLI 가 프로파일 폴더를 다시 만들어 지운 폴더가 남았다(OKE 2026-11-07, 스펙 2026-11-07-001 §6).
+    # 새 프로파일을 만드는 에이전트 설치는 아직 폴더가 없는 것이 맞다
+    if profile_gone and not (row.get("kind") == "agent" and row.get("mode") == "install") and row.get("profile") not in ("", "default") \
+            and profile_gone(row["pod"], row["profile"]):
+        return _close(row, "failed", f"프로파일 {row['profile']} 이(가) 없어 설치하지 않았습니다")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
     payload = ""
     if row.get("mode") not in ("remove", "restore"):
         try:
@@ -174,7 +194,7 @@ def _notice_update(row: dict) -> None:
         store.log_usage("profile_soul_notice_failed", f"{row.get('who') or ''} {row.get('profile')} {type(exc).__name__}", pod=str(row.get("pod") or ""))
 
 
-def tick(client: k8s.K8s, agent_names: set[str], get_home=None, on_finished=None) -> int:
+def tick(client: k8s.K8s, agent_names: set[str], get_home=None, on_finished=None, profile_gone=None) -> int:
     """줄에 선 요청을 모두 한 걸음씩 나아가게 하고, 도우미 심장박동을 남긴다. 처리한 요청 수를 돌려준다.
     on_finished(pod id) = 요청이 done·failed 로 끝난 작업공간마다 한 번 — 서버가 그 작업공간의 캐시(판 비교 결과)를 버린다(스펙 2026-10-24-003 R14)."""
     finished: set[str] = set()
@@ -184,7 +204,7 @@ def tick(client: k8s.K8s, agent_names: set[str], get_home=None, on_finished=None
         if not row:
             continue
         before = row.get("status")
-        row = _poll(client, row, agent_names, get_home) if row.get("task") else _dispatch(client, row, agent_names, get_home)
+        row = _poll(client, row, agent_names, get_home) if row.get("task") else _dispatch(client, row, agent_names, get_home, profile_gone=profile_gone)
         handled += 1
         if row.get("status") == "failed":
             error = str(row.get("message") or "")
@@ -206,7 +226,7 @@ def tick(client: k8s.K8s, agent_names: set[str], get_home=None, on_finished=None
     return handled
 
 
-def loop(get_client, get_agent_names, every: float = 5.0, get_home=None, on_finished=None, after_tick=None) -> None:
+def loop(get_client, get_agent_names, every: float = 5.0, get_home=None, on_finished=None, after_tick=None, profile_gone=None) -> None:
     """서버가 띄우는 반복. 쿠버네티스 모드이고 마켓 설치가 꺼져 있지 않을 때만 일한다.
     after_tick() = 리더가 매 주기 끝에 부른다 — 새 버전 대기 표를 요청으로 바꾼다(스펙 2026-10-24-003 R18)."""
     while True:
@@ -214,7 +234,7 @@ def loop(get_client, get_agent_names, every: float = 5.0, get_home=None, on_fini
             client = get_client()
             # 리더만 HermesTask 를 만든다(OMAI-1105). 이름이 고정이고 409 를 처리해 겹쳐도 안전하지만 같은 일을 두 번 하지 않게
             if client is not None and marketplace.install_state()["enabled"] and leader.is_leader():
-                tick(client, get_agent_names(), get_home, on_finished)
+                tick(client, get_agent_names(), get_home, on_finished, profile_gone)
                 if after_tick:
                     after_tick()
         except Exception as exc:                             # 한 번의 실패가 반복을 멈추지 않게 한다
