@@ -79,6 +79,8 @@ const LIST = {
       last_used: '2026-11-05T09:00:00',
       readiness: 'ok',
       modes: ['cron', 'script', 'rest'],
+      delete_block: 'in_use',
+      dependents_n: 1,
     },
     {
       ...base,
@@ -281,6 +283,7 @@ function mount(at = '/skills', over: Record<string, unknown> = {}) {
     '/api/profile/action': { ok: true },
     // 기본은 요약이 꺼진 서버(LLM 미설정). 요약을 보는 시험은 sumView 로 바꾼다
     '/api/skill/summary': sumView({ enabled: false, summary: null }),
+    '/api/skill/delete': { ok: true },
     ...over,
   });
   mountScreen(<Skills />, at);
@@ -293,10 +296,10 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
     const nav = await screen.findByRole('navigation', { name: 'AI 에이전트' });
     expect(within(nav).getByRole('button', { name: /ma/ })).toHaveAttribute('aria-current', 'true');
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=ma'));
-    const own = screen.getByRole('region', { name: '이 AI 에이전트의 스킬' });
+    const own = screen.getByRole('region', { name: '전용 스킬' });
     expect(within(own).getByText('weekly')).toBeInTheDocument();
     expect(within(own).getByText('설정 필요')).toBeInTheDocument(); // gif: 필요한 환경변수에 값이 없다
-    const shared = screen.getByRole('region', { name: '공용에서 가져온 스킬' });
+    const shared = screen.getByRole('region', { name: '가져다 쓰는 공용 스킬' });
     expect(within(shared).getByText('digest')).toBeInTheDocument(); // 이 에이전트가 쓴 공용 스킬
     expect(within(shared).queryByText('unused-shared')).not.toBeInTheDocument();
     await userEvent.setup().click(within(shared).getByRole('button', { name: '쓰지 않은 공용 스킬 1개 더 보기' }));
@@ -306,14 +309,12 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
   it('동작 형태와 상태로 거른다', async () => {
     const user = userEvent.setup();
     mount('/skills?profile=ma');
-    const own = await screen.findByRole('region', { name: '이 AI 에이전트의 스킬' });
+    const own = await screen.findByRole('region', { name: '전용 스킬' });
     expect(within(own).getByText('예약 작업')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^설정 필요 1$/ }));
-    expect(
-      within(screen.getByRole('region', { name: '이 AI 에이전트의 스킬' })).queryByText('weekly')
-    ).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: '전용 스킬' })).queryByText('weekly')).not.toBeInTheDocument();
     // 스킬을 고르기 전 오른쪽 요약(G15)에도 gif 가 있어 가운데 칸에서 찾는다
-    expect(within(screen.getByRole('region', { name: '이 AI 에이전트의 스킬' })).getByText('gif')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: '전용 스킬' })).getByText('gif')).toBeInTheDocument();
     expect(screen.getByTestId('loc')).toHaveTextContent('f=setup');
   });
 
@@ -325,7 +326,7 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
     const panel = await screen.findByTestId('skill-panel');
     await user.click(within(panel).getByRole('tab', { name: '동작' }));
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('pane=run'));
-    expect(await within(panel).findByRole('region', { name: '시작' })).toHaveTextContent('weekly-report');
+    expect(await within(panel).findByRole('region', { name: '시작·부르는 곳' })).toHaveTextContent('weekly-report');
     expect(within(panel).getByRole('region', { name: '코드' })).toHaveTextContent('run.py');
     expect(within(panel).getByRole('region', { name: '부르는 도구' })).toHaveTextContent('api.example.com');
     expect(within(panel).getByRole('region', { name: '자격증명' })).toHaveTextContent('REPORT_TOKEN');
@@ -367,7 +368,7 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
   it('켜기/끄기는 그 에이전트의 스킬 토글로 보낸다', async () => {
     const user = userEvent.setup();
     const fn = mount('/skills?profile=ma');
-    await screen.findByRole('region', { name: '이 AI 에이전트의 스킬' });
+    await screen.findByRole('region', { name: '전용 스킬' });
     await user.click(screen.getByRole('switch', { name: /old/ }));
     await waitFor(() =>
       expect(postedTo(fn, '/api/profile/action')[0]).toMatchObject({
@@ -407,6 +408,62 @@ describe('스킬 — AI 에이전트 중심 보기', () => {
     await user.click(within(screen.getByRole('group', { name: '스킬 보기' })).getByRole('button', { name: 'AI 에이전트별' }));
     await waitFor(() => expect(screen.getByTestId('agent-skills')).toBeInTheDocument());
     expect(screen.getByTestId('loc')).toHaveTextContent('/skills?profile=ma');
+  });
+
+  it('왼쪽 칸 맨 위에 「공용 스킬」, 그 아래 AI 에이전트 목록(공용은 섞이지 않는다)', async () => {
+    mount('/skills');
+    const nav = await screen.findByRole('navigation', { name: 'AI 에이전트' });
+    const buttons = within(nav).getAllByRole('button');
+    expect(buttons[0]).toHaveAttribute('data-agent', 'default');
+    expect(buttons[0]).toHaveTextContent('공용 스킬');
+    expect(buttons.slice(1).map((b) => b.getAttribute('data-agent'))).toEqual(['ma', 'ops']);
+    expect(within(nav).getByText('설정 필요 1')).toBeInTheDocument(); // ⚠ 숫자 대신 글자로
+    expect(screen.queryByRole('button', { name: '전체 표' })).not.toBeInTheDocument();
+  });
+
+  it('스킬 머리에 「스킬 연결도 보기」가 늘 보이고, 부르는 곳이 있는 스킬은 지우기가 막힌다', async () => {
+    mount('/skills?profile=ma&skill=' + encodeURIComponent('ma:profiles/ma/skills/weekly'));
+    const panel = await screen.findByTestId('skill-panel');
+    const bar = within(panel).getByRole('toolbar', { name: '스킬 동작' });
+    expect(within(bar).getByRole('link', { name: '스킬 연결도 보기' })).toHaveAttribute(
+      'href',
+      '/flows?root=' + encodeURIComponent('skill:ma:profiles/ma/skills/weekly')
+    );
+    expect(within(bar).getByRole('button', { name: '지우기' })).toBeDisabled();
+    expect(within(bar).getByText('예약 작업이나 다른 스킬이 부르고 있어 지울 수 없습니다')).toBeInTheDocument();
+    // 목록 줄에도 자물쇠와 부르는 곳 수
+    expect(within(screen.getByRole('region', { name: '전용 스킬' })).getByText('부르는 곳 1')).toBeInTheDocument();
+    // 이 스킬을 부르는 예약 작업은 「부르는 도구」가 아니라 「시작·부르는 곳」 칸
+    await userEvent.setup().click(within(panel).getByRole('tab', { name: '동작' }));
+    expect(await within(panel).findByRole('region', { name: '시작·부르는 곳' })).toHaveTextContent('weekly-report');
+  });
+
+  it('가져다 쓰는 공용 스킬의 사본은 지우기 단추 대신 이유를 보인다', async () => {
+    mount('/skills?profile=ma&skill=' + encodeURIComponent('ma:skills/digest'));
+    const bar = within(await screen.findByTestId('skill-panel')).getByRole('toolbar', { name: '스킬 동작' });
+    expect(within(bar).queryByRole('button', { name: '지우기' })).not.toBeInTheDocument();
+    expect(within(bar).getByText('공용 스킬을 가져다 쓰는 사본입니다. 공용 스킬에서 지우세요')).toBeInTheDocument();
+  });
+
+  it('정리: 안 쓰임으로 거르고, 지울 수 있는 것만 골라 하나씩 지운다', async () => {
+    const user = userEvent.setup();
+    const fn = mount('/skills?profile=ma');
+    await user.click(await screen.findByRole('button', { name: '정리' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('f=unused'));
+    await user.click(screen.getByRole('button', { name: /^전체 \d/ })); // 안 쓰임이 아닌 것도 고를 수 있게 다시 전체로
+    const own = await screen.findByRole('region', { name: '전용 스킬' });
+    expect(within(own).getByRole('checkbox', { name: 'weekly 고르기' })).toBeDisabled(); // 예약 작업이 부른다
+    await user.click(screen.getByRole('button', { name: '지울 수 있는 것 모두 고르기' }));
+    expect(within(own).getByRole('checkbox', { name: 'gif 고르기' })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: '2개 지우기' }));
+    const dialog = await screen.findByRole('dialog', { name: '스킬 2개 지우기' });
+    await user.click(within(dialog).getByRole('button', { name: '2개 지우기' }));
+    await waitFor(() => expect(postedTo(fn, '/api/skill/delete')).toHaveLength(2));
+    expect(
+      postedTo(fn, '/api/skill/delete')
+        .map((b) => (b as { id: string }).id)
+        .sort()
+    ).toEqual(['ma:profiles/ma/skills/gif', 'ma:profiles/ma/skills/old']);
   });
 
   it('옛 주소(lens·tab·open)는 표로 연다', async () => {
@@ -501,7 +558,7 @@ describe('스킬 — 화면 다듬기(스펙 2026-11-06-002 G13~G19)', () => {
     mount('/skills?profile=ma', {
       '/api/profile/action': () => new Response(JSON.stringify({ error: '거절됨' }), { status: 500 }),
     });
-    await screen.findByRole('region', { name: '이 AI 에이전트의 스킬' });
+    await screen.findByRole('region', { name: '전용 스킬' });
     const sw = screen.getByRole('switch', { name: /old/ });
     expect(sw).not.toBeChecked();
     await user.click(sw);
@@ -610,7 +667,7 @@ describe('스킬 — 개요 탭(스펙 2026-11-06-003 R1)', () => {
       await act(() => vi.advanceTimersByTimeAsync(500));
       expect(postedTo(fn, '/api/skill/summary')).toHaveLength(0);
       // 1.5초가 되기 전에 다른 스킬로 옮긴다
-      await user.click(within(screen.getByRole('region', { name: '이 AI 에이전트의 스킬' })).getByRole('button', { name: /gif/ }));
+      await user.click(within(screen.getByRole('region', { name: '전용 스킬' })).getByRole('button', { name: /gif/ }));
       await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('skill=ma%3Aprofiles%2Fma%2Fskills%2Fgif'));
       await screen.findByTestId('skill-excerpt');
       await act(() => vi.advanceTimersByTimeAsync(800));

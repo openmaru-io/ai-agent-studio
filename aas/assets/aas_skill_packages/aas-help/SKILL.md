@@ -1,7 +1,7 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.10
+version: 1.0.11
 author: OPENMARU, Inc.
 ---
 
@@ -223,7 +223,7 @@ AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습
 
 단계:
 
-1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「내 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
+1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「Hermes 기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
 2. 문서 읽고 요약하기 — 문서를 올리고 「이 문서를 요약해 줘」「표만 뽑아 줘」「Markdown 으로 바꿔 줘」라고 적습니다. Word·Excel·PowerPoint·PDF 와 한글(hwp·hwpx) 문서를 읽을 수 있습니다. 결과 파일은 답 아래에 나타나고 「파일」에서 받습니다. 읽기만 하며 원본은 고치지 않습니다.
 3. 사진·스캔 문서의 글자 읽기 — 사진, 캡처, 스캔한 공문을 올리고 「글자를 읽어 줘」라고 적습니다. 한국어와 영어 글자를 읽고, 손으로 쓴 글씨와 표도 읽습니다. 한자·일본어는 거의 읽지 못합니다. 읽은 결과가 맞는지는 반드시 원본과 견주어 확인합니다.
 4. 문서 파일 만들기 — 「이 내용을 한글(hwpx) 보고서로 만들어 줘」「Word 로 줘」「PDF 로 뽑아 줘」「엑셀로 정리해 줘」「발표 자료로 만들어 줘」처럼 원하는 파일 종류를 적습니다. 공문서 모양(기안문·보고서·회의록 등)도 만들 수 있고, 한글 서식의 빈칸도 채웁니다. 만든 파일은 답 아래에서 받습니다.
@@ -245,7 +245,7 @@ AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습
 2. 직접 쓰기 — 「이름」에 영문 소문자·숫자·- 로 적습니다(예: weekly-report). 「설명」에는 무슨 일을 하고 언제 쓰는지 적습니다. AI 에이전트가 이 설명을 보고 스킬을 고르고 앞 60자만 목록에 보이니, 핵심을 앞에 적습니다. 「누가 쓰나」에서 모든 프로파일이 쓸지 한 프로파일만 쓸지 고릅니다. 본문에는 「언제 쓰나」와 「절차」를 번호로 적고 「스킬 만들기」를 누릅니다. 본문 틀이 미리 들어 있으니 지우고 채웁니다.
 3. AI 에이전트에게 맡기기 — 무엇을 적을지 모르겠거나 프로그램(스크립트)이 필요한 스킬이면 표 위 도구줄의 「AI 에이전트에게 맡기기」를 누릅니다(새 스킬 서랍 안이 아닙니다). AI 에이전트와의 대화가 열리고 스킬 제작 요청 틀이 채워집니다. 이름·하는 일·언제 쓰나·부르는 도구를 적어 보내면, AI 에이전트가 초안을 보여 주고 확인을 받은 뒤 만듭니다. 직접 쓰기로는 스크립트 파일을 만들 수 없습니다.
 4. 만들어 둔 zip 올리기 — 「zip 올리기」에서 SKILL.md 가 들어 있는 zip 파일을 끌어 놓거나 고릅니다. 512KiB 까지 올릴 수 있고, SKILL.md 한 장만 올려도 됩니다. 스킬 이름을 확인하고, 스크립트가 들어 있으면 부르는 외부 주소를 읽은 뒤 「스크립트를 확인했습니다」를 체크하고 「올리고 적용」을 누릅니다. 출처를 모르는 zip 은 올리지 않습니다.
-5. 만든 스킬 확인하고 고치기 — 만든 스킬은 「내 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.
+5. 만든 스킬 확인하고 고치기 — 만든 스킬은 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.
 
 #### 내 스킬을 스킬 허브에 올려 함께 쓰기
 
@@ -573,7 +573,7 @@ When to use: Use them to summarize an uploaded document or pull out its tables, 
 
 Steps:
 
-1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, korean-business-writing, business-card-ocr and aas-help in the "My skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
+1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, korean-business-writing, business-card-ocr and aas-help in "View all skills" › the "Created skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Hermes built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
 2. Read and summarize a document — Upload a document and write "Summarize this document", "Pull out only the tables" or "Convert it to Markdown". It reads Word, Excel, PowerPoint, PDF and Hancom (hwp, hwpx) files. The result file appears under the answer and can be downloaded from "Files". It only reads and does not change the original.
 3. Read text in photos and scans — Upload a photo, a screenshot or a scanned official document and write "Read the text". It reads Korean and English text, including handwriting and tables. It can hardly read Chinese characters or Japanese. Always compare the result with the original.
 4. Make a document file — Write the file type you want, for example "Make this a Hancom (hwpx) report", "Give me Word", "Make a PDF", "Organize it in Excel" or "Make slides". It can also produce official-document layouts (drafts, reports, minutes) and fill the blanks of a Hancom form. Download the file under the answer.
@@ -595,7 +595,7 @@ Steps:
 2. Write it yourself — Type the name in lowercase letters, digits and - (for example weekly-report). In "Description", say what it does and when to use it. The AI Agent picks a skill by this description and only the first 60 characters show in its list, so put the key point first. Under "Who uses it", choose all profiles or one profile. In the body, number the "When to Use" and "Steps" parts, then click "Create skill". A body template is already filled in, so replace it.
 3. Hand it off to the AI Agent — If you do not know what to write, or the skill needs a program (script), click "Hand off to AI Agent" in the toolbar above the table (not inside the New skill drawer). A chat opens with a skill request template filled in. Send it with the name, the job, when to use it and the tools to call, and the AI Agent shows a draft and creates it after you confirm. Writing it yourself cannot create script files.
 4. Upload a ready-made zip — In "Upload zip", drop or pick a zip that contains SKILL.md. It can be up to 512KiB, and a single SKILL.md is fine. Check the skill name. If it contains scripts, read the outside addresses it calls, tick "I checked the scripts" and click "Upload and apply". Do not upload a zip from a source you do not know.
-5. Check and improve the skill — The new skill appears in the "My skills" tab and in the list when you type / in the chat message box. If it needs secret values, fill them from the skill drawer. Edit its content and manage versions in the skill flow screen. The AI Agent uses skills on its own, so try it once after creating it and fix the steps in the body if the result is not what you expected.
+5. Check and improve the skill — The new skill appears in "View all skills" › the "Created skills" tab and in the list when you type / in the chat message box. If it needs secret values, fill them from the skill drawer. Edit its content and manage versions in the skill flow screen. The AI Agent uses skills on its own, so try it once after creating it and fix the steps in the body if the result is not what you expected.
 
 #### Publish your skill to the skill hub to share it
 

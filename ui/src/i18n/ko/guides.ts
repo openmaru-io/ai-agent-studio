@@ -304,7 +304,7 @@ export default {
   'guides.user.builtin-skills.what': 'AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습니다. 문서 읽기(doc-to-markdown), 한글 문서 읽기(hwp-to-markdown), 사진·스캔 글자 읽기(ocr-to-markdown), 문서 만들기(markdown-to-doc), 한국어 업무 문서 쓰기(korean-business-writing), 명함 정리(business-card-ocr), 사용법 묻기(aas-help)입니다. 스킬 이름을 외울 필요는 없습니다. 하고 싶은 일을 평소 말로 적으면 AI 에이전트가 알맞은 스킬을 고릅니다.',
   'guides.user.builtin-skills.when': '올린 문서를 요약하거나 표를 뽑을 때, 보고서·기안문·회의록 같은 업무 문서를 쓸 때, 한글·Word·PDF 문서를 새로 만들 때, 명함 사진을 목록으로 정리할 때, AAS 사용법이 궁금할 때 씁니다.',
   'guides.user.builtin-skills.find.title': '기본 제공 스킬 확인하기',
-  'guides.user.builtin-skills.find.body': '「{g_skill} › {v_skills}」 화면의 「내 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.',
+  'guides.user.builtin-skills.find.body': '「{g_skill} › {v_skills}」 화면의 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「Hermes 기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.',
   'guides.user.builtin-skills.read.title': '문서 읽고 요약하기',
   'guides.user.builtin-skills.read.body': '문서를 올리고 「이 문서를 요약해 줘」「표만 뽑아 줘」「Markdown 으로 바꿔 줘」라고 적습니다. Word·Excel·PowerPoint·PDF 와 한글(hwp·hwpx) 문서를 읽을 수 있습니다. 결과 파일은 답 아래에 나타나고 「파일」에서 받습니다. 읽기만 하며 원본은 고치지 않습니다.',
   'guides.user.builtin-skills.scan.title': '사진·스캔 문서의 글자 읽기',
@@ -331,7 +331,7 @@ export default {
   'guides.user.make-skill.zip.title': '만들어 둔 zip 올리기',
   'guides.user.make-skill.zip.body': '「zip 올리기」에서 SKILL.md 가 들어 있는 zip 파일을 끌어 놓거나 고릅니다. 512KiB 까지 올릴 수 있고, SKILL.md 한 장만 올려도 됩니다. 스킬 이름을 확인하고, 스크립트가 들어 있으면 부르는 외부 주소를 읽은 뒤 「스크립트를 확인했습니다」를 체크하고 「올리고 적용」을 누릅니다. 출처를 모르는 zip 은 올리지 않습니다.',
   'guides.user.make-skill.check.title': '만든 스킬 확인하고 고치기',
-  'guides.user.make-skill.check.body': '만든 스킬은 「내 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.',
+  'guides.user.make-skill.check.body': '만든 스킬은 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.',
 
   'guides.user.publish-skill.title': '내 스킬을 스킬 허브에 올려 함께 쓰기',
   'guides.user.publish-skill.sub': '내가 만든 스킬을 스킬 허브에 게시하면 다른 사람도 설치해 쓸 수 있습니다.',
