@@ -43,7 +43,19 @@ interface MarketLite {
   installed?: { profile: string; name: string; namespace: string; kind: string }[];
 }
 
-export type DeleteMode = { kind: 'none' } | { kind: 'archive' | 'hub'; disabled?: string; namespace?: string; folder?: string };
+/** none 은 단추를 그리지 않는다. why 가 있으면 화면이 「지울 수 없음」 이유로 보인다(에이전트 중심 보기) */
+export type DeleteMode = { kind: 'none'; why?: string } | { kind: 'archive' | 'hub'; disabled?: string; namespace?: string; folder?: string };
+
+/** 서버 줄의 「부르는 곳」 상세(/api/skill?id= 의 dependents, skill_deps.py) */
+export interface Dependents {
+  block: { kind: string; id: string; label: string; profile: string }[];
+  warn: { kind: string; id: string; label: string; profile: string }[];
+  agents: string[];
+  checked: boolean;
+  n_block?: number;
+}
+
+const BUILTIN = new Set(['bundled', 'bundled_modified', 'hub', 'aas']);
 
 const MINE = new Set(['local', 'agent']);
 const PENDING_KEY = ['skill-delete', 'pending'];
@@ -55,15 +67,17 @@ const canInstall = (m: MarketLite) => m.can_install ?? !!m.admin;
 
 /** 단추를 어떻게 보일지(DD3): 숨김(none) / 보관·스킬 허브 요청 + 비활성 이유. pending 은 지우기를 요청한 스킬 허브 스킬 */
 export function deleteMode(s: DeletableSkill, ctx: { admin: boolean; market?: MarketLite; pending: boolean }): DeleteMode {
-  if (s.shared_from) return { kind: 'none' };
+  if (s.shared_from) return { kind: 'none', why: t('skills.del.why.shared') };
   if (MINE.has(s.origin ?? '')) {
-    if (s.delete_block === 'origin') return { kind: 'none' };
+    if (s.delete_block === 'origin') return { kind: 'none', why: t('skills.del.why.origin') };
+    if (s.delete_block === 'in_use') return { kind: 'archive', disabled: t('skills.del.why.in_use') };
     if (s.delete_block === 'same_name') return { kind: 'archive', disabled: t('skills.del.why.same_name') };
     if (s.delete_block === 'name') return { kind: 'archive', disabled: t('skills.del.why.name') };
     if (s.profile === 'default' && !ctx.admin) return { kind: 'archive', disabled: t('skills.del.why.default') };
     return { kind: 'archive' };
   }
-  if (s.origin !== 'market' || !ctx.market) return { kind: 'none' };          // 출처를 모르거나 스킬 허브 기록을 아직 못 읽었다
+  if (s.origin !== 'market' || !ctx.market)                                    // 출처를 모르거나 스킬 허브 기록을 아직 못 읽었다
+    return { kind: 'none', why: BUILTIN.has(s.origin ?? '') ? t('skills.del.why.builtin') : s.origin === 'market' ? undefined : t('skills.del.why.origin') };
   const folder = marketFolder(s.id);
   const rec = (ctx.market.installed ?? []).find((r) => r.kind === 'skill' && r.profile === s.profile && r.name === folder);
   if (ctx.pending) return { kind: 'hub', disabled: t('skills.del.why.pending'), folder, namespace: rec?.namespace };
@@ -148,12 +162,15 @@ export function DeleteSkillDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const detailId = useId();
   // 예약 작업 수·이름과 내려받기 경로는 스킬 상세에 있다. 패널에서 열면 여기서 처음 읽는다(DD4)
-  const one = useQuery<{ path: string; cron: { profile: string; job: string }[] }>({
+  const one = useQuery<{ path: string; cron: { profile: string; job: string }[]; dependents?: Dependents }>({
     queryKey: ['skill', s.id],
     queryFn: () => get('/api/skill?id=' + encodeURIComponent(s.id)),
   });
   const kind = mode.kind === 'hub' ? 'hub' : 'archive';
-  const crons = one.data?.cron ?? [];
+  const deps = one.data?.dependents;
+  // 부르는 곳이 있으면 막는다(서버 skill_deps). 서버가 아직 색인을 못 만들었으면 예약 작업 경고만 보이고 지울 때 서버가 다시 본다
+  const blocked = deps?.checked ? deps.block : [];
+  const crons = (one.data?.cron ?? []).filter(() => !blocked.length);
   const run = async () => {
     setBusy(true);
     setError(null);
@@ -198,11 +215,35 @@ export function DeleteSkillDialog({
             {t('skills.del.loading')}
           </Typography>
         ) : (
-          crons.length > 0 && (
-            <Alert severity="warning" icon={<WarningAmberRoundedIcon fontSize="small" />} sx={{ mt: 1.5 }}>
-              {t('skills.del.cron', { count: crons.length, names: crons.map((c) => c.job).join(', ') })}
-            </Alert>
-          )
+          <>
+            {blocked.length > 0 && (
+              <Alert severity="error" sx={{ mt: 1.5 }} data-delete-blocked>
+                {t('skills.del.blockTitle', { n: deps?.n_block ?? blocked.length })}
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+                  {blocked.map((d) => (
+                    <li key={d.kind + d.id}>
+                      <Typography variant="body2">{`${t(`skills.del.kind.${d.kind === 'cron' ? 'cron' : 'skill'}`)} · ${d.label}${d.profile ? ` (${profileName(d.profile)})` : ''}`}</Typography>
+                    </li>
+                  ))}
+                </Box>
+              </Alert>
+            )}
+            {crons.length > 0 && (
+              <Alert severity="warning" icon={<WarningAmberRoundedIcon fontSize="small" />} sx={{ mt: 1.5 }}>
+                {t('skills.del.cron', { count: crons.length, names: crons.map((c) => c.job).join(', ') })}
+              </Alert>
+            )}
+            {!blocked.length && !!deps?.agents.length && (
+              <Alert severity="warning" icon={<WarningAmberRoundedIcon fontSize="small" />} sx={{ mt: 1.5 }}>
+                {t('skills.del.agents', { n: deps.agents.length, names: deps.agents.join(', ') })}
+              </Alert>
+            )}
+            {!blocked.length && !!deps?.warn.length && (
+              <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+                {t('skills.del.mentions', { n: deps.warn.length, names: deps.warn.map((d) => d.label).join(', ') })}
+              </Typography>
+            )}
+          </>
         )}
         <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1.5 }}>
           {kind === 'hub' ? t('skills.del.reinstall') : restorable ? t('skills.del.restoreHere') : t('skills.del.restoreAdmin')}
@@ -234,7 +275,7 @@ export function DeleteSkillDialog({
           color="inherit"
           sx={tier3}
           onClick={() => void run()}
-          disabled={busy || downloading}
+          disabled={busy || downloading || blocked.length > 0}
           startIcon={busy ? <CircularProgress size={14} color="inherit" /> : undefined}
         >
           {busy ? t('skills.del.busy') : t('skills.del.ok')}
@@ -295,5 +336,96 @@ export function SkillRowDelete({ name, mode, narrow, onOpen }: { name: string; m
         <DeleteOutlineIcon fontSize="small" />
       </IconButton>
     </Tooltip>
+  );
+}
+
+/**
+ * 정리 모드의 한꺼번에 지우기. 새 일괄 API 없이 /api/skill/delete 를 하나씩 — 서버가 줄마다 권한·부르는 곳을 다시 본다.
+ * 막히거나 실패한 스킬은 건너뛰고 끝에 이유를 모아 보인다.
+ */
+export function BulkDeleteDialog({ skills, onClose }: { skills: DeletableSkill[]; onClose: (done: boolean) => void }) {
+  const qc = useQueryClient();
+  const pod = useMe().data?.pod?.id ?? '';
+  const { enqueueSnackbar } = useSnackbar();
+  const fullScreen = useMediaQuery(useTheme().breakpoints.down('sm'));
+  const titleId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const [done, setDone] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<{ name: string; error: string }[] | null>(null);
+  const run = async () => {
+    setBusy(true);
+    const bad: { name: string; error: string }[] = [];
+    let ok = 0;
+    for (const s of skills) {
+      try {
+        await post('/api/skill/delete', { id: s.id });
+        ok++;
+      } catch (e) {
+        bad.push({ name: s.name, error: (e as Error).message });
+      }
+      setDone((n) => n + 1);
+    }
+    void qc.invalidateQueries({ queryKey: ['skills'] });
+    void qc.invalidateQueries({ queryKey: ['market', pod, 'archived'] });
+    setBusy(false);
+    if (ok) enqueueSnackbar(t('skills.del.bulkDone', { n: ok }), { variant: 'success' });
+    if (bad.length) setFailed(bad);
+    else onClose(true);
+  };
+  return (
+    <Dialog open onClose={busy ? undefined : () => onClose(!!failed)} aria-labelledby={titleId} fullWidth maxWidth="sm" fullScreen={fullScreen} TransitionProps={{ onEntered: () => cancelRef.current?.focus() }}>
+      <DialogTitle id={titleId}>{t('skills.del.bulkTitle', { n: skills.length })}</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2">{t('skills.del.bulkWhat')}</Typography>
+        <Box component="ul" sx={{ m: 0, mt: 1, pl: 2, maxHeight: 240, overflow: 'auto' }}>
+          {skills.map((s) => (
+            <li key={s.id}>
+              <Typography variant="body2" sx={{ fontFamily: MONO_FONT, fontSize: 13 }}>
+                {s.name}
+              </Typography>
+            </li>
+          ))}
+        </Box>
+        <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+          {t('skills.del.restoreHere')}
+        </Typography>
+        {busy && (
+          <Typography variant="body2" sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }} role="status">
+            <CircularProgress size={14} color="inherit" />
+            {t('skills.del.bulkBusy', { done, n: skills.length })}
+          </Typography>
+        )}
+        {failed && (
+          <Alert severity="error" sx={{ mt: 1.5 }}>
+            {t('skills.del.bulkFailed', { n: failed.length })}
+            <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2 }}>
+              {failed.map((f) => (
+                <li key={f.name}>
+                  <Typography variant="body2">{`${f.name} — ${f.error}`}</Typography>
+                </li>
+              ))}
+            </Box>
+          </Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button variant="outlined" color="inherit" sx={tier2} onClick={() => onClose(!!failed)} disabled={busy} ref={cancelRef}>
+          {failed ? t('common.close') : t('common.cancel')}
+        </Button>
+        {!failed && (
+          <Button
+            variant="outlined"
+            color="inherit"
+            sx={tier3}
+            onClick={() => void run()}
+            disabled={busy || !skills.length}
+            startIcon={busy ? <CircularProgress size={14} color="inherit" /> : <DeleteOutlineIcon />}
+          >
+            {busy ? t('skills.del.bulkBusy', { done, n: skills.length }) : t('skillsAgent.cleanupGo', { n: skills.length })}
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
   );
 }

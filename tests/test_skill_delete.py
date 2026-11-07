@@ -128,6 +128,30 @@ class SkillDeleteTest(unittest.TestCase):
         self.assertTrue((HOME / "profiles/ma/skills/.archive/weekly-report/SKILL.md").is_file())
         self.assertNotIn(sid, self.rows())                                                          # 목록 캐시도 비웠다
 
+    def test_skill_called_by_a_cron_job_or_frontmatter_is_refused_with_callers(self):
+        put("profiles/ma/skills/uploaded/daily-pull", "daily-pull")
+        caller = HOME / "profiles/ma/skills/uploaded/digest"
+        caller.mkdir(parents=True, exist_ok=True)
+        (caller / "SKILL.md").write_text("---\nname: digest\ndescription: 시험\nrelated_skills: [daily-pull]\n---\n# digest\n", encoding="utf-8")
+        put("profiles/ma/skills/uploaded/free-one", "free-one")
+        cron = HOME / "profiles/ma/cron"
+        cron.mkdir(parents=True, exist_ok=True)
+        (cron / "jobs.json").write_text(json.dumps({"jobs": [{"id": "j1", "name": "아침 수집", "skills": ["daily-pull"]}]}), encoding="utf-8")
+        try:
+            code, out = self.delete("ma:profiles/ma/skills/uploaded/daily-pull")
+            self.assertEqual((code, out["reason"]), (409, "in_use"))
+            self.assertEqual(sorted(x["kind"] for x in out["dependents"]["block"]), ["cron", "skill"])
+            self.assertFalse([c for c in Fake.calls if c[1] == "/api/learning/node"])              # Hermes 에 묻기 전에 막았다
+            rows = self.rows()                                                                         # 색인이 생긴 뒤의 목록은 같은 이유를 미리 보인다
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/daily-pull"]["delete_block"], "in_use")
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/daily-pull"]["dependents_n"], 2)
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/free-one"]["delete_block"], "")
+            one = self.req("GET", "/api/skill?id=" + "ma:profiles/ma/skills/uploaded/daily-pull")[1]
+            self.assertEqual(one["delete_block"], "in_use")
+            self.assertEqual([x["label"] for x in one["dependents"]["block"]], ["아침 수집", "digest"])
+        finally:
+            shutil.rmtree(cron, ignore_errors=True)
+
     def test_other_origins_same_name_and_bad_names_are_refused_before_hermes(self):
         put("profiles/ma/skills/market/hub-one", "hub-one")                    # 스킬 허브 스킬(출처 market)
         put("profiles/ma/skills/uploaded/twin", "twin")

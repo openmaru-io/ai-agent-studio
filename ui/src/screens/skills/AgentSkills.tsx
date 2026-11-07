@@ -9,20 +9,33 @@
 // 화면 다듬기(스펙 2026-11-06-002 §8): 1280px 미만 아바타 띠 G12, 탭 G13, 게시 단계 G14, 에이전트 요약 G15, 에이전트 이름 G16,
 // 켜고 끄기 G17, 자격증명 고칠 곳 링크 G18, 「등록됨」 중립색 G19.
 // 개요 탭(기본 탭, AI 요약은 1.5초 머문 뒤)·머리의 「AI 에이전트별 | 전체 스킬」 전환·없는 에이전트 알림(스펙 2026-11-06-003 R1~R3).
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import CloseFullscreenIcon from '@mui/icons-material/CloseFullscreen';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import OpenInFullIcon from '@mui/icons-material/OpenInFull';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import SearchIcon from '@mui/icons-material/Search';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import type { SxProps, Theme } from '@mui/material';
 import {
   Alert,
   Badge,
   Box,
   Button,
+  Checkbox,
   Chip,
+  IconButton,
   InputAdornment,
   LinearProgress,
+  Link,
   NativeSelect,
+  Popover,
   Stack,
   Tab,
   Tabs,
@@ -34,7 +47,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
 import { ReactNode, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 
 import { AddIconButton } from '@/components/AddIconButton';
 import { AiSummary, useSummaryView } from '@/components/AiSummary';
@@ -44,6 +57,7 @@ import { languageOf } from '@/components/codeLanguage';
 import { DisclosureButton } from '@/components/DisclosureButton';
 import { LazyCodeEditor } from '@/components/LazyCodeEditor';
 import { PageTitle } from '@/components/PageTitle';
+import { tier1, tier2, tier3 } from '@/components/tierButton';
 import { useFillHeight } from '@/components/useFillHeight';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
@@ -54,8 +68,10 @@ import { badgeTone, serverTerm } from '@/lib/serverTerms';
 import { FOCUS_RING } from '@/lib/shellTokens';
 import { Splitter, STRIP_W } from '@/screens/chat/layout';
 import { AgentAvatar } from '@/screens/chat/parts';
+import { GraphView } from '@/screens/flows/GraphView';
 import { Toggle } from '@/screens/profiles/Panes';
 import { useProfileAct } from '@/screens/profiles/shared';
+import { BulkDeleteDialog, DeleteMode, useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
 import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
@@ -78,6 +94,12 @@ export interface AgentSkillRow {
   missing_env?: string[];
   modes?: RunMode[];
   readiness?: Readiness;
+  /** 서버가 정한 지울 수 없는 이유(origin·same_name·name·in_use). 빈 값이면 지울 수 있다 */
+  delete_block?: string;
+  /** 이 스킬을 부르는 예약 작업·스킬 수(지우기를 막는다) */
+  dependents_n?: number;
+  /** 공용 스킬을 가져다 쓰는 AI 에이전트 수 */
+  agents_n?: number;
 }
 export interface AgentSummary {
   profile: string;
@@ -112,10 +134,11 @@ interface SkillOne {
 
 const FILTERS = ['all', 'on', 'off', 'setup', 'unused'] as const;
 type Filter = (typeof FILTERS)[number];
-// 「개요」가 맨 앞이고 기본 탭이다(스펙 2026-11-06-003 R1·D2). 기본 탭이면 주소에서 pane 을 지운다
-const PANES = ['overview', 'run', 'needs', 'files', 'publish'] as const;
+// 「연결도」가 첫 탭이자 기본 — 스킬을 고르면 바로 그 스킬의 호출 관계가 보인다. 「개요」는 그다음(스펙 2026-11-06-003 R1 의 개요 탭은 그대로)
+// 기본 탭이면 주소에서 pane 을 지운다
+const PANES = ['map', 'overview', 'run', 'needs', 'files', 'publish'] as const;
 type Pane = (typeof PANES)[number];
-const DEFAULT_PANE: Pane = 'overview';
+const DEFAULT_PANE: Pane = 'map';
 /** 개요에서 요약을 스스로 만들기 전에 같은 스킬을 보고 있어야 하는 시간(D3) */
 const SUMMARY_DWELL_MS = 1500;
 /** 요약 대신 보이는 SKILL.md 앞부분 줄 수(빈 줄 빼고, D5·OV-L1) */
@@ -178,6 +201,29 @@ function useLayout(): [{ agentsW: number; listW: number }, (p: Partial<{ agentsW
   ];
 }
 
+const WIDE_KEY = 'aas.skills.wide';
+/** 「넓게 보기」 — 이 브라우저에만 기억한다(저장소가 막혀도 화면은 돈다) */
+function useWide(): [boolean, (v: boolean) => void] {
+  const [v, setV] = useState(() => {
+    try {
+      return localStorage.getItem(WIDE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  return [
+    v,
+    (next) => {
+      setV(next);
+      try {
+        localStorage.setItem(WIDE_KEY, next ? '1' : '0');
+      } catch {
+        /* 이번 화면에서만 */
+      }
+    },
+  ];
+}
+
 /** 에이전트 목록 순서: 주 에이전트 → 이름순 → 공용(default) */
 export function agentOrder(g: AgentSkillsData): string[] {
   const names = g.agents?.map((a) => a.profile) ?? [...new Set(g.skills.map((s) => s.profile))];
@@ -206,14 +252,15 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   const pane: Pane = (PANES as readonly string[]).includes(params.get('pane') ?? '')
     ? (params.get('pane') as Pane)
     : DEFAULT_PANE;
-  const set = (patch: Record<string, string | null>) =>
+  // push 면 브라우저 뒤로 가기로 돌아온다 — 연결도에서 다른 스킬로 옮겨 갈 때만 쓴다
+  const set = (patch: Record<string, string | null>, push = false) =>
     setParams(
       (prev) => {
         const next = new URLSearchParams(prev);
         Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)));
         return next;
       },
-      { replace: true }
+      { replace: !push }
     );
   // 주소의 에이전트가 목록에 없으면(다른 작업공간의 에이전트 등) 주 에이전트로 바꾸고 한 번 알린다(D10).
   // 표 화면의 없는 프로파일 알림(useProfileScope)과 같은 방식 — 주소에 적혀 온 것만 알리고, 주소가 비어 있으면 조용히
@@ -231,6 +278,41 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   const rows = g.skills.filter((s) => s.profile === agent);
   const picked = rows.find((s) => s.id === skillId);
   const summary = g.agents?.find((a) => a.profile === agent);
+  // 지우기(DeleteSkill): 판정·확인 창·지우는 중 상태. 지운 스킬을 보고 있었으면 상세를 닫는다
+  const del = useSkillDelete(g.skills, (s) => {
+    if (s.id === skillId) set({ skill: null });
+  });
+  // 지나온 스킬(연결도 탭 위 경로 칩). 스킬이 바뀔 때마다 앞 스킬을 쌓는다 — 목록에서 골랐든 그림에서 옮겼든
+  const [trail, setTrail] = useState<string[]>([]);
+  const [prevSkill, setPrevSkill] = useState(skillId);
+  if (prevSkill !== skillId) {
+    setPrevSkill(skillId);
+    if (prevSkill && skillId)
+      setTrail((tr) => [...tr.filter((x) => x !== prevSkill && x !== skillId), prevSkill].slice(-8));
+  }
+  const byId = useMemo(() => new Map(g.skills.map((s) => [s.id, s])), [g.skills]);
+  /** 그림의 스킬 노드 → 이 화면의 줄. 지금 AI 에이전트가 가져다 쓰는 사본이 있으면 그 줄(자리를 지킨다), 없으면 그 스킬의 AI 에이전트로 */
+  const resolve = (sid: string): AgentSkillRow | undefined => {
+    const r = byId.get(sid);
+    if (!r) return undefined;
+    if (r.profile === agent) return r;
+    const origin = r.shared_from
+      ? g.skills.find((x) => x.profile === r.shared_from && x.name === r.name && !x.shared_from)
+      : r;
+    const mine = g.skills.find(
+      (x) =>
+        x.profile === agent && x.name === r.name && (x.shared_from === (origin ?? r).profile || x.id === origin?.id)
+    );
+    return mine ?? origin ?? r;
+  };
+  /** 다른 스킬로 옮겨 간다. 이 화면에 없는 스킬(허브·기본 제공 등)이면 false — 그림 안에서만 중심을 바꾼다 */
+  const goSkill = (sid: string): boolean => {
+    const r = resolve(sid);
+    if (!r) return false;
+    if (r.id !== skillId) set({ profile: r.profile, skill: r.id }, true);
+    return true;
+  };
+  const [wide, setWide] = useWide();
 
   const agentsPanel = medium ? (
     <AgentStripSkills g={g} order={order} agent={agent} onPick={(p) => set({ profile: p, skill: null })} />
@@ -247,6 +329,7 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
       filter={(FILTERS as readonly string[]).includes(params.get('f') ?? '') ? (params.get('f') as Filter) : 'all'}
       onFilter={(f) => set({ f: f === 'all' ? null : f })}
       onPick={(id) => set({ skill: id })}
+      modeOf={del.modeOf}
     />
   );
   const detail = picked ? (
@@ -255,7 +338,14 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
       row={picked}
       pane={pane}
       onPane={(p) => set({ pane: p === DEFAULT_PANE ? null : p })}
+      onGo={goSkill}
+      trail={trail.map((id) => byId.get(id)).filter((r): r is AgentSkillRow => !!r)}
+      onTrail={goSkill}
+      wide={wide}
+      onWide={narrow ? undefined : () => setWide(!wide)}
       onBack={narrow ? () => set({ skill: null }) : undefined}
+      mode={del.modeOf(picked)}
+      onDelete={() => del.open(picked)}
     />
   ) : (
     <AgentOverview agent={agent} rows={rows} onPick={(id) => set({ skill: id, pane: 'needs' })} />
@@ -273,6 +363,7 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
           </Box>
           {/* 표 화면과 같은 자리·같은 부품(R2). 「전체 표」 단추를 대신한다 */}
           <SkillsViewToggle value="agent" />
+          <Glossary />
         </>
       }
     >
@@ -284,6 +375,7 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
     return (
       <Box data-testid="agent-skills">
         {title}
+        {del.dialog}
         {picked ? (
           detail
         ) : (
@@ -308,11 +400,15 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   return (
     <Box data-testid="agent-skills">
       {title}
+      {del.dialog}
       <Box
         ref={frame}
         sx={{
           display: 'grid',
-          gridTemplateColumns: medium
+          // 넓게 보기: AI 에이전트 칸을 접고 스킬 목록을 좁혀 연결도를 크게
+          gridTemplateColumns: wide
+            ? `0px 0px ${Math.min(layout.listW, 300)}px 6px minmax(0, 1fr)`
+            : medium
             ? `${STRIP_W}px ${layout.listW}px 6px minmax(0, 1fr)`
             : `${layout.agentsW}px 6px ${layout.listW}px 6px minmax(0, 1fr)`,
           gridTemplateRows: 'minmax(0, 1fr)',
@@ -324,14 +420,29 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
           overflow: 'hidden',
         }}
       >
-        <Box sx={{ minHeight: 0, overflow: 'auto', borderRight: medium ? 1 : 0, borderColor: 'divider' }}>{agentsPanel}</Box>
-        {!medium && (
+        <Box
+          sx={{
+            minHeight: 0,
+            overflow: 'auto',
+            borderRight: medium && !wide ? 1 : 0,
+            borderColor: 'divider',
+            visibility: wide ? 'hidden' : undefined,
+          }}
+          aria-hidden={wide || undefined}
+        >
+          {!wide && agentsPanel}
+        </Box>
+        {wide ? (
+          <Box />
+        ) : (
+          !medium && (
           <Splitter
             label={t('skillsAgent.resizeAgents')}
             value={layout.agentsW}
             limits={LIMITS.agents}
             onChange={(v) => setLayout({ agentsW: v })}
           />
+          )
         )}
         <Box sx={{ minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>{listPanel}</Box>
         <Splitter
@@ -340,7 +451,9 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
           limits={LIMITS.list}
           onChange={(v) => setLayout({ listW: v })}
         />
-        <Box sx={{ minHeight: 0, minWidth: 0, overflow: 'auto', p: 2 }}>{detail}</Box>
+        <Box sx={{ minHeight: 0, minWidth: 0, overflow: 'auto' }} data-detail-scroll>
+          {detail}
+        </Box>
       </Box>
     </Box>
   );
@@ -372,13 +485,81 @@ function AgentColumn({
 }) {
   const label = useAgentLabel();
   const byName = new Map((g.agents ?? []).map((a) => [a.profile, a]));
+  const agents = order.filter((p) => p !== 'default');
+  const hasShared = order.includes('default');
+  const sharedN = g.skills.filter((s) => s.profile === 'default' && !s.shared_from).length;
+  const rowSx = (on: boolean): SxProps<Theme> => ({
+    all: 'unset',
+    boxSizing: 'border-box',
+    width: '100%',
+    display: 'flex',
+    gap: 1.25,
+    alignItems: 'center',
+    px: 1.5,
+    py: 1,
+    cursor: 'pointer',
+    borderLeft: 3,
+    borderColor: on ? 'primary.main' : 'transparent',
+    bgcolor: on ? 'action.selected' : 'transparent',
+    '&:hover': { bgcolor: on ? 'action.selected' : 'action.hover' },
+    '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+  });
   return (
     <Box component="nav" aria-label={t('skillsAgent.agents')}>
+      {/* 맨 위: 공용 스킬 — 에이전트 수와 무관하게 늘 스크롤 없이 보인다. 전체 보기는 제목 옆 전환(SkillsViewToggle) */}
+      <Box
+        sx={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 1,
+          bgcolor: 'background.paper',
+          borderBottom: 1,
+          borderColor: 'divider',
+        }}
+      >
+        {hasShared && (
+          <Tooltip describeChild title={t('skillsAgent.sharedGroupHint')} placement="right">
+            <Box
+              component="button"
+              type="button"
+              aria-current={agent === 'default' ? 'true' : undefined}
+              data-agent="default"
+              onClick={() => onPick('default')}
+              sx={rowSx(agent === 'default')}
+            >
+              <Box
+                aria-hidden
+                sx={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 1,
+                  display: 'grid',
+                  placeItems: 'center',
+                  bgcolor: 'info.main',
+                  color: 'info.contrastText',
+                  flexShrink: 0,
+                }}
+              >
+                <FolderSharedOutlinedIcon fontSize="small" />
+              </Box>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography noWrap sx={{ fontWeight: 600, fontSize: 14 }}>
+                  {t('skillsAgent.sharedGroup')}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div" noWrap>
+                  {t('skillsAgent.sharedGroupLine', { n: sharedN })}
+                </Typography>
+              </Box>
+              <SetupTag n={byName.get('default')?.setup ?? 0} />
+            </Box>
+          </Tooltip>
+        )}
+      </Box>
       <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, pt: 1, display: 'block' }}>
-        {t('skillsAgent.agents')}
+        {`${t('skillsAgent.agents')} ${agents.length}`}
       </Typography>
       <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
-        {order.map((p) => {
+        {agents.map((p) => {
           const a = byName.get(p);
           const own = g.skills.filter((s) => s.profile === p && !s.shared_from).length;
           const on = p === agent;
@@ -390,20 +571,7 @@ function AgentColumn({
                 aria-current={on ? 'true' : undefined}
                 data-agent={p}
                 onClick={() => onPick(p)}
-                sx={{
-                  all: 'unset',
-                  boxSizing: 'border-box',
-                  width: '100%',
-                  display: 'flex',
-                  gap: 1.25,
-                  alignItems: 'center',
-                  px: 1.5,
-                  py: 1,
-                  cursor: 'pointer',
-                  bgcolor: on ? 'action.selected' : undefined,
-                  '&:hover': { bgcolor: on ? 'action.selected' : 'action.hover' },
-                  '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
-                }}
+                sx={rowSx(on)}
               >
                 <AgentAvatar name={p} label={label(p)} size={32} />
                 <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -421,15 +589,18 @@ function AgentColumn({
                   </Stack>
                   <Typography variant="caption" color="text.secondary" component="div" noWrap>
                     {a
-                      ? t('skillsAgent.agentLine', { own, shared: a.shared, runs: a.runs })
+                      ? t('skillsAgent.agentLine', { own, shared: a.shared })
                       : t('skillsAgent.agentLineOld', { n: g.skills.filter((s) => s.profile === p).length })}
                   </Typography>
+                  {a && (
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.25 }}>
+                      <Typography variant="caption" color="text.secondary" noWrap>
+                        {t('skillsAgent.recentRuns', { runs: a.runs })}
+                      </Typography>
+                      <SetupTag n={a.setup} />
+                    </Stack>
+                  )}
                 </Box>
-                {!!a?.setup && (
-                  <Tooltip title={t('skillsAgent.setupHint', { n: a.setup })}>
-                    <Chip size="small" color="warning" variant="outlined" icon={<WarningAmberIcon />} label={a.setup} />
-                  </Tooltip>
-                )}
               </Box>
             </li>
           );
@@ -547,11 +718,77 @@ function AgentOverview({ agent, rows, onPick }: { agent: string; rows: AgentSkil
   );
 }
 
+/** 「설정 필요 N」 — 행동이 필요한 것이라 경고색 글자로 보인다(숫자만 든 아이콘 칩은 뜻을 몰랐다) */
+function SetupTag({ n }: { n: number }) {
+  if (!n) return null;
+  return (
+    <Tooltip title={t('skillsAgent.setupHint', { n })}>
+      <Box
+        component="span"
+        data-setup={n}
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.25,
+          fontSize: 11,
+          fontWeight: 700,
+          color: 'warning.main',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <WarningAmberIcon sx={{ fontSize: 13 }} aria-hidden />
+        {t('skillsAgent.setupN', { n })}
+      </Box>
+    </Tooltip>
+  );
+}
+
+/** 제목 옆 「용어」: 화면에 나오는 낱말 뜻을 한곳에 */
+function Glossary() {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const id = useId();
+  return (
+    <>
+      <Button
+        size="small"
+        color="inherit"
+        startIcon={<HelpOutlineIcon />}
+        aria-haspopup="dialog"
+        aria-controls={el ? id : undefined}
+        onClick={(e) => setEl(e.currentTarget)}
+      >
+        {t('skillsAgent.glossary')}
+      </Button>
+      <Popover
+        id={id}
+        open={!!el}
+        anchorEl={el}
+        onClose={() => setEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Box sx={{ p: 2, maxWidth: 420 }} role="dialog" aria-label={t('skillsAgent.glossaryTitle')}>
+          <Typography sx={{ fontWeight: 600, mb: 1 }}>{t('skillsAgent.glossaryTitle')}</Typography>
+          <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.75 } }}>
+            {(['shared', 'own', 'all', 'mine', 'builtin', 'locked'] as const).map((k) => (
+              <li key={k}>
+                <Typography variant="body2">{t(`skillsAgent.term.${k}`)}</Typography>
+              </li>
+            ))}
+          </Box>
+        </Box>
+      </Popover>
+    </>
+  );
+}
+
 // ---- 가운데: 그 에이전트의 스킬 ---------------------------------------------------------------------
 
 function modeLabel(m: RunMode) {
   return t(`skillsAgent.mode.${m}`);
 }
+
+/** 정리 모드에서 고를 수 있는가 — 보관함으로 옮길 수 있고(내 스킬) 막는 이유가 없을 때만. 스킬 허브 스킬은 하나씩 지운다 */
+const bulkable = (m: DeleteMode) => m.kind === 'archive' && !m.disabled;
 
 function SkillColumn({
   agent,
@@ -561,6 +798,7 @@ function SkillColumn({
   filter,
   onFilter,
   onPick,
+  modeOf,
 }: {
   agent: string;
   rows: AgentSkillRow[];
@@ -569,9 +807,13 @@ function SkillColumn({
   filter: Filter;
   onFilter: (f: Filter) => void;
   onPick: (id: string) => void;
+  modeOf: (s: AgentSkillRow) => DeleteMode;
 }) {
   const [q, setQ] = useState('');
   const [allShared, setAllShared] = useState(false);
+  const [cleanup, setCleanup] = useState(false);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [bulk, setBulk] = useState(false);
   const needle = q.trim().toLowerCase();
   const hit = (s: AgentSkillRow) =>
     matchFilter(s, filter) && (!needle || `${s.name} ${s.description ?? ''}`.toLowerCase().includes(needle));
@@ -586,10 +828,49 @@ function SkillColumn({
   const shared = allShared || needle || filter !== 'all' ? sharedAll : sharedUsed;
   const count = (f: Filter) => rows.filter((s) => matchFilter(s, f)).length;
   const label = useAgentLabel();
+  const isShared = agent === 'default';
+  // 정리는 이 칸의 「직접 가진」 스킬만 — 가져다 쓰는 공용 스킬의 사본은 공용 스킬에서 지운다
+  const free = own.filter((s) => bulkable(modeOf(s)));
+  const picked = rows.filter((s) => chosen.has(s.id) && bulkable(modeOf(s)));
+  const toggle = (id: string) =>
+    setChosen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const startCleanup = () => {
+    setCleanup(true);
+    setChosen(new Set());
+    if (filter === 'all') onFilter('unused');
+  };
+  const endCleanup = () => {
+    setCleanup(false);
+    setChosen(new Set());
+  };
+  const item = { agent, selected, onPick, modeOf, cleanup, chosen, onChoose: toggle };
   return (
     <>
       <Box sx={{ px: 1.5, pt: 1.25, pb: 1, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography sx={{ fontWeight: 600 }}>{t('skillsAgent.skillsOf', { name: label(agent) })}</Typography>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography sx={{ fontWeight: 600, flex: 1, minWidth: 0 }} noWrap>
+            {isShared ? t('skillsAgent.sharedGroup') : t('skillsAgent.skillsOf', { name: label(agent) })}
+          </Typography>
+          {!cleanup && (
+            <Tooltip describeChild title={t('skillsAgent.cleanupHint')}>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                sx={tier2}
+                startIcon={<DeleteOutlineIcon />}
+                onClick={startCleanup}
+              >
+                {t('skillsAgent.cleanup')}
+              </Button>
+            </Tooltip>
+          )}
+        </Stack>
         {summary && (
           <Typography variant="caption" color="text.secondary" component="div">
             {t('skillsAgent.summary', {
@@ -629,66 +910,135 @@ function SkillColumn({
           role="group"
           aria-label={t('skillsAgent.filter')}
         >
-          {FILTERS.map((f) => (
-            <Chip
-              key={f}
-              size="small"
-              label={`${t(`skillsAgent.filter.${f}`)} ${count(f)}`}
-              color={filter === f ? 'primary' : 'default'}
-              variant={filter === f ? 'filled' : 'outlined'}
-              onClick={() => onFilter(f)}
-              aria-pressed={filter === f}
-            />
-          ))}
+          {FILTERS.map((f) => {
+            const n = count(f);
+            const on = filter === f;
+            // 행동이 필요한 상태(설정 필요)는 0 이 아니면 경고색으로 눈에 띄게
+            const tone = !on && n > 0 && f === 'setup' ? 'warning' : on ? 'primary' : 'default';
+            return (
+              <Chip
+                key={f}
+                size="small"
+                label={`${t(`skillsAgent.filter.${f}`)} ${n}`}
+                color={tone}
+                variant={on ? 'filled' : 'outlined'}
+                onClick={() => onFilter(f)}
+                aria-pressed={on}
+                sx={!on && n > 0 && f === 'setup' ? { fontWeight: 700 } : undefined}
+              />
+            );
+          })}
         </Stack>
+        {cleanup && (
+          <Alert severity="info" icon={false} sx={{ mt: 1, py: 0.25 }} data-cleanup-bar>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              {t('skillsAgent.cleanupTitle')}
+            </Typography>
+            <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.5 }}>
+              <Button
+                size="small"
+                color="inherit"
+                disabled={!free.length}
+                onClick={() => setChosen(new Set(free.map((s) => s.id)))}
+              >
+                {t('skillsAgent.cleanupPickFree')}
+              </Button>
+              <Button size="small" color="inherit" disabled={!chosen.size} onClick={() => setChosen(new Set())}>
+                {t('skillsAgent.cleanupClear')}
+              </Button>
+            </Stack>
+            {!free.length && (
+              <Typography variant="caption" color="text.secondary" component="p">
+                {t('skillsAgent.cleanupNone')}
+              </Typography>
+            )}
+          </Alert>
+        )}
       </Box>
       <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         <SkillGroup
-          title={t('skillsAgent.ownSkills')}
+          title={isShared ? t('skillsAgent.sharedOwnTitle') : t('skillsAgent.ownSkills')}
           n={own.length}
           rows={own}
-          agent={agent}
-          selected={selected}
-          onPick={onPick}
-          empty={t('skillsAgent.ownEmpty')}
+          item={item}
+          empty={isShared ? t('skillsAgent.sharedOwnEmpty') : t('skillsAgent.ownEmpty')}
         />
-        <SkillGroup
-          title={t('skillsAgent.sharedSkills')}
-          n={sharedAll.length}
-          rows={shared}
-          agent={agent}
-          selected={selected}
-          onPick={onPick}
-          empty={sharedAll.length ? t('skillsAgent.sharedNoneUsed') : t('skillsAgent.sharedEmpty')}
-          more={
-            !allShared && !needle && filter === 'all' && sharedAll.length > sharedUsed.length ? (
-              <Button size="small" color="inherit" onClick={() => setAllShared(true)}>
-                {t('skillsAgent.sharedShowAll', { n: sharedAll.length - sharedUsed.length })}
-              </Button>
-            ) : undefined
-          }
-        />
+        {!isShared && (
+          <SkillGroup
+            title={t('skillsAgent.sharedSkills')}
+            n={sharedAll.length}
+            rows={shared}
+            item={{ ...item, cleanup: false }}
+            empty={sharedAll.length ? t('skillsAgent.sharedNoneUsed') : t('skillsAgent.sharedEmpty')}
+            more={
+              !allShared && !needle && filter === 'all' && sharedAll.length > sharedUsed.length ? (
+                <Button size="small" color="inherit" onClick={() => setAllShared(true)}>
+                  {t('skillsAgent.sharedShowAll', { n: sharedAll.length - sharedUsed.length })}
+                </Button>
+              ) : undefined
+            }
+          />
+        )}
       </Box>
+      {cleanup && (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ px: 1.5, py: 1, borderTop: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+        >
+          <Button size="small" variant="outlined" color="inherit" sx={tier2} onClick={endCleanup}>
+            {t('skillsAgent.cleanupExit')}
+          </Button>
+          <Box sx={{ flex: 1 }} />
+          <Button
+            size="small"
+            variant="outlined"
+            color="inherit"
+            sx={tier3}
+            startIcon={<DeleteOutlineIcon />}
+            disabled={!picked.length}
+            onClick={() => setBulk(true)}
+          >
+            {t('skillsAgent.cleanupGo', { n: picked.length })}
+          </Button>
+        </Stack>
+      )}
+      {bulk && (
+        <BulkDeleteDialog
+          skills={picked}
+          onClose={(done) => {
+            setBulk(false);
+            if (done) endCleanup();
+          }}
+        />
+      )}
     </>
   );
+}
+
+interface ItemCtx {
+  agent: string;
+  selected: string;
+  onPick: (id: string) => void;
+  modeOf: (s: AgentSkillRow) => DeleteMode;
+  cleanup: boolean;
+  chosen: Set<string>;
+  onChoose: (id: string) => void;
 }
 
 function SkillGroup({
   title,
   n,
   rows,
-  agent,
-  selected,
-  onPick,
+  item,
   empty,
   more,
 }: {
   title: string;
   n: number;
   rows: AgentSkillRow[];
-  agent: string;
-  selected: string;
-  onPick: (id: string) => void;
+  item: ItemCtx;
   empty: string;
   more?: ReactNode;
 }) {
@@ -700,7 +1050,7 @@ function SkillGroup({
       {rows.length ? (
         <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
           {rows.map((s) => (
-            <SkillItem key={s.id} s={s} agent={agent} on={s.id === selected} onPick={() => onPick(s.id)} />
+            <SkillItem key={s.id} s={s} ctx={item} />
           ))}
         </Box>
       ) : (
@@ -713,8 +1063,37 @@ function SkillGroup({
   );
 }
 
-function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; on: boolean; onPick: () => void }) {
+/** 지울 수 없는 이유를 보일 자물쇠 — 부르는 곳이 있을 때만(공용 사본·기본 제공은 너무 많아 줄마다 붙이면 시끄럽다) */
+function LockTag({ s }: { s: AgentSkillRow }) {
+  if (s.delete_block !== 'in_use') return null;
+  return (
+    <Tooltip title={t('skills.del.why.in_use')}>
+      <Box
+        component="span"
+        data-locked
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.25,
+          fontSize: 11,
+          color: 'text.secondary',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <LockOutlinedIcon sx={{ fontSize: 12 }} aria-hidden />
+        {t('skillsAgent.calledBy', { n: s.dependents_n ?? 0 })}
+      </Box>
+    </Tooltip>
+  );
+}
+
+function SkillItem({ s, ctx }: { s: AgentSkillRow; ctx: ItemCtx }) {
   const used = usedOf(s);
+  const on = s.id === ctx.selected;
+  const mode = ctx.modeOf(s);
+  const can = bulkable(mode);
+  const why = mode.kind === 'none' ? mode.why : mode.disabled;
+  const unused = s.readiness === 'unused';
   return (
     <Box
       component="li"
@@ -727,14 +1106,27 @@ function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; 
         py: 0.75,
         bgcolor: on ? 'action.selected' : undefined,
         borderLeft: 3,
-        borderColor: on ? 'primary.main' : 'transparent',
+        borderColor: on ? 'primary.main' : s.readiness === 'setup' ? 'warning.main' : 'transparent',
         opacity: s.enabled === false ? 0.6 : 1,
       }}
     >
+      {ctx.cleanup && (
+        <Tooltip title={can ? '' : why ?? ''}>
+          <Box component="span" sx={{ mt: -0.5 }}>
+            <Checkbox
+              size="small"
+              checked={can && ctx.chosen.has(s.id)}
+              disabled={!can}
+              onChange={() => ctx.onChoose(s.id)}
+              slotProps={{ input: { 'aria-label': t('skillsAgent.cleanupPick', { name: s.name }) } }}
+            />
+          </Box>
+        </Tooltip>
+      )}
       <Box
         component="button"
         type="button"
-        onClick={onPick}
+        onClick={() => ctx.onPick(s.id)}
         aria-current={on ? 'true' : undefined}
         sx={{
           all: 'unset',
@@ -745,12 +1137,20 @@ function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; 
         }}
       >
         <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-          <Typography noWrap sx={{ fontWeight: 500, fontSize: 14 }}>
+          <Typography
+            noWrap
+            sx={{
+              fontWeight: s.readiness === 'setup' ? 600 : 500,
+              fontSize: 14,
+              color: unused ? 'text.secondary' : undefined,
+            }}
+          >
             {s.name}
           </Typography>
           {s.readiness && s.readiness !== 'ok' && (
             <Tag tone={readinessTone(s.readiness)}>{t(`skillsAgent.ready.${s.readiness}`)}</Tag>
           )}
+          <LockTag s={s} />
         </Stack>
         <Stack direction="row" spacing={0.5} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mt: 0.25 }}>
           {(s.modes ?? []).map((m) => (
@@ -768,7 +1168,7 @@ function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; 
           </Typography>
         </Stack>
       </Box>
-      {s.enabled !== undefined && <SkillSwitch agent={agent} name={s.name} on={s.enabled} />}
+      {!ctx.cleanup && s.enabled !== undefined && <SkillSwitch agent={ctx.agent} name={s.name} on={s.enabled} />}
     </Box>
   );
 }
@@ -813,77 +1213,263 @@ function SkillPanel({
   pane,
   onPane,
   onBack,
+  mode,
+  onDelete,
+  onGo,
+  trail,
+  onTrail,
+  wide,
+  onWide,
 }: {
   row: AgentSkillRow;
   pane: Pane;
   onPane: (p: Pane) => void;
   onBack?: () => void;
+  mode: DeleteMode;
+  onDelete: () => void;
+  /** 그림·카드에서 다른 스킬로 옮겨 간다(스킬 id). 이 화면에 없는 스킬이면 false */
+  onGo: (sid: string) => boolean;
+  trail: AgentSkillRow[];
+  onTrail: (sid: string) => boolean;
+  wide: boolean;
+  onWide?: () => void;
 }) {
   const one = useQuery<SkillOne>({
     queryKey: ['skill', row.id],
     queryFn: () => get<SkillOne>('/api/skill?id=' + encodeURIComponent(row.id)),
   });
   const flow = useQuery<Graph>({
-    queryKey: ['flow', 'skill:' + row.id],
+    // 연결도 탭(GraphView)과 같은 열쇠 — 한 번 받아 두 탭이 같이 쓴다
+    queryKey: ['flow', 'skill:' + row.id, false],
     queryFn: () => get<Graph>('/api/flow?root=' + encodeURIComponent('skill:' + row.id)),
   });
   const label = useAgentLabel();
+  const why = mode.kind === 'none' ? mode.why : mode.disabled;
+  const reasonId = useId();
   return (
     <Box data-testid="skill-panel">
-      {onBack && (
-        <Button size="small" startIcon={<ArrowBackIcon />} onClick={onBack} sx={{ mb: 1 }}>
-          {t('skillsAgent.back')}
-        </Button>
-      )}
-      <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap">
-        <Typography variant="h6" component="h2" sx={{ fontSize: 18 }}>
-          {row.name}
-        </Typography>
-        {row.origin && <Tag>{t(`skills.origin.${row.origin}`)}</Tag>}
-        {row.shared_from && <Tag tone="info">{t('skillsAgent.sharedFrom', { name: label(row.shared_from) })}</Tag>}
-        {row.readiness && <Tag tone={readinessTone(row.readiness)}>{t(`skillsAgent.ready.${row.readiness}`)}</Tag>}
-      </Stack>
-      {row.description && (
-        <Typography variant="body2" sx={{ mt: 0.5 }}>
-          {row.description}
-        </Typography>
-      )}
-      <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
-        {[
-          t('skillsAgent.agentIs', { name: label(row.profile) }),
-          row.enabled === false ? t('skillsAgent.ready.off') : t('skillsAgent.isOn'),
-          usedOf(row) ? t('skillsAgent.usedN', { n: usedOf(row) }) : t('skillsAgent.neverUsed'),
-          row.last_used ? t('skillsAgent.lastUsed', { at: shortDate(row.last_used) }) : '',
-        ]
-          .filter(Boolean)
-          .join(' · ')}
-      </Typography>
-      {/* 넘치면 가로로 밀어 본다 — 폰에서 「게시」 탭에 닿지 못했다. 고른 탭은 아래 선만, 바탕을 깔지 않는다(DESIGN.md Tabs, G13) */}
-      <Tabs
-        value={pane}
-        onChange={(_e, v: Pane) => onPane(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        allowScrollButtonsMobile
+      {/* 머리(이름·상태·행동·탭)는 고정 — 탭 내용만 스크롤한다. 가장 많이 쓰는 「스킬 연결도 보기」가 늘 보인다 */}
+      <Box
+        data-skill-head
         sx={{
-          mt: 1,
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          bgcolor: 'background.paper',
+          px: 2,
+          pt: 2,
           borderBottom: 1,
           borderColor: 'divider',
-          minHeight: 40,
-          '& .MuiTab-root.Mui-selected': { bgcolor: 'transparent' },
         }}
       >
-        {PANES.map((p) => (
-          <Tab key={p} value={p} label={t(`skillsAgent.pane.${p}`)} sx={{ minHeight: 40 }} />
-        ))}
-      </Tabs>
-      <Box sx={{ pt: 2 }}>
+        {onBack && (
+          <Button size="small" startIcon={<ArrowBackIcon />} onClick={onBack} sx={{ mb: 1 }}>
+            {t('skillsAgent.back')}
+          </Button>
+        )}
+        <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap">
+          <Typography variant="h6" component="h2" sx={{ fontSize: 18 }}>
+            {row.name}
+          </Typography>
+          {row.readiness && <Tag tone={readinessTone(row.readiness)}>{t(`skillsAgent.ready.${row.readiness}`)}</Tag>}
+          {row.origin && <Tag>{t(`skills.origin.${row.origin}`)}</Tag>}
+          {row.shared_from && (
+            <Tag tone="info">{t('skillsAgent.sharedFrom', { name: label(row.shared_from) })}</Tag>
+          )}
+          {!row.shared_from && !!row.agents_n && (
+            <Tag tone="info">{t('skillsAgent.usedByAgents', { n: row.agents_n })}</Tag>
+          )}
+        </Stack>
+        {row.description && (
+          <Typography
+            variant="body2"
+            sx={{
+              mt: 0.5,
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+            title={row.description}
+          >
+            {row.description}
+          </Typography>
+        )}
+        <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
+          {[
+            t('skillsAgent.agentIs', { name: label(row.profile) }),
+            row.enabled === false ? t('skillsAgent.ready.off') : t('skillsAgent.isOn'),
+            usedOf(row) ? t('skillsAgent.usedN', { n: usedOf(row) }) : t('skillsAgent.neverUsed'),
+            row.last_used ? t('skillsAgent.lastUsed', { at: shortDate(row.last_used) }) : '',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </Typography>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ mt: 1 }}
+          role="toolbar"
+          aria-label={t('skillsAgent.actions')}
+        >
+          <Button
+            size="small"
+            variant={pane === 'map' ? 'contained' : 'outlined'}
+            color={pane === 'map' ? 'primary' : 'inherit'}
+            sx={pane === 'map' ? undefined : tier1}
+            startIcon={<AccountTreeOutlinedIcon />}
+            aria-pressed={pane === 'map'}
+            onClick={() => onPane('map')}
+          >
+            {t('skills.viewFlow')}
+          </Button>
+          {onWide && (
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              sx={tier2}
+              startIcon={wide ? <CloseFullscreenIcon /> : <OpenInFullIcon />}
+              aria-pressed={wide}
+              onClick={onWide}
+            >
+              {wide ? t('skillsAgent.map.narrow') : t('skillsAgent.map.wide')}
+            </Button>
+          )}
+          <Tooltip title={t('skillsAgent.map.openMenu')}>
+            <IconButton
+              size="small"
+              component={RouterLink}
+              to={'/flows?root=' + encodeURIComponent('skill:' + row.id)}
+              aria-label={t('skillsAgent.map.openMenu')}
+            >
+              <OpenInNewIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Box sx={{ flex: 1 }} />
+          {why ? (
+            <Tooltip title={why}>
+              <Box
+                component="span"
+                sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, color: 'text.secondary', fontSize: 12 }}
+                data-delete-why
+              >
+                <LockOutlinedIcon sx={{ fontSize: 14 }} aria-hidden />
+                <span id={reasonId}>{why}</span>
+              </Box>
+            </Tooltip>
+          ) : null}
+          {mode.kind !== 'none' && (
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              sx={tier3}
+              startIcon={<DeleteOutlineIcon />}
+              disabled={!!mode.disabled}
+              aria-describedby={mode.disabled ? reasonId : undefined}
+              onClick={onDelete}
+            >
+              {t('skillsAgent.delete')}
+            </Button>
+          )}
+        </Stack>
+        {/* 넘치면 가로로 밀어 본다 — 폰에서 「게시」 탭에 닿지 못했다. 고른 탭은 아래 선만, 바탕을 깔지 않는다(DESIGN.md Tabs, G13) */}
+        <Tabs
+          value={pane}
+          onChange={(_e, v: Pane) => onPane(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
+          sx={{ mt: 1, minHeight: 40, '& .MuiTab-root.Mui-selected': { bgcolor: 'transparent' } }}
+        >
+          {PANES.map((p) => (
+            <Tab key={p} value={p} label={t(`skillsAgent.pane.${p}`)} sx={{ minHeight: 40 }} />
+          ))}
+        </Tabs>
+      </Box>
+      <Box sx={{ p: 2 }}>
+        {pane === 'map' && <MapPane row={row} onGo={onGo} trail={trail} onTrail={onTrail} />}
         {pane === 'overview' && <OverviewPane row={row} one={one.data} onFiles={() => onPane('files')} />}
-        {pane === 'run' && <RunPane row={row} flow={flow.data} loading={flow.isLoading} error={flow.error?.message} />}
+        {pane === 'run' && (
+          <RunPane row={row} flow={flow.data} loading={flow.isLoading} error={flow.error?.message} onGo={onGo} />
+        )}
         {pane === 'needs' && <NeedsPane row={row} one={one.data} flow={flow.data} />}
         {pane === 'files' && <FilesPane row={row} one={one.data} />}
         {pane === 'publish' && <PublishPane row={row} one={one.data} />}
       </Box>
+    </Box>
+  );
+}
+
+/** 「연결도」: 이 스킬을 부르는 곳 → 이 스킬 → 부르는 것. 스킬 화면을 떠나지 않고 노드를 눌러 다른 스킬로 옮겨 간다.
+ * 예약 작업·스크립트 노드는 그림 안에서만 중심을 바꾸고(목록 선택은 그대로), 「원래 스킬로」로 돌아온다 */
+function MapPane({
+  row,
+  onGo,
+  trail,
+  onTrail,
+}: {
+  row: AgentSkillRow;
+  onGo: (sid: string) => boolean;
+  trail: AgentSkillRow[];
+  onTrail: (sid: string) => boolean;
+}) {
+  const [center, setCenter] = useState<string | null>(null);
+  const root = center ?? 'skill:' + row.id;
+  const move = (r: string) => {
+    if (r.startsWith('skill:') && onGo(r.slice(6))) return;
+    setCenter(r === 'skill:' + row.id ? null : r);
+  };
+  const last = trail[trail.length - 1];
+  return (
+    <Box data-testid="skill-map">
+      {(trail.length > 0 || center) && (
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ mb: 1 }}
+          component="nav"
+          aria-label={t('skillsAgent.map.trail')}
+        >
+          {center ? (
+            <Button size="small" startIcon={<ArrowBackIcon />} onClick={() => setCenter(null)}>
+              {t('skillsAgent.map.backToSkill', { name: row.name })}
+            </Button>
+          ) : (
+            last && (
+              <Button size="small" startIcon={<ArrowBackIcon />} onClick={() => onTrail(last.id)}>
+                {t('skillsAgent.map.back')}
+              </Button>
+            )
+          )}
+          {trail.length > 0 && (
+            <Typography variant="caption" color="text.secondary">
+              {t('skillsAgent.map.trail')}
+            </Typography>
+          )}
+          {trail.map((r) => (
+            <Chip
+              key={r.id}
+              size="small"
+              variant="outlined"
+              label={r.profile === row.profile ? r.name : `${r.name} · ${agentLabel(r.profile)}`}
+              onClick={() => onTrail(r.id)}
+            />
+          ))}
+          <Chip size="small" color="primary" label={row.name} aria-current="true" />
+        </Stack>
+      )}
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
+        {t('skillsAgent.map.hint')}
+      </Typography>
+      <GraphView key={root} root={root} inDrawer onCenter={move} moveLabel={t('skillsAgent.map.moveTo')} />
     </Box>
   );
 }
@@ -895,6 +1481,11 @@ const LANES: { id: string; kinds: string[] }[] = [
   { id: 'creds', kinds: ['cred'] },
   { id: 'libs', kinds: ['lib'] },
 ];
+/** 이 스킬을 부르는 쪽(위쪽, depth < 0)은 「시작·부르는 곳」에 — 「부르는 도구」에는 이 스킬이 부르는 것만 */
+const inLane = (lane: string, n: FNode) =>
+  lane === 'start'
+    ? n.kind === 'cron' || n.depth < 0
+    : n.depth >= 0 && (LANES.find((l) => l.id === lane)?.kinds.includes(n.kind) ?? false);
 
 /** 「동작」: 시작 → 코드 → 도구 → 자격증명·라이브러리. 흐름 그림(/api/flow)을 띠로 접어 보인다. 연결마다 근거와 실행 관측 */
 function RunPane({
@@ -902,11 +1493,13 @@ function RunPane({
   flow,
   loading,
   error,
+  onGo,
 }: {
   row: AgentSkillRow;
   flow?: Graph;
   loading: boolean;
   error?: string;
+  onGo?: (sid: string) => boolean;
 }) {
   if (loading) return <LinearProgress aria-label={t('skillsAgent.loading')} />;
   if (!flow) return <Alert severity="warning">{error ?? t('skillsAgent.noFlow')}</Alert>;
@@ -934,7 +1527,7 @@ function RunPane({
         }}
       >
         {LANES.map((lane) => {
-          const items = nodes.filter((n) => lane.kinds.includes(n.kind));
+          const items = nodes.filter((n) => inLane(lane.id, n));
           const chat = lane.id === 'start' && (row.modes?.includes('chat') || used > 0);
           if (!items.length && !chat && lane.id !== 'start') return null;
           return (
@@ -956,19 +1549,22 @@ function RunPane({
                   </Typography>
                 )}
                 {items.map((n) => (
-                  <NodeCard key={n.id} node={n} label={n.label} sub={n.sub || kindLabel(n.kind)} edges={edgeTo(n.id)} profile={row.profile} />
+                  <NodeCard
+                    key={n.id}
+                    node={n}
+                    label={n.label}
+                    sub={n.sub || kindLabel(n.kind)}
+                    edges={edgeTo(n.id)}
+                    profile={row.profile}
+                    onOpen={n.kind === 'skill' && onGo ? () => onGo(n.id.slice(6)) : undefined}
+                  />
                 ))}
               </Stack>
             </Box>
           );
         })}
       </Box>
-      <Box sx={{ mt: 2 }}>
-        <LinkChip to="flows" params={{ root: 'skill:' + row.id }} page={{ kind: 'skillMap', root: 'skill:' + row.id }}>
-          {t('skills.viewFlow')}
-        </LinkChip>
-      </Box>
-      <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 2 }}>
         {t('skillsAgent.runNote')}
       </Typography>
     </Box>
@@ -991,7 +1587,22 @@ export const nodeBadgeTone = (badge: string, bad: boolean): 'bad' | 'warn' | und
   return bad ? 'bad' : tone;
 };
 
-function NodeCard({ node, label, sub, edges, profile }: { node?: FNode; label: string; sub: string; edges: FEdge[]; profile?: string }) {
+function NodeCard({
+  node,
+  label,
+  sub,
+  edges,
+  profile,
+  onOpen,
+}: {
+  node?: FNode;
+  label: string;
+  sub: string;
+  edges: FEdge[];
+  profile?: string;
+  /** 스킬 카드: 이름을 누르면 그 스킬로 옮겨 간다 */
+  onOpen?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const evId = useId();
   const evidence = edges.flatMap((e) => e.evidence).slice(0, 8);
@@ -1017,7 +1628,19 @@ function NodeCard({ node, label, sub, edges, profile }: { node?: FNode; label: s
       }}
       data-node={node?.id}
     >
-      <Typography sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all' }}>{label}</Typography>
+      {onOpen ? (
+        <Link
+          component="button"
+          type="button"
+          underline="hover"
+          onClick={onOpen}
+          sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all', textAlign: 'left' }}
+        >
+          {label}
+        </Link>
+      ) : (
+        <Typography sx={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-all' }}>{label}</Typography>
+      )}
       <Typography variant="caption" color="text.secondary" component="div" sx={{ wordBreak: 'break-all' }}>
         {sub}
       </Typography>

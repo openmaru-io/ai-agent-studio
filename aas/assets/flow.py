@@ -399,6 +399,15 @@ def starts(index: dict) -> list[dict]:
     return sorted(rows, key=lambda r: (r["status"] != "bad", r["status"] == "off", r["profile"], r["label"]))
 
 
+def shared_copies(index: dict, root: str) -> list[str]:
+    """공용 스킬 원본(skill:default:skills/<경로>)을 skills.external_dirs 로 가져다 쓰는 AI 에이전트의 사본 노드(skill:<프로파일>:skills/<경로>).
+    예약 작업·다른 스킬은 원본이 아니라 자기 AI 에이전트의 사본을 가리키므로, 원본의 「부르는 곳」을 그리려면 사본으로 들어오는 연결까지 본다."""
+    if not root.startswith("skill:default:skills/"):
+        return []
+    tail = root[len("skill:default:"):]
+    return [n for n in index["nodes"] if n != root and n.startswith("skill:") and n.split(":", 2)[2:] == [tail]]
+
+
 def subgraph(index: dict, root: str, mentions: bool = False, upstream: bool = True) -> dict | None:
     """root 에서 따라간 흐름. 스킬→스킬(문서의 관련 표기)은 뿌리 스킬과 크론이 직접 돌리는 스킬에서만 한 단계 따라간다."""
     nodes, out, inc = index["nodes"], index["out"], index["inc"]
@@ -434,10 +443,15 @@ def subgraph(index: dict, root: str, mentions: bool = False, upstream: bool = Tr
                 edges.append(e)
     ups = []
     if upstream:
-        for e in inc.get(root, []):
+        # 공용 스킬 원본이면 사본으로 들어오는 연결도 원본을 부르는 것으로 그린다(사본끼리·자기 사본에서 오는 연결은 뺀다)
+        copies = shared_copies(index, root)
+        mine = {root, *copies}
+        incoming = [e for e in inc.get(root, [])] + [
+            {**e, "to": root, "meta": {**e["meta"], "via": nodes[c].get("profile")}} for c in copies for e in inc.get(c, [])]
+        for e in incoming:
             if e["conf"] == "mention" and not mentions:
                 continue
-            if e["from"] in keep:
+            if e["from"] in keep or e["from"] in mine or e["from"] in ups:
                 continue
             if len(ups) >= 14:
                 truncated = True

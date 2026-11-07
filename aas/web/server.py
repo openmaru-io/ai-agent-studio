@@ -29,7 +29,7 @@ from ..ops import activity, admin_requests, bundled_repair, changes, channels, c
 from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
-from ..assets import agent_skills, credentials, explain, files, flow, inventory, skill_graph, skill_header, skill_setup
+from ..assets import agent_skills, credentials, explain, files, flow, inventory, skill_deps, skill_graph, skill_header, skill_setup
 from ..office import hub_auto, inbox, meeting, meeting_files, office, office_access, office_changed, office_state, presence, relay, shared
 from ..auth import keycloak
 from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, tags as market_tags, updates as market_updates
@@ -2462,11 +2462,15 @@ SKILL_DELETE_REASONS = {
     "origin": lambda: tr("이 스킬은 화면에서 지울 수 없습니다", "This skill cannot be deleted here"),
     "same_name": lambda: tr("같은 이름의 스킬이 둘 있어 지울 수 없습니다. 하나의 이름을 바꾼 뒤 지우세요", "Two skills have this name. Rename one, then delete"),
     "name": lambda: tr("이 이름의 스킬은 화면에서 지울 수 없습니다", "A skill with this name cannot be deleted here"),
+    "in_use": lambda: tr("예약 작업이나 다른 스킬이 이 스킬을 부르고 있어 지울 수 없습니다. 부르는 곳을 먼저 바꾸세요",
+                         "Scheduled jobs or other skills call this skill. Change them first, then delete"),
+    "checking": lambda: tr("이 스킬을 부르는 곳을 아직 확인하는 중입니다. 잠시 뒤 다시 시도하세요",
+                           "Still checking what calls this skill. Try again shortly"),
 }
-SKILL_DELETE_CODES = {"origin": 403, "same_name": 409, "name": 400}
+SKILL_DELETE_CODES = {"origin": 403, "same_name": 409, "name": 400, "in_use": 409, "checking": 409}
 
 
-def skill_delete_block(s: dict, rows: list[dict]) -> str:
+def skill_delete_block(s: dict, rows: list[dict], deps: dict | None = None) -> str:
     """스킬 항목을 화면에서 지울 수 없는 이유(빈 값이면 지울 수 있음). 화면의 비활성 판정(ui skillDelete.ts)과 같은 규칙이다.
     origin: 내 스킬이 아님(기본·허브·스킬 허브·외부 폴더) / same_name: 그 프로파일에 같은 머리말 이름이 둘 이상 — Hermes 는 이름으로 찾아 다른 쪽을
     보관할 수 있다(R1) / name: 이름 규칙 밖(R10)."""
@@ -2476,7 +2480,37 @@ def skill_delete_block(s: dict, rows: list[dict]) -> str:
         return "same_name"
     if not SKILL_DELETE_NAME.match(s["name"]):
         return "name"
+    if deps is not None:                                                # 부르는 곳(skill_deps): 예약 작업·머리말로 가리키는 스킬이 있으면 막는다
+        if not deps.get("checked"):
+            return "checking"
+        if deps.get("n_block", len(deps.get("block") or [])):
+            return "in_use"
     return ""
+
+
+_flow_warming: set[str] = set()
+
+
+def _flow_peek(pod: Pod) -> dict | None:
+    """모아 둔 흐름 색인이 있으면 그것(오래돼도), 없으면 뒤에서 만들게 하고 None — 스킬 목록이 흐름 색인(30초)을 기다리지 않게."""
+    with _lock:
+        hit = _cache.get(f"{pod.id}:flow")
+        if hit is not None:
+            return hit[1]
+        if pod.id in _flow_warming:
+            return None
+        _flow_warming.add(pod.id)
+
+    def warm():
+        try:
+            _flow(pod)
+        except Exception as exc:
+            print(f"흐름 색인 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        finally:
+            with _lock:
+                _flow_warming.discard(pod.id)
+    threading.Thread(target=warm, daemon=True, name="aas-flow-warm").start()
+    return None
 
 
 def _reload_skill_commands(pod: Pod, profile: str) -> str:
@@ -5606,8 +5640,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/skills":
                 g = _skills(pod)
                 tag_table = market_tags.load()                 # 스킬 태그(OMAI-1283): 표를 한 번만 읽어 행마다 붙인다
+                deps = skill_deps.summary(_flow_peek(pod), g["skills"])     # 부르는 곳 수 — 지우기 막음(in_use)·「가져다 쓰는 AI 에이전트」
                 slim = [{**skill_graph.list_row(s), "tags": market_tags.skill_tags(tag_table, s["name"], s.get("description") or "", s.get("origin") or ""),
-                         "delete_block": skill_delete_block(s, g["skills"])}     # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3)
+                         "delete_block": skill_delete_block(s, g["skills"], deps[s["id"]] if deps[s["id"]]["checked"] else None),   # 색인이 아직 없으면 지울 때 서버가 다시 본다     # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3)
+                         "dependents_n": deps[s["id"]]["n_block"], "mentions_n": deps[s["id"]]["n_warn"], "agents_n": deps[s["id"]]["n_agents"]}
                         for s in g["skills"]]
                 slim = skill_desc.apply(slim, 240)              # 태그는 원문으로 찾은 뒤에 번역을 붙인다(스펙 2026-10-19-017 P5)
                 try:
@@ -5652,6 +5688,9 @@ class Handler(BaseHTTPRequestHandler):
                     hit = {k: v for k, v in hit.items() if k != "_md"}      # AAS 기본 스킬 본문은 요약 원문으로만(스펙 2026-10-27-007 R2)
                     hit = {**hit, "tags": market_tags.skill_tags(market_tags.load(), hit["name"], hit.get("description") or "", hit.get("origin") or "")}
                     hit = skill_desc.apply([hit], 240)[0]
+                    rows = _skills(pod)["skills"]
+                    d = skill_deps.dependents(_flow_peek(pod), rows, next(s for s in rows if s["id"] == sid))
+                    hit = {**hit, "dependents": d, "delete_block": skill_delete_block(next(s for s in rows if s["id"] == sid), rows, d if d["checked"] else None)}
                 self._json(hit or {"error": tr("없는 스킬", "Skill not found")}, 200 if hit else 404)
             elif path == "/api/skill/summary":                # 스킬 AI 요약 읽기(스펙 2026-10-17-002). ?id=<스킬> 또는 ?ns=&name=<마켓 패키지>
                 try:
@@ -6259,9 +6298,15 @@ class Handler(BaseHTTPRequestHandler):
         if refused:
             self._json({"error": refused}, 403)
             return
-        blocked = skill_delete_block(s, _skills(pod)["skills"])
+        rows = _skills(pod)["skills"]
+        try:
+            deps = skill_deps.dependents(_flow(pod), rows, s)                 # 지울 때는 흐름 색인을 기다려서라도 다시 본다
+        except Exception:
+            deps = skill_deps.dependents(None, rows, s)
+        blocked = skill_delete_block(s, rows, deps)
         if blocked:
-            self._json({"error": SKILL_DELETE_REASONS[blocked](), "reason": blocked}, SKILL_DELETE_CODES[blocked])
+            self._json({"error": SKILL_DELETE_REASONS[blocked](), "reason": blocked,
+                        **({"dependents": deps} if blocked == "in_use" else {})}, SKILL_DELETE_CODES[blocked])
             return
         target = None if prof == primary.ROOT else prof
         try:
