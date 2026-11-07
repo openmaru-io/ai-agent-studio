@@ -148,3 +148,21 @@ class FlowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WithoutJobTest(unittest.TestCase):
+    """지운 크론 작업을 모아 둔 그림에서 곧바로 뺀다 — 다시 만들기(수십 초)를 기다리는 동안 목록에 남지 않게."""
+
+    def test_removes_node_and_edges_without_touching_original(self):
+        e = {"from": "cron:ma/j1", "to": "skill:x", "kind": "runs"}
+        keep = {"from": "cron:ma/j2", "to": "skill:x", "kind": "runs"}
+        ix = {"built_at": "t", "skill_ids": {}, "totals": {"nodes": 3, "edges": 2},
+              "nodes": {"cron:ma/j1": {"kind": "cron"}, "cron:ma/j2": {"kind": "cron"}, "skill:x": {"kind": "skill"}},
+              "out": {"cron:ma/j1": [e], "cron:ma/j2": [keep]}, "inc": {"skill:x": [e, keep]}}
+        out = flow.without_job(ix, "ma", "j1")
+        self.assertEqual(sorted(out["nodes"]), ["cron:ma/j2", "skill:x"])
+        self.assertEqual(out["out"], {"cron:ma/j2": [keep]})
+        self.assertEqual(out["inc"], {"skill:x": [keep]})
+        self.assertEqual(out["totals"], {"nodes": 2, "edges": 1})
+        self.assertIn("cron:ma/j1", ix["nodes"]); self.assertEqual(len(ix["inc"]["skill:x"]), 2)   # 원래 그림은 그대로
+        self.assertIs(flow.without_job(ix, "ma", "nope"), ix)              # 없는 작업이면 그대로 돌려준다
