@@ -386,6 +386,19 @@ def build(home: Path | None = None) -> dict:
             "totals": {"nodes": len(g.nodes), "edges": sum(len(v) for v in g.out.values())}}
 
 
+def without_job(index: dict, profile: str, job_id: str) -> dict:
+    """지운 크론 작업 하나를 뺀 그림. 원래 그림은 고치지 않는다(읽는 요청이 같은 그림을 쓰고 있을 수 있다).
+    그림 전체를 다시 만드는 데 수십 초가 걸려, 그동안 목록에 지운 작업이 남지 않게 지운 직후에 쓴다."""
+    nid = f"cron:{profile}/{job_id}"
+    if nid not in index.get("nodes", {}):
+        return index
+    nodes = {k: v for k, v in index["nodes"].items() if k != nid}
+    out = {k: v for k, v in index["out"].items() if k != nid}
+    inc = {k: [e for e in v if e.get("from") != nid] for k, v in index["inc"].items() if k != nid}
+    return {**index, "nodes": nodes, "out": out, "inc": inc,
+            "totals": {"nodes": len(nodes), "edges": sum(len(v) for v in out.values())}}
+
+
 def starts(index: dict) -> list[dict]:
     """흐름의 시작점 — 크론 작업. 무엇을 돌리는지(스킬·스크립트)와 한 단계 아래 개수."""
     rows = []

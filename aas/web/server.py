@@ -2402,15 +2402,35 @@ def _profile_detail(pod: Pod, name: str, user=None) -> dict:
     return out
 
 
+_flow_seq: dict[str, int] = {}          # POD 별 흐름 그림 차례. 늦게 끝난 옛 다시 만들기가 새 그림을 덮지 못하게 한다
+
+
 def _rebuild_flow(pod: Pod) -> None:
+    with _lock:
+        seq = _flow_seq[pod.id] = _flow_seq.get(pod.id, 0) + 1
     try:
         value = flow.build(pod.hermes_home)
         with _lock:
+            if _flow_seq.get(pod.id) != seq:              # 그사이 다른 다시 만들기가 시작됐거나 작업이 지워졌다 — 이 그림은 옛 것이다
+                return
             _cache[f"{pod.id}:flow"] = (time.time(), value)
             _drop_locked(f"{pod.id}:skills")
         cache_epoch.bump(pod.id)
     except Exception as exc:
         print(f"흐름 그래프를 만들지 못했습니다 ({pod.id}): {type(exc).__name__}")   # i18n-ignore: 로그
+
+
+def _drop_deleted_job(pod: Pod, profile: str, job_id: str) -> None:
+    """지운 크론 작업을 모아 둔 흐름 그림에서 곧바로 뺀다. 그림을 다시 만드는 데 수십 초가 걸리는데(27초, 13개 AI 에이전트)
+    화면은 지운 직후 목록을 다시 받아, 그동안 「전체 작업·일정」에 지운 작업이 남아 있었다.
+    세대와 흐름 차례도 올려, 지우기 전에 시작한 다시 만들기가 옛 그림으로 덮어쓰지 못하게 한다(_store_if_current·_rebuild_flow)."""
+    key = f"{pod.id}:flow"
+    with _lock:
+        _generation[pod.id] = _generation.get(pod.id, 0) + 1
+        _flow_seq[pod.id] = _flow_seq.get(pod.id, 0) + 1          # 지우기 전에 시작한 _rebuild_flow 도 옛 그림이다
+        hit = _cache.get(key)
+        if hit:
+            _cache[key] = (hit[0], flow.without_job(hit[1], profile, job_id))
 
 
 def _maybe_auto_publish(pod: Pod, row: dict, owner: bool, admin: bool) -> dict:
@@ -7082,6 +7102,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 store.log_usage("cron_" + action, f"{(user or {}).get('email', 'local')} {prof}/{str(body.get('job_name') or jid)[:80]}"
                                 + (f" → {sched}" if action in ("schedule", "create") else f" → {deliver}" if action == "deliver" else ""), pod=pod.id)
+                if action == "delete":
+                    _drop_deleted_job(pod, prof, jid)
                 if action in ("create", "delete"):
                     _drop_pod_key(pod, "profiles")
                     threading.Thread(target=_rebuild_flow, args=(pod,), daemon=True).start()
