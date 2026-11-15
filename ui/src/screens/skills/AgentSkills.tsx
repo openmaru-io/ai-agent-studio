@@ -1432,7 +1432,7 @@ function PublishPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
   /** 게시를 요청했다 — 결과를 지우지 않고 요청 상태를 남긴다(G14) */
   const [sent, setSent] = useState('');
   // 공용에서 가져온 스킬은 원래 프로파일의 폴더를 올린다. 사용 기록은 이 에이전트 줄(id)로 본다
-  const owner = row.shared_from ?? row.profile;
+  const owner = row.shared_from || row.profile; // 서버는 전용 스킬에 shared_from: '' 를 준다 — ?? 면 profile 이 비어 점검이 400
   const label = useAgentLabel();
   const inRoot = (one?.path ?? '').replace(/^profiles\/[^/]+\//, '');
   const mine = useMemo(

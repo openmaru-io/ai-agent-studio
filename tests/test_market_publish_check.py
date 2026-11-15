@@ -58,6 +58,11 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.level(out, "works"), "pass")
         self.assertEqual(list(mp._dir().glob("*")), [])                                 # 점검은 요청 기록·묶음을 남기지 않는다
 
+    def test_empty_profile_is_named_as_a_profile_problem(self):
+        with self.assertRaises(mp.MarketError) as cm:                                # 화면이 profile "" 를 보내면 경로 오류로 보여 원인을 숨겼다
+            self.check(profile="")
+        self.assertNotIn("경로", str(cm.exception))
+
     def test_undeclared_env_is_warned_and_previewed_in_header(self):
         out = self.check()
         self.assertEqual(out["env"]["undeclared"], ["REPORT_API_TOKEN"])                 # HOME·HERMES_* 는 비밀값이 아니다

@@ -6807,6 +6807,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 게시를 요청할 수 있습니다", "Only admins or the owner of this AI Agent Workspace can publish")}, 403)
                     return
                 prof, rel = str(body.get("profile") or ""), str(body.get("path") or "")
+                if not prof and ":" in str(body.get("id") or ""):     # 옛 화면은 전용 스킬에 profile "" 를 보냈다 — 줄 id 의 <profile>: 로 채운다
+                    prof = str(body.get("id")).split(":", 1)[0]
                 sid = str(body.get("id") or "") or f"{prof}:{rel if prof == 'default' else f'profiles/{prof}/{rel}'}"   # id: 공용 스킬은 쓰는 에이전트의 줄로 사용 기록을 본다
                 row = next((s for s in _skills(pod)["skills"] if s["id"] == sid), None)
                 try:

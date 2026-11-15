@@ -393,9 +393,10 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
     def add(cid: str, level: str, message: str) -> None:
         checks.append({"id": cid, "level": level, "message": message})
 
+    if not marketplace.PROFILE.match(profile or "") and profile != "default":   # 빈 profile 을 경로 오류로 알리면 원인을 못 찾는다
+        raise MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"))
     parts = [p for p in str(skill_path or "").split("/") if p]
-    if (not marketplace.PROFILE.match(profile or "") and profile != "default") or len(parts) < 2 or parts[0] != "skills" \
-            or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
     rel = "/".join(parts)
     root = skill_keep.profile_root(home, profile)

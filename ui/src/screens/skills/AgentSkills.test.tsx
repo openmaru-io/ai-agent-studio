@@ -12,7 +12,7 @@ import { mountScreen, postedTo, stubApi } from '@/test/mountScreen';
 
 import { Skills } from '../Skills';
 
-const base = { n_mcp: 0, n_rest: 0, n_scripts: 0, n_cron: 0 };
+const base = { n_mcp: 0, n_rest: 0, n_scripts: 0, n_cron: 0, shared_from: '' }; // 서버(skill_graph)는 전용 스킬에 shared_from: '' 를 준다 — 실제 모양 그대로
 const LIST = {
   totals: { skills: 5, with_cron: 1, with_mcp: 0, with_rest: 1 },
   primary: 'ma',
