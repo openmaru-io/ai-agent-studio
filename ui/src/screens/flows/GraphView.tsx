@@ -27,7 +27,17 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyboardEvent, PointerEvent, ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  KeyboardEvent,
+  PointerEvent,
+  ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { ChatChip, KV, LinkChip, ScreenLoading, Section, Tag } from '@/components/bits';
@@ -68,7 +78,8 @@ const confTone = (c: string) =>
 const ConfTag = ({ c }: { c: string }) => (
   <Tag tone={confTone(c) as 'warn' | 'good' | undefined}>{confLabel(c)?.[0] ?? c}</Tag>
 );
-const ObsTag = ({ e }: { e: FEdge }) => (e.meta.observed ? <Tag>{t('flows.observedN', { count: e.meta.observed })}</Tag> : null);
+const ObsTag = ({ e }: { e: FEdge }) =>
+  e.meta.observed ? <Tag>{t('flows.observedN', { count: e.meta.observed })}</Tag> : null;
 const base = (p: string) => p.split('/').pop() as string;
 const edgeKey = (e: FEdge) => `${e.from}>${e.to}>${e.kind}`;
 // 중심 패널의 종류별 묶음 순서(디자인 D12). 외부 호스트는 따로 앞에 둔다
@@ -119,10 +130,18 @@ function Legend() {
   return (
     <Section title={t('flows.legendTitle')}>
       <Box component="ul" sx={{ m: 0, pl: 0, listStyle: 'none' }}>
-        <li>{line('', 2.2)} {t('flows.legendThick')}</li>
-        <li>{line('', 1.3)} {t('flows.legendThin')}</li>
-        <li>{line('3 4', 1.3)} {t('flows.legendDotted')}</li>
-        <li>{line('10 5', 1.6)} {t('flows.legendLongDash')}</li>
+        <li>
+          {line('', 2.2)} {t('flows.legendThick')}
+        </li>
+        <li>
+          {line('', 1.3)} {t('flows.legendThin')}
+        </li>
+        <li>
+          {line('3 4', 1.3)} {t('flows.legendDotted')}
+        </li>
+        <li>
+          {line('10 5', 1.6)} {t('flows.legendLongDash')}
+        </li>
         <li>{t('flows.legendChecked')}</li>
         {KIND_IDS.map((k) => (
           <li key={k} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -241,12 +260,22 @@ function CodePane({
         ) : (
           <code>{path}</code>
         )}
-        <Button startIcon={<ContentCopyOutlinedIcon />} size="small" onClick={() => navigator.clipboard.writeText(path)}>
+        <Button
+          startIcon={<ContentCopyOutlinedIcon />}
+          size="small"
+          onClick={() => navigator.clipboard.writeText(path)}
+        >
           {t('flows.copyPath')}
         </Button>
         {/* 고치기는 위에도 둔다. 긴 파일은 아래 단추까지 내려가야 했다(2026-10-17-025) */}
         {f.editable && (
-          <Button startIcon={<EditOutlinedIcon />} variant="contained" size="small" sx={{ ml: 'auto !important', flexShrink: 0 }} onClick={() => setMode('edit')}>
+          <Button
+            startIcon={<EditOutlinedIcon />}
+            variant="contained"
+            size="small"
+            sx={{ ml: 'auto !important', flexShrink: 0 }}
+            onClick={() => setMode('edit')}
+          >
             {t('flows.edit')}
           </Button>
         )}
@@ -304,7 +333,14 @@ function CodePane({
           </Button>
         )}
         {!!f.versions && (
-          <Button startIcon={<HistoryOutlinedIcon />} size="small" variant="outlined" onClick={() => setMode('history')}>{t('flows.versions', { n: f.versions })}</Button>
+          <Button
+            startIcon={<HistoryOutlinedIcon />}
+            size="small"
+            variant="outlined"
+            onClick={() => setMode('history')}
+          >
+            {t('flows.versions', { n: f.versions })}
+          </Button>
         )}
         <Typography variant="caption" color="text.secondary">
           {f.editable ? t('flows.editNote') : f.why_not}
@@ -501,7 +537,15 @@ function SideResizer({ width, set, gridRef }: ReturnType<typeof useSideWidth>) {
         touchAction: 'none',
         outline: 'none',
         // 1px 선(전에 살펴보기 왼쪽 테두리). 올리거나 끌거나 키보드로 오면 2px 강조
-        '&::before': { content: '""', position: 'absolute', top: 0, bottom: 0, left: 3, width: '1px', bgcolor: 'divider' },
+        '&::before': {
+          content: '""',
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: 3,
+          width: '1px',
+          bgcolor: 'divider',
+        },
         '&::after': {
           content: '""',
           position: 'absolute',
@@ -537,6 +581,8 @@ interface SideProps {
   onDirty: (v: boolean) => void;
   /** 「이것을 중심으로 보기」. 서랍 안 페이지면 서랍 기록을 쌓고, 메뉴에서 연 그림이면 주소 root 를 바꾼다(스펙 2026-10-26-003 T7) */
   onCenter: (root: string) => void;
+  /** 스킬 노드의 「중심으로 보기」 대신 쓸 이름(스킬 화면: 「이 스킬로 이동」) */
+  moveLabel?: string;
 }
 
 function Side({
@@ -553,6 +599,7 @@ function Side({
   onCloseEdge,
   onDirty,
   onCenter,
+  moveLabel,
 }: SideProps) {
   const { openDrawer } = useUi();
   const nodeOf = (id: string) => graph.nodes.find((n) => n.id === id);
@@ -632,9 +679,13 @@ function Side({
   // 수는 서버가 스킬 목록과 같은 규칙으로 센 값(D5·재검토 D3)
   const centerGroups = () => {
     const reached = hostsFromRoot(graph);
-    const mentioned = outs.filter((e) => e.to.startsWith('host:') && e.conf === 'mention' && !reached.some((r) => r.host === e.to));
+    const mentioned = outs.filter(
+      (e) => e.to.startsWith('host:') && e.conf === 'mention' && !reached.some((r) => r.host === e.to)
+    );
     const hostN = graph.root_hosts ?? reached.length;
-    const groups = GROUP_ORDER.map((k) => [k, outs.filter((e) => nodeOf(e.to)?.kind === k)] as const).filter(([, es]) => es.length);
+    const groups = GROUP_ORDER.map((k) => [k, outs.filter((e) => nodeOf(e.to)?.kind === k)] as const).filter(
+      ([, es]) => es.length
+    );
     return (
       <>
         {(reached.length > 0 || mentioned.length > 0 || hostN > 0) && (
@@ -722,22 +773,22 @@ function Side({
           )}
         </Stack>
         <Box id={panelId} hidden={!isOpen} sx={{ pl: 3 }}>
-        {isOpen && e.meta.tools && (
-          <Typography variant="caption" color="text.secondary" component="div" sx={{ fontFamily: MONO_FONT }}>
-            {t('flows.toolsLine', { names: e.meta.tools.join(', ') })}
-          </Typography>
-        )}
-        {isOpen && e.meta.urls && (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            component="div"
-            sx={{ fontFamily: MONO_FONT, wordBreak: 'break-all' }}
-          >
-            {e.meta.urls.slice(0, 3).join(' ')}
-          </Typography>
-        )}
-        {isOpen && <Evidence e={e} onCode={onCode} />}
+          {isOpen && e.meta.tools && (
+            <Typography variant="caption" color="text.secondary" component="div" sx={{ fontFamily: MONO_FONT }}>
+              {t('flows.toolsLine', { names: e.meta.tools.join(', ') })}
+            </Typography>
+          )}
+          {isOpen && e.meta.urls && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              component="div"
+              sx={{ fontFamily: MONO_FONT, wordBreak: 'break-all' }}
+            >
+              {e.meta.urls.slice(0, 3).join(' ')}
+            </Typography>
+          )}
+          {isOpen && <Evidence e={e} onCode={onCode} />}
         </Box>
       </li>
     );
@@ -746,14 +797,27 @@ function Side({
   return (
     <Box>
       {/* 머리: 종류 줄 + 제목과 뱃지를 한 줄에(2026-10-17-017 컴팩트). 예전에는 제목(h6)·뱃지가 각각 줄을 차지했다 */}
-      <Stack direction="row" alignItems="flex-start" spacing={1} sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: 'divider' }}>
+      <Stack
+        direction="row"
+        alignItems="flex-start"
+        spacing={1}
+        sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: 'divider' }}
+      >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="caption" color="text.secondary" component="div" sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}
+          >
             <KindMark kind={n.kind} />
             {kindLabel(n.kind) + (n.id === graph.root ? ' · ' + t('flows.centerMark') : '')}
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 1, rowGap: 0.5 }}>
-            <Typography component="h2" sx={{ fontSize: 16, fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere' }}>
+            <Typography
+              component="h2"
+              sx={{ fontSize: 16, fontWeight: 600, lineHeight: 1.4, overflowWrap: 'anywhere' }}
+            >
               {n.label}
             </Typography>
             {n.badges.map((b) => (
@@ -785,15 +849,17 @@ function Side({
         ) : (
           <>
             {center && centerGroups()}
-            <KV pairs={Object.entries(n.meta).filter(([, v]) => v).map(([k, v]) => [serverTerm(k), v]) as [string, ReactNode][]} />
+            <KV
+              pairs={
+                Object.entries(n.meta)
+                  .filter(([, v]) => v)
+                  .map(([k, v]) => [serverTerm(k), v]) as [string, ReactNode][]
+              }
+            />
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ my: 1 }}>
               {n.id !== graph.root && ['skill', 'cron', 'script'].includes(n.kind) && (
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={() => onCenter(n.id)}
-                >
-                  {t('flows.viewAsCenter')}
+                <Button variant="contained" size="small" onClick={() => onCenter(n.id)}>
+                  {n.kind === 'skill' && moveLabel ? moveLabel : t('flows.viewAsCenter')}
                 </Button>
               )}
               {n.kind === 'cron' && (
@@ -826,10 +892,10 @@ function Side({
                 <ChatChip
                   agent={talk}
                   text={
-                      n.kind === 'skill'
-                        ? // i18n-ignore: 서버가 보내는 메타 항목 이름(경로)으로 값을 찾는다
-                          t('flows.explainSkillPrompt', { label: n.label, path: n.meta['경로'] })
-                        : t('flows.explainScriptPrompt', { path: n.path })
+                    n.kind === 'skill'
+                      ? // i18n-ignore: 서버가 보내는 메타 항목 이름(경로)으로 값을 찾는다
+                        t('flows.explainSkillPrompt', { label: n.label, path: n.meta['경로'] })
+                      : t('flows.explainScriptPrompt', { path: n.path })
                   }
                 >
                   {t('flows.explainByChat')}
@@ -850,9 +916,7 @@ function Side({
                 </Box>
               </Section>
             )}
-            {!outs.length && !ins.length && (
-              <Typography color="text.secondary">{t('flows.noLinks')}</Typography>
-            )}
+            {!outs.length && !ins.length && <Typography color="text.secondary">{t('flows.noLinks')}</Typography>}
             {n.more ? (
               <Typography variant="caption" color="text.secondary" component="p">
                 {t('flows.moreNote', { n: n.more })}
@@ -871,6 +935,7 @@ export function GraphView({
   inDrawer = false,
   onGuard,
   onCenter,
+  moveLabel,
 }: {
   root: string;
   /** 목록 위 서랍 안에 그린다: 처음으로 돌아가기 단추를 빼고, 그림 높이를 서랍 머리만큼 줄이고, 닫기 전 확인을 서랍에 건다 */
@@ -878,6 +943,8 @@ export function GraphView({
   onGuard?: (fn: (() => Promise<boolean>) | null) => void;
   /** 서랍 안 페이지로 그린다(스펙 2026-10-26-003 §5-8): 주소를 읽거나 쓰지 않고, 보기 방식은 이 그림 안에 두고, 중심 보기는 이 함수로 */
   onCenter?: (root: string) => void;
+  /** 스킬 노드를 중심으로 옮기는 단추 이름. 주면 노드를 두 번 누르거나 Enter 로도 옮긴다 */
+  moveLabel?: string;
 }) {
   const [, setParams] = useSearchParams();
   // 뒤로 가기로 저장 확인을 묻는 동안은 묻기 전 주소 값을 읽는다 — 바뀐 주소(mentions 없음)로 그림을 다시 받으면 고치던 코드 창이 사라진다
@@ -931,14 +998,14 @@ export function GraphView({
     local
       ? setOwn((o) => ({ ...o, [k]: v ?? undefined }))
       : setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (v) next.set(k, v);
-        else next.delete(k);
-        return next;
-      },
-      { replace: true }
-    );
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            if (v) next.set(k, v);
+            else next.delete(k);
+            return next;
+          },
+          { replace: true }
+        );
   const keep = async () => !dirty.current || (await confirm(t('flows.discardAsk')));
   const keepRef = useRef(keep);
   keepRef.current = keep;
@@ -1022,7 +1089,11 @@ export function GraphView({
         />
         <FormControlLabel
           control={
-            <Checkbox size="small" checked={mentions} onChange={(e) => setParam('mentions', e.target.checked ? '1' : null)} />
+            <Checkbox
+              size="small"
+              checked={mentions}
+              onChange={(e) => setParam('mentions', e.target.checked ? '1' : null)}
+            />
           }
           label={t('flows.includeMentions') + (graph.hidden_mentions ? ` (${graph.hidden_mentions})` : '')}
         />
@@ -1089,7 +1160,9 @@ export function GraphView({
           // 세 상태를 같은 자리에 짧게, 설명은 도움말 단추의 풍선말로(디자인 D9)
           <Stack direction="row" alignItems="center" spacing={0.25}>
             <Typography variant="caption" color="text.secondary" component="div">
-              {o.error ? t('flows.runsUnreadable') : o.hint || t('flows.runsShort', { runs: o.runs, matched: o.matched })}
+              {o.error
+                ? t('flows.runsUnreadable')
+                : o.hint || t('flows.runsShort', { runs: o.runs, matched: o.matched })}
             </Typography>
             <Tooltip title={t('flows.runsHelp', { days: o.days, scope: o.scope })} describeChild>
               <IconButton size="small" aria-label={t('flows.runsHelpLabel')} sx={{ p: 0.25 }}>
@@ -1131,6 +1204,13 @@ export function GraphView({
                 setEdge(e);
                 setPane('info');
               }}
+              onOpen={
+                onCenter && moveLabel
+                  ? (n) => {
+                      if (n.id !== graph.root && ['skill', 'cron', 'script'].includes(n.kind)) onCenter(n.id);
+                    }
+                  : undefined
+              }
             />
           )}
         </Box>
@@ -1158,6 +1238,7 @@ export function GraphView({
             }}
             onCloseEdge={() => setEdge(null)}
             onCenter={onCenter ?? ((id) => patchParams({ root: id }))}
+            moveLabel={moveLabel}
             onDirty={(v) => {
               dirty.current = v;
             }}

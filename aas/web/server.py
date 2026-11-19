@@ -32,7 +32,7 @@ from ..ops import activity, admin_requests, bundled_repair, catalog_plugins, cha
 from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts, sharing
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
-from ..assets import agent_skills, credentials, explain, files, flow, image_packages, inventory, skill_graph, skill_header, skill_setup
+from ..assets import agent_skills, credentials, explain, files, flow, image_packages, inventory, skill_deps, skill_graph, skill_header, skill_setup
 from ..office import hub_auto, inbox, meeting, meeting_files, office, office_access, office_changed, office_state, presence, relay, shared
 from ..auth import embed, keycloak, login_alias
 from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, profile_template, tags as market_tags, template_checks, template_post, templates as market_templates, updates as market_updates
@@ -767,7 +767,7 @@ def _flow_image(pod: Pod) -> dict:
 _flow_sig: dict[str, str] = {}
 
 
-def _flow(pod: Pod):
+def _flow(pod: Pod, stale_ok: bool = True):
     # 이미지 목록의 상태·이유·내용이 바뀌면(오퍼레이터가 ConfigMap 을 채움) 그래프를 만료로 돌려 뒤에서 다시 만든다(스펙 2026-11-19-001 2단계).
     # 캐시 키는 그대로 둔다 — 다른 곳이 같은 키를 직접 다룬다.
     sig = image_packages.signature(_flow_image(pod))
@@ -778,7 +778,7 @@ def _flow(pod: Pod):
             if hit:
                 _cache[key] = (time.time() - 900 - 1, hit[1])
     _flow_sig[pod.id] = sig
-    return _cached(f"{pod.id}:flow", 900, lambda: flow.build(pod.hermes_home, _flow_image(pod)), per_lang=False)
+    return _cached(f"{pod.id}:flow", 900, lambda: flow.build(pod.hermes_home, _flow_image(pod)), per_lang=False, stale_ok=stale_ok)
 
 
 def _observed(pod: Pod):
@@ -3172,11 +3172,29 @@ SKILL_DELETE_REASONS = {
     "origin": lambda: tr("이 스킬은 화면에서 지울 수 없습니다", "This skill cannot be deleted here"),
     "same_name": lambda: tr("같은 이름의 스킬이 둘 있어 지울 수 없습니다. 하나의 이름을 바꾼 뒤 지우세요", "Two skills have this name. Rename one, then delete"),
     "name": lambda: tr("이 이름의 스킬은 화면에서 지울 수 없습니다", "A skill with this name cannot be deleted here"),
+    "in_use": lambda: tr("예약 작업이나 다른 스킬이 이 스킬을 부르고 있어 지울 수 없습니다. 부르는 곳을 먼저 바꾸세요",
+                         "Scheduled jobs or other skills call this skill. Change them first, then delete"),
+    "checking": lambda: tr("이 스킬을 부르는 곳을 아직 확인하는 중입니다. 잠시 뒤 다시 시도하세요",
+                           "Still checking what calls this skill. Try again shortly"),
+    "unchecked": lambda: tr("호출 관계를 확인하지 못했습니다. 잠시 뒤 다시 시도하세요",
+                            "Could not check what calls this skill. Try again shortly"),
 }
-SKILL_DELETE_CODES = {"origin": 403, "same_name": 409, "name": 400}
+SKILL_DELETE_CODES = {"origin": 403, "same_name": 409, "name": 400, "in_use": 409, "checking": 409, "unchecked": 503}
+SKILL_DELETE_RETRY_AFTER = 10
 
 
-def skill_delete_block(s: dict, rows: list[dict]) -> str:
+def skill_delete_refusal(blocked: str, deps: dict | None = None) -> tuple[dict, int]:
+    """지우기 거절 응답 — 스킬 지우기와 허브 스킬 지우기(market/remove)가 같은 모양을 쓴다(스펙 2026-11-19-003 §3-3).
+    in_use 면 부르는 곳 목록(dependents), checking 이면 다시 시도할 때(retry_after 초)를 담는다."""
+    body = {"error": SKILL_DELETE_REASONS[blocked](), "reason": blocked}
+    if blocked == "in_use" and deps is not None:
+        body["dependents"] = deps
+    if blocked == "checking":
+        body["retry_after"] = SKILL_DELETE_RETRY_AFTER
+    return body, SKILL_DELETE_CODES[blocked]
+
+
+def skill_delete_block(s: dict, rows: list[dict], deps: dict | None = None) -> str:
     """스킬 항목을 화면에서 지울 수 없는 이유(빈 값이면 지울 수 있음). 화면의 비활성 판정(ui skillDelete.ts)과 같은 규칙이다.
     origin: 내 스킬이 아님(기본·허브·스킬 허브·외부 폴더) / same_name: 그 프로파일에 같은 머리말 이름이 둘 이상 — Hermes 는 이름으로 찾아 다른 쪽을
     보관할 수 있다(R1) / name: 이름 규칙 밖(R10)."""
@@ -3186,7 +3204,88 @@ def skill_delete_block(s: dict, rows: list[dict]) -> str:
         return "same_name"
     if not SKILL_DELETE_NAME.match(s["name"]):
         return "name"
+    if deps is not None:                                                # 부르는 곳(skill_deps): 예약 작업·머리말로 가리키는 스킬이 있으면 막는다
+        if not deps.get("checked"):
+            return "checking"
+        if deps.get("n_block", len(deps.get("block") or [])):
+            return "in_use"
     return ""
+
+
+_flow_warming: set[str] = set()
+_flow_fresh_warming: dict[str, float] = {}     # 지우기 판정용으로 새 흐름 색인을 만드는 중인 POD → 시작 시각
+_flow_fresh_error: dict[str, float] = {}       # 그 만들기가 실패한 시각
+FLOW_FRESH_TTL = 900                           # 지우기 판정은 이보다 오래된 색인을 쓰지 않는다(_flow 의 유효 시간과 같다)
+FLOW_FRESH_LIMIT = 120                         # 만들기가 이보다 오래 걸리거나
+FLOW_FRESH_ERROR_HOLD = 30                     # 이 안에 실패했으면 「확인 중」 대신 503
+
+
+def _flow_for_delete(pod: Pod) -> tuple[dict | None, str]:
+    """지우기 판정에 쓸 흐름 색인과 상태(ok·checking·failed). 요청 안에서 색인을 만들지 않는다 — 비어 있으면 프로파일 13개에 27초가 걸린다.
+    유효 시간(900초) 안의 색인이면 ok. 없거나 지난 값이면 뒤에서 새로 만들기를 시작하고(이미 만드는 중이면 그대로) checking.
+    만들기가 실패했거나 120초를 넘겼으면 failed — 끝나지 않는 「확인 중」을 막는다(스펙 2026-11-19-003 §3-3, 리뷰 F1·F7)."""
+    now = time.time()
+    with _lock:
+        hit = _cache.get(f"{pod.id}:flow")
+        if hit is not None and now - hit[0] < FLOW_FRESH_TTL:
+            return hit[1], "ok"
+        since = _flow_fresh_warming.get(pod.id)
+        if since is not None:
+            return None, "failed" if now - since > FLOW_FRESH_LIMIT else "checking"
+        if now - _flow_fresh_error.get(pod.id, 0) < FLOW_FRESH_ERROR_HOLD:
+            return None, "failed"
+        _flow_fresh_warming[pod.id] = now
+
+    def warm():
+        try:
+            _flow(pod, stale_ok=False)
+            with _lock:
+                _flow_fresh_error.pop(pod.id, None)
+        except Exception as exc:
+            with _lock:
+                _flow_fresh_error[pod.id] = time.time()
+            print(f"흐름 색인 실패(지우기 판정) {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        finally:
+            with _lock:
+                _flow_fresh_warming.pop(pod.id, None)
+    threading.Thread(target=contextvars.copy_context().run, args=(warm,), daemon=True, name="aas-flow-fresh").start()
+    return None, "checking"
+
+
+def skill_callers_check(pod: Pod, rows: list[dict], s: dict) -> tuple[str, dict | None]:
+    """지우기 전 부르는 곳 검사만(출처·이름 규칙은 보지 않는다). (막는 이유, 부르는 곳) — 이유는 in_use·checking·unchecked 또는 빈 값.
+    스킬 지우기와 허브 스킬 지우기(market/remove, 출처 market)가 같이 쓴다."""
+    graph, state = _flow_for_delete(pod)
+    if state == "failed":
+        return "unchecked", None
+    deps = skill_deps.dependents(graph, rows, s)
+    if not deps.get("checked"):
+        return "checking", deps
+    if deps.get("n_block", len(deps.get("block") or [])):
+        return "in_use", deps
+    return "", deps
+
+
+def _flow_peek(pod: Pod) -> dict | None:
+    """모아 둔 흐름 색인이 있으면 그것(오래돼도), 없으면 뒤에서 만들게 하고 None — 스킬 목록이 흐름 색인(30초)을 기다리지 않게."""
+    with _lock:
+        hit = _cache.get(f"{pod.id}:flow")
+        if hit is not None:
+            return hit[1]
+        if pod.id in _flow_warming:
+            return None
+        _flow_warming.add(pod.id)
+
+    def warm():
+        try:
+            _flow(pod)
+        except Exception as exc:
+            print(f"흐름 색인 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        finally:
+            with _lock:
+                _flow_warming.discard(pod.id)
+    threading.Thread(target=warm, daemon=True, name="aas-flow-warm").start()
+    return None
 
 
 def _reload_skill_commands(pod: Pod, profile: str) -> str:
@@ -6620,8 +6719,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/skills":
                 g = _skills(pod)
                 tag_table, tag_rules = market_tags.load(), market_tags.work_prefixes()   # 스킬 태그(OMAI-1283): 표·접두어 규칙을 한 번만 읽어 행마다 붙인다
+                deps = skill_deps.summary(_flow_peek(pod), g["skills"])     # 부르는 곳 수 — 지우기 막음(in_use)·「가져다 쓰는 AI 에이전트」
                 slim = [{**skill_graph.list_row(s), "tags": market_tags.skill_tags(tag_table, s["name"], s.get("description") or "", s.get("origin") or "", tag_rules),
-                         "delete_block": skill_delete_block(s, g["skills"])}     # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3)
+                         "delete_block": skill_delete_block(s, g["skills"], deps[s["id"]] if deps[s["id"]]["checked"] else None),   # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3). 색인이 아직 없으면 지울 때 서버가 다시 본다
+                         "dependents_n": deps[s["id"]]["n_block"], "mentions_n": deps[s["id"]]["n_warn"], "agents_n": deps[s["id"]]["n_agents"]}
                         for s in g["skills"]]
                 slim = skill_desc.apply(slim, 240)              # 태그는 원문으로 찾은 뒤에 번역을 붙인다(스펙 2026-10-19-017 P5)
                 try:
@@ -6677,6 +6778,9 @@ class Handler(BaseHTTPRequestHandler):
                     hit = {k: v for k, v in hit.items() if k != "_md"}      # AAS 기본 스킬 본문은 요약 원문으로만(스펙 2026-10-27-007 R2)
                     hit = {**hit, "tags": market_tags.skill_tags(market_tags.load(), hit["name"], hit.get("description") or "", hit.get("origin") or "")}
                     hit = skill_desc.apply([hit], 240)[0]
+                    rows = _skills(pod)["skills"]
+                    d = skill_deps.dependents(_flow_peek(pod), rows, next(s for s in rows if s["id"] == sid))
+                    hit = {**hit, "dependents": d, "delete_block": skill_delete_block(next(s for s in rows if s["id"] == sid), rows, d if d["checked"] else None)}
                 self._json(hit or {"error": tr("없는 스킬", "Skill not found")}, 200 if hit else 404)
             elif path == "/api/skill/summary":                # 스킬 AI 요약 읽기(스펙 2026-10-17-002). ?id=<스킬> 또는 ?ns=&name=<마켓 패키지>
                 try:
@@ -7477,9 +7581,13 @@ class Handler(BaseHTTPRequestHandler):
         if refused:
             self._json({"error": refused}, 403)
             return
-        blocked = skill_delete_block(s, _skills(pod)["skills"])
+        rows = _skills(pod)["skills"]
+        blocked = skill_delete_block(s, rows)                              # 출처·이름 규칙은 색인 없이 먼저 본다
+        deps = None
+        if not blocked:
+            blocked, deps = skill_callers_check(pod, rows, s)               # 부르는 곳: 유효한 흐름 색인으로만 판정(없으면 확인 중)
         if blocked:
-            self._json({"error": SKILL_DELETE_REASONS[blocked](), "reason": blocked}, SKILL_DELETE_CODES[blocked])
+            self._json(*skill_delete_refusal(blocked, deps))
             return
         target = None if prof == primary.ROOT else prof
         try:
@@ -8218,6 +8326,17 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": True, "request": row})
                         return
                     if path == "/api/market/remove":
+                        # 허브에서 받은 스킬도 예약 작업·다른 스킬이 부르면 지우지 않는다 — 스킬 지우기와 같은 검사·응답(스펙 2026-11-19-003 §3-3).
+                        # 공유 원본과 모든 사본의 호출자를 본다(skill_deps). 요청 뒤 실제 제거 전에 생긴 예약 작업은 막지 못한다(최선 노력)
+                        rows = _skills(pod)["skills"]
+                        want = str(body.get("profile") or "")
+                        hit = next((r for r in rows if r.get("origin") == "market" and r["name"] == name and not r.get("shared_from")
+                                    and (not want or r["profile"] == want)), None)
+                        if hit is not None:
+                            blocked, deps = skill_callers_check(pod, rows, hit)
+                            if blocked:
+                                self._json(*skill_delete_refusal(blocked, deps))
+                                return
                         row = marketplace.request_remove(pod.id, pod.container, f"{ns}/{name}", str(body.get("profile") or ""), who)
                         store.log_usage("market_remove", f"{who} {ns}/{name} ← {pod.id}/{row['profile']} req={row['id']}", pod=pod.id)   # 요청 id: 변경 기록이 요청 상태와 짝짓는다(재검토 M5)
                         _forget(pod)

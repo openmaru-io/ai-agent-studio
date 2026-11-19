@@ -45,10 +45,11 @@ INSTRUCTIONS = ("CogentAI AAS: talk to your remote Hermes agents. Start with age
 
 
 class ToolError(Exception):
-    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·reconnect·unavailable."""
-    def __init__(self, word: str, message: str = "", hint: str = ""):
+    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·in_use·reconnect·unavailable.
+    data 는 결과에 그대로 붙일 값(in_use 의 부르는 곳 목록 dependents)."""
+    def __init__(self, word: str, message: str = "", hint: str = "", data: dict | None = None):
         super().__init__(message or word)
-        self.word, self.message, self.hint = word, message, hint
+        self.word, self.message, self.hint, self.data = word, message, hint, data or {}
 
 
 MCP_LANG = "en"                                          # Claude Code 는 Accept-Language 를 보내지 않는다. 도구 설명과 같은 영어로(2026-10-28)
@@ -57,6 +58,8 @@ MCP_LANG = "en"                                          # Claude Code 는 Accep
 def _hint(word: str) -> str:
     """오류의 next. message(서버 문장)와 같은 언어로 — 한쪽만 한국어이던 것(2026-10-28 OKE reconnect)."""
     return {"busy": tr("몇 초 기다린 뒤 다시 부르세요", "wait a few seconds and call again"),
+            "in_use": tr("이 스킬을 부르는 크론 작업·스킬을 먼저 고치거나 지운 뒤 다시 부르세요",
+                         "change or delete the scheduled jobs and skills that call this skill first, then call again"),
             "reconnect": tr("이 서버에서 대화가 사라졌습니다. chat_start 로 새 대화를 열고 다시 보내세요",
                             "the chat is gone from this server; open a new chat with chat_start and send again"),
             "auth": tr("토큰이 더는 유효하지 않습니다. Claude Code 를 AAS 에 다시 연결하세요",
@@ -209,6 +212,15 @@ def _ok(status: int, out):
     msg = str(msg or "")[:500]
     if isinstance(out, dict) and out.get("reason") == "already_answered":   # 사람이 먼저 답했다 — 다시 부를 일이 아니다(§3-7 ④)
         raise ToolError("invalid", msg)
+    # 스킬 지우기 차단(스펙 2026-11-19-003 §3-3): 상태 코드가 아니라 본문의 이유 코드로 가른다 — 같은 409 를 파일 저장의 base_sha 충돌도 쓴다
+    reason = out.get("reason") if isinstance(out, dict) else None
+    if status == 409 and reason == "in_use":
+        raise ToolError("in_use", msg, _hint("in_use"), {"dependents": out.get("dependents")})
+    if status == 409 and reason == "checking":
+        wait = int(out.get("retry_after") or 10)
+        raise ToolError("busy", msg, tr(f"{wait}초 기다린 뒤 다시 부르세요", f"wait {wait} seconds and call again"))
+    if status == 503 and reason == "unchecked":           # 호출 관계를 확인하지 못함 — 대화가 사라진 것(reconnect)이 아니다
+        raise ToolError("unavailable", msg)
     if status == 401:
         raise ToolError("auth", msg, _hint("auth"))
     if status == 403:
@@ -1559,9 +1571,12 @@ TOOLS = {t["name"]: t for t in (
           ("pod", "profile", "namespace", "name")),
     _tool("skill_delete", "profile:write", skill_delete,
           "Delete a skill you made or uploaded: Hermes moves it to the archive (restorable from the skill hub's archived list). "
-          "Hub-installed and built-in skills are refused. `id` is the skill id from skills_list.",
+          "Hub-installed and built-in skills are refused. A skill that a scheduled job or another skill calls is not deleted "
+          "(error in_use with the callers). `id` is the skill id from skills_list.",
           {"pod": POD, "id": _s("Skill id from skills_list (or its name)"), "profile": _s("Profile name when the name exists in several profiles")}, ("pod", "id")),
-    _tool("market_remove", "market", market_remove, "Request removing an installed hub package from a profile.",
+    _tool("market_remove", "market", market_remove,
+          "Request removing an installed hub package from a profile. Refused (error in_use with the callers) while a scheduled job "
+          "or another skill calls the skill.",
           {"pod": POD, "profile": _s("Profile name"), "namespace": _s("Package namespace"), "name": _s("Package name")},
           ("pod", "profile", "namespace", "name")),
     _tool("market_publish", "market", market_publish,
@@ -1662,7 +1677,7 @@ def tools_for(scopes: set[str]) -> list[dict]:
 def _result(payload, error: ToolError | None = None) -> dict:
     if error is not None:
         body = {"error": error.word, **({"message": error.message} if error.message and error.message != error.word else {}),
-                **({"next": error.hint} if error.hint else {})}
+                **({"next": error.hint} if error.hint else {}), **error.data}
         return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "isError": True}
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, default=str)}], "isError": False}
 

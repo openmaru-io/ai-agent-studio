@@ -439,7 +439,10 @@ class EmbedHttpTest(unittest.TestCase):
     def test_요청_한도는_MCP_와_같은_값(self):
         from aas.auth import mcp_limits
         token = self.embed_token()
-        with mock.patch.object(mcp_limits, "per_minute", lambda: 2):
+        # 세 요청이 분 경계를 넘으면 셈이 새로 시작해 셋째가 200 이 된다(2026-11-19 공개 내보내기 시험에서 한 번 실패) — 세는 시각을 한 분에 고정한다
+        at, real_hit = time.time(), mcp_limits.hit
+        with mock.patch.object(mcp_limits, "per_minute", lambda: 2), \
+                mock.patch.object(mcp_limits, "hit", lambda key, now=None: real_hit(key, now=at)):
             codes = [self.req("GET", "/api/me", origin=KC_ORIGIN, token=token)[0].status for _ in range(3)]
         self.assertEqual(codes[-1], 429)
         r, out = self.req("GET", "/api/me", origin=KC_ORIGIN, token=token)
