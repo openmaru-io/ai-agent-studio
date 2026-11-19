@@ -141,9 +141,10 @@ export function useFileBytes(file: ViewerFile, kind: ViewerKind, attempt: number
         return setLoaded({ state: 'text', text, partial: over });
       }
       if (kind === 'svg') {
-        // SVG 는 보기(그림)와 원문 둘 다 쓴다 — 글로도 읽어 둔다
-        url = URL.createObjectURL(new Blob([bytes], { type: mimeOf(file.name) }));
-        return setLoaded({ state: 'text', text: new TextDecoder().decode(bytes), partial: false, url });
+        // SVG 는 보기(그림)와 원문 둘 다 쓴다 — 글로도 읽어 둔다. 그림은 blob: 이 아니라 data: 주소로 보인다:
+        // blob: 주소는 만든 화면의 출처(AAS)를 이어받아, 사용자가 「새 탭에서 열기」 하면 SVG 안의 스크립트가 AAS 출처에서 돈다.
+        // data: 문서는 따로 떨어진 출처라 AAS 쿠키·API 에 닿지 못한다(스펙 2026-11-14-017). 놓을 주소도 없다
+        return setLoaded({ state: 'text', text: new TextDecoder().decode(bytes), partial: false, url: svgDataUrl(bytes) });
       }
       url = URL.createObjectURL(new Blob([bytes], { type: mimeOf(file.name) }));
       setLoaded({ state: 'blob', url });
@@ -294,6 +295,13 @@ function Pre({ text }: { text: string }) {
       {text}
     </Box>
   );
+}
+
+/** SVG 바이트를 data: 주소로. 큰 파일에서 String.fromCharCode 의 인자 수 한도를 넘지 않게 나눠 바꾼다 */
+export function svgDataUrl(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return 'data:image/svg+xml;base64,' + btoa(bin);
 }
 
 function ImageView({ url, name, fit, onError }: { url: string; name: string; fit: boolean; onError: () => void }) {

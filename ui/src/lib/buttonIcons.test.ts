@@ -57,6 +57,7 @@ const ICONS: Record<string, string> = {
   'office.cronRunNow': 'PlayArrowOutlinedIcon',
   'office.dispatchNow': 'PlayArrowOutlinedIcon',
   'requests.send': 'SendOutlinedIcon',
+  'skillsAgent.env.open': 'PasswordOutlinedIcon',
   'office.inboxSend': 'SendOutlinedIcon',
   'chat.resend': 'SendOutlinedIcon',
   'office.commentPost': 'SendOutlinedIcon',

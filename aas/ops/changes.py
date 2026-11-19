@@ -48,7 +48,7 @@ LABELS = {
 # 에이전트 주인이 자기 POD 기록에서 보는 묶음. 접속·설정·오피스는 POD 에 매이지 않아 빠진다(디자인 결정 1A)
 OWNER_GROUPS = ("크론", "프로파일", "비밀값", "스킬", "스킬 허브", "일 시키기")  # i18n-ignore: LABELS 의 묶음 이름과 맞춘다
 # 기록 끝 " role=<자격>" → 줄의 표시. admin 은 주인 화면에서 이름을 가리고, team·other 는 이름을 보인다(스펙 2026-10-22-001 D15)
-ROLES = {"admin": "by_admin", "team": "by_team_manager", "other": "by_other"}
+ROLES = {"admin": "by_admin", "team": "by_team_manager", "member": "by_member", "other": "by_other"}   # member: 공유 구성원(스펙 2026-11-17-008 §3-2)
 WORK_GROUP = "일 시키기"  # i18n-ignore: LABELS 의 묶음 이름과 맞춘다. 보낼 때마다 쌓여 SQL 에서 날짜별로 묶어 읽는다(R7, 디자인 DD7)
 
 

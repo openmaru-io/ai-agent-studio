@@ -1,7 +1,7 @@
 ---
 name: hwp-to-markdown
 description: "한글(한컴) 문서 HWP·HWPX(HWP 5.0·3.x)를 Markdown 으로 바꿔 읽는다. 사용자가 .hwp·.hwpx 파일을 올리고 읽기·요약·번역·Markdown 변환을 부탁할 때 쓴다. / Convert Korean Hancom HWP/HWPX documents to Markdown to read, summarize or translate them."
-version: 1.1.0
+version: 1.1.1
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [hwp, hwpx, hancom, korean, markdown, convert]
     category: productivity
     related_skills: [doc-to-markdown, ocr-to-markdown, markdown-to-doc]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # 한글 문서(HWP·HWPX) → Markdown

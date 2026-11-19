@@ -1,7 +1,7 @@
 ---
 name: korean-business-writing
 description: "보고서·기안문·회의록·업무보고 등 한국어 업무 문서 쓰기(hwpx 보고서 포함) 요청에 먼저 로드. 종류별 틀·공문서 작성 규칙으로 쓰고 자료에 없는 내용은 지어내지 않으며, 파일은 markdown-to-doc 으로 만든다. / Write Korean business documents (reports, drafts, minutes, work reports, press releases) with per-type templates; files via markdown-to-doc."
-version: 1.0.2
+version: 1.0.3
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [korean, business-writing, report, gian, minutes, hwpx, official-document]
     category: productivity
     related_skills: [markdown-to-doc]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # 한국어 업무 문서 작성

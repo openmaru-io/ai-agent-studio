@@ -76,7 +76,7 @@ def _seat_triggers(conn) -> None:
     # 판 번호 줄이 없으면(트리거가 생기기 전의 DB) 캐시를 쓰지 않는다 — 처음부터 한 줄 둔다
     conn.execute("INSERT INTO office_seat_version (id, n) VALUES (1, 1) ON CONFLICT (id) DO NOTHING")
 
-ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")                 # 설치본 id·프로파일 이름(Hermes 의 이름 규칙과 같다)
+ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}\Z")                 # 설치본 id·프로파일 이름(Hermes 의 이름 규칙과 같다)
 PIN_KEYS = ("hermes",)
 
 
@@ -751,7 +751,7 @@ def set_room(body: dict, who: str) -> dict:
     return {"ok": True, "id": rid}
 
 
-EMAIL = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
+EMAIL = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\Z")
 
 
 def _clean_members(emails) -> list[str]:

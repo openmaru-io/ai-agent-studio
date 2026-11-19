@@ -96,7 +96,7 @@ class OutlineCatalogTest(unittest.TestCase):
         with _with_url(""):
             names = [e["name"] for e in mcp_servers.catalog(FakeHermes(), "ma")["entries"]]
             entry = mcp_servers.catalog(FakeHermes(), "ma")["entries"][1]
-        self.assertEqual(names, ["docmost", "outline", "ctx"])
+        self.assertEqual(names, ["docmost", "outline", "cogentai-database", "cogentai-chart", "ctx"])   # CogentAI 두 항목(OMAI-1863)
         self.assertEqual((entry["installed"], entry["builtin"], entry["write"]), (False, True, False))
         url_field, key_field = entry["required_env"]
         self.assertEqual((url_field["name"], url_field["secret"], url_field["value"]), (FIELD, False, ""))

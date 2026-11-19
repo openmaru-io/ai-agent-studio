@@ -43,6 +43,7 @@ import { chatType, coarseTouch } from '@/lib/chatTokens';
 import { fmtClock, zonedDate } from '@/lib/format';
 import { FOCUS_RING, gridTokens } from '@/lib/shellTokens';
 
+import { useDelayedOrder } from './delayedOrder';
 import { AgentAvatar } from './parts';
 
 const whenOf = (ts: number) => {
@@ -413,6 +414,8 @@ export function SessionList({
   const openToday = rows.filter((r) => !r.pinned && !live(r.state) && !r.stored && r.state !== 'closed' && r.state !== 'ended' && (r.id === store.currentId || r.state === 'done'));
   const progress = [...liveRows.filter((r) => r.state === 'waiting'), ...liveRows.filter((r) => r.state === 'running'), ...openToday];
   const progressIds = new Set(progress.map((r) => r.id));
+  // 세션 여러 개가 함께 돌면 응답 조각마다 시각이 바뀌어 줄이 계속 자리를 바꿨다 — 위치만 늦게 옮긴다(2026-11-08)
+  const progressShown = useDelayedOrder(progress);
   const doneAll = rows.filter((r) => !r.pinned && !progressIds.has(r.id)).sort((a, b) => b.at - a.at);
   // 찾는 중에는 기간을 따지지 않는다 — 찾는 세션이 1주일 밖에 있으면 안 보였다
   const done = needle ? doneAll : doneAll.filter(inRange);
@@ -423,7 +426,7 @@ export function SessionList({
   const pastFailed = !!f && !loadingPast && store.pastError(f.pod, f.profile);
   const groups: { key: string; label: string; rows: SessionRow[]; count?: boolean; range?: boolean }[] = [
     { key: 'pinned', label: t('chat.sessGroupPinned'), rows: pinned },
-    { key: 'live', label: t('chat.sessGroupLive'), rows: progress, count: true },
+    { key: 'live', label: t('chat.sessGroupLive'), rows: progressShown, count: true },
     { key: 'done', label: t('chat.sessGroupDone'), rows: done, range: true },
   ].filter((g) => g.rows.length || g.key === 'done' || (g.key === 'live' && !!f));
 

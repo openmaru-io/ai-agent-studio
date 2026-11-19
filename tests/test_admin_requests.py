@@ -146,6 +146,7 @@ class ServerTest(unittest.TestCase):
     def setUpClass(cls):
         root = Path(TMP.name)
         home = root / "ph"; (home / "profiles" / "ma").mkdir(parents=True)
+        (home / "profiles" / "ma" / "config.yaml").write_text("model: x\n")                # 표시 파일이 있어야 프로파일이다
         reg = root / "ar-pods.json"
         reg.write_text(json.dumps({"pods": [{"id": "p", "owner": OWNER, "hermes_home": str(home), "dashboard_url": "http://127.0.0.1:9"}]}))
         server._auth = auth.Auth({"issuer": "https://accounts.google.com", "client_id": "", "client_secret": "", "domain": "",

@@ -521,7 +521,7 @@ class McpCatalogTest(unittest.TestCase):
 
     def test_oauth_install_and_unknown_auth_are_hidden_and_counted(self):
         out = mcp_servers.catalog(self.api(), "ma")
-        self.assertEqual([e["name"] for e in out["entries"]], ["docmost", "outline", "ctx", "linear", "key"])   # 원격 주소 OAuth 는 보인다(스펙 2026-10-16-010 Q5). AAS 의 Docmost·Outline 항목이 맨 앞(2026-10-23-002 12-6, 2026-10-23-004)
+        self.assertEqual([e["name"] for e in out["entries"]], ["docmost", "outline", "cogentai-database", "cogentai-chart", "ctx", "linear", "key"])   # 원격 주소 OAuth 는 보인다(스펙 2026-10-16-010 Q5). AAS 의 Docmost·Outline 항목이 맨 앞(2026-10-23-002 12-6, 2026-10-23-004)
         self.assertEqual(out["hidden"], {"oauth": 2, "install": 1, "unknown": 2})            # 주소 없는·stdio OAuth 는 숨긴다. 인증 방식 필드가 없거나 모르면 숨긴다
         linear = next(e for e in out["entries"] if e["name"] == "linear")
         self.assertEqual((linear["auth_type"], linear["network"]["verdict"]), ("oauth", "external"))

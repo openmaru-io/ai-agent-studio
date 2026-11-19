@@ -22,6 +22,9 @@ add one ops weekly-digest '0 9 * * 1' "한 주 요약" --deliver local --paused 
 add two qa  nightly-scan 'every 12h'  "시험 결과를 점검해 줘" --deliver local
 add two doc stale-docs   '0 8 * * *'  "오래된 문서를 찾아 줘" --deliver local --paused --paused-reason "시험: 멈춰 둠"
 add three sa sync-check  'every 3h'   "동기화 상태를 확인해 줘" --deliver local
+# API 키·토큰 화면 시험(스펙 2026-11-18-007): ma 의 .env 에 이름 규칙 밖 설정 값 4개와 키 1개를 넣는다(이미 있으면 그대로).
+# 신대수 님 COP 프로파일과 같은 모양 — 화면에 「직접 넣음 1 · 설정 값 4」와 AAS 기본 값 행이 함께 보여야 한다. 값은 시험용 가짜 값
+docker compose $F exec -T -u hermes hermes-one sh -c 'f=/opt/data/profiles/ma/.env; touch "$f"; for kv in DOCMOST_API_KEY=seed-docmost-key-0123456789 DOCMOST_URL=https://docs.example.local KANBAN_DAYS=7 KANBAN_GROUP_BY=status KANBAN_PAGE_ID=seed-page; do grep -q "^${kv%%=*}=" "$f" || echo "$kv" >> "$f"; done' && echo "one/ma: API 키·토큰 화면 시험 값을 넣었습니다"
 echo "실패 기록을 만들기 위해 70초를 기다린 뒤 한 번 실행합니다..."
 sleep 70
 H one -p ops cron tick >/dev/null 2>&1 || true

@@ -69,6 +69,30 @@ export interface RolloutInfo {
   completed: string;
   created_by: string;
   agents: RolloutAgent[];
+  /** 시작 전 레지스트리 확인(스펙 2026-11-17-001 O2). ImageMissing 이면 시작하지 않았다 */
+  reason?: string;
+  unavailable_targets?: ImageRef[];
+  rollback_unavailable?: ImageRef[];
+  registry_check_skipped?: boolean;
+  registry_check_skip_reason?: string;
+}
+
+/** 레지스트리 확인에서 걸린 이미지(오퍼레이터 status.unavailableTargets) */
+export interface ImageRef {
+  repo: string;
+  digest: string;
+  container: string;
+  field: string;
+  agents: string[];
+}
+
+/** /api/agents 관리자 응답 최상위 registry(스펙 2026-11-17-001 O4·§4-3). check 가 ""면 확인할 digest 가 없는 설치(띠 없음) */
+export interface RegistryStatus {
+  check: '' | 'ok' | 'unavailable' | 'disabled' | 'unknown';
+  missing_images: { repo: string; digest: string; agents: string[]; since: string; namespace: string }[];
+  last_checked: string;
+  last_error: { host?: string; errClass?: string; httpStatus?: number; message?: string } | null;
+  stalled: boolean;
 }
 
 /** /api/agents 관리자 응답에 더해지는 롤아웃 칸(DD18) */
@@ -77,6 +101,7 @@ export interface RolloutData {
   target?: { image: string; sidecar_image: string; version: string };
   ever?: boolean;
   chart_differs?: boolean;
+  registry?: RegistryStatus;
 }
 
 /** 행마다 더해지는 버전 칸(DD6). updating 은 모든 사용자에게 온다(DD7) */
@@ -88,6 +113,8 @@ export interface VersionFields {
   pinned?: boolean;
   rollout_state?: string;
   updating?: boolean;
+  /** 기본 digest 가 없어 차트 이미지로 만든 컨테이너(hermes·sidecar·both, 스펙 2026-11-17-001 O3) */
+  image_fallback?: string;
 }
 
 export const DIGEST_RE = /^[^@\s]+@sha256:[0-9a-f]{64}$/;
@@ -118,12 +145,15 @@ export function dismissRollout(name: string) {
   }
 }
 
-/** 띠에 보일 것(DD1 우선순위: 진행 > 실패 > 끝남 24시간 > 차트 값과 다름 > 오래됨 알 수 없음). 없으면 null */
-export type BandKind = 'progress' | 'failed' | 'done' | 'chart' | 'unknown';
+/** 띠에 보일 것(DD1 우선순위: 지워진 이미지 > 진행 > 실패 > 레지스트리 확인 불가 > 끝남 24시간 > 차트 값과 다름 > 오래됨 알 수 없음). 없으면 null.
+ * missing·registryUnavailable 은 닫을 수 없다 — 서버 값이 바뀌면 사라진다(스펙 2026-11-17-001 §4-3) */
+export type BandKind = 'missing' | 'progress' | 'failed' | 'registryUnavailable' | 'done' | 'chart' | 'unknown';
 export function bandKind(d: RolloutData, now: number, dismissed: string[]): BandKind | null {
   const r = d.rollout;
+  if (d.registry?.missing_images?.length) return 'missing';
   if (r && r.phase !== 'Done' && r.phase !== 'Failed') return 'progress';
   if (r && r.phase === 'Failed' && !dismissed.includes(r.name)) return 'failed';
+  if (d.registry?.check === 'unavailable') return 'registryUnavailable';
   if (r && r.phase === 'Done' && !dismissed.includes(r.name) && r.completed && now - Date.parse(r.completed) < 24 * 3600 * 1000) return 'done';
   if (d.chart_differs) return 'chart';
   if (d.ever === false && !r) return 'unknown';
@@ -132,15 +162,41 @@ export function bandKind(d: RolloutData, now: number, dismissed: string[]): Band
 
 /** 할 일이 있는 단계(승인 대기·멈춤·실패)만 warning, 나머지는 info(DD4). 빨강은 실패 행 Pill 에만(DD5) */
 export const bandSeverity = (kind: BandKind, phase?: string): 'info' | 'warning' =>
-  kind === 'failed' || (kind === 'progress' && (phase === 'WaitingApproval' || phase === 'Paused')) ? 'warning' : 'info';
+  kind === 'missing' || kind === 'failed' || (kind === 'progress' && (phase === 'WaitingApproval' || phase === 'Paused')) ? 'warning' : 'info';
+
+/** 저장소 이름으로 컨테이너 이름(사이드카·Hermes). 모르면 저장소 끝 이름 */
+export const containerOf = (repo: string) => {
+  const base = repo.split('/').pop() ?? repo;
+  return base.includes('sidecar') ? t('rollout.container.sidecar') : base.includes('hermes') ? t('rollout.container.hermes') : base;
+};
+
+/** 지워진 것으로 아는 digest: 주기 확인의 missing_images 와 ImageMissing 롤아웃의 unavailable_targets. 시작 서랍이 레지스트리에 새로 묻지 않고 대조한다 */
+export function deletedDigests(d: RolloutData): string[] {
+  const out = new Set<string>((d.registry?.missing_images ?? []).map((m) => m.digest));
+  if (d.rollout?.reason === 'ImageMissing') (d.rollout.unavailable_targets ?? []).forEach((u) => out.add(u.digest));
+  return [...out];
+}
+
+/** missing 띠 첫 줄: 저장소가 하나면 컨테이너 이름, 여럿이면 개수. n 은 쓰는 작업공간 수(겹치지 않게) */
+function missingText(reg: RegistryStatus): string {
+  const rows = reg.missing_images;
+  const n = new Set(rows.flatMap((m) => m.agents)).size;
+  const repos = new Set(rows.map((m) => m.repo));
+  return repos.size === 1 ? t('rollout.band.missing', { container: containerOf(rows[0].repo), n }) : t('rollout.band.missingMany', { count: rows.length, n });
+}
+
+const errSummary = (e: RegistryStatus['last_error']) => (e ? [e.errClass, e.httpStatus, e.host].filter((x) => x != null && x !== '').join(' ') : '');
 
 /** 띠 첫 줄(DD4·DD11). labelOf 는 에이전트 표시 이름 */
-export function bandText(kind: BandKind, r: RolloutInfo | null | undefined, labelOf: (n: string) => string, now: number): string {
+export function bandText(kind: BandKind, r: RolloutInfo | null | undefined, labelOf: (n: string) => string, now: number, reg?: RegistryStatus): string {
+  if (kind === 'missing') return reg ? missingText(reg) : '';
+  if (kind === 'registryUnavailable') return reg?.stalled ? t('rollout.band.registryStalled') : t('rollout.band.registryUnavailable');
   if (kind === 'chart') return t('rollout.band.chart');
   if (kind === 'unknown') return t('rollout.band.unknown');
   if (!r) return '';
   const version = r.version || r.name;
   if (r.kind === 'resize') return resizeText(kind, r, labelOf);
+  if (kind === 'failed' && r.reason === 'ImageMissing') return t('rollout.band.failedImageMissing', { n: new Set((r.unavailable_targets ?? []).map((u) => u.digest)).size });
   if (kind === 'failed') return t('rollout.band.failed', { message: r.message });
   if (kind === 'done') return t('rollout.band.done', { n: r.done, version, time: r.completed ? fmtTs(r.completed) : '' });
   const c = r.canary_info;
@@ -208,6 +264,9 @@ export interface BandHandlers {
   reload: () => void;
   /** 크기 롤아웃 「그만두기」(스펙 2026-10-30-003 §4-2b) */
   abort?: () => void;
+  /** 지워진 이미지·레지스트리 확인 「자세히」, ImageMissing 실패의 「digest 고쳐서 새로 만들기」(스펙 2026-11-17-001 §4-3) */
+  registryDetail?: () => void;
+  fixAndCreate?: () => void;
 }
 
 /** 진행 띠 전체(DD4·DD5·DD9·DD15·DD17·DD19). readError 면 단추를 끄고 다시 시도만(DD8). 보일 것이 없으면 null */
@@ -218,7 +277,8 @@ export function rolloutBanner(d: RolloutData, opts: { now: number; dismissed: st
   const kind = bandKind(d, opts.now, opts.dismissed);
   if (!kind) return null;
   const r = d.rollout ?? null;
-  const text = bandText(kind, r, opts.labelOf, opts.now);
+  const reg = d.registry;
+  const text = bandText(kind, r, opts.labelOf, opts.now, reg);
   const severity = bandSeverity(kind, r?.phase);
   const btn = (label: string, onClick: () => void, primary = false) => (
     <Button key={label} size="small" variant={primary ? 'contained' : 'text'} color={primary ? undefined : 'inherit'} onClick={onClick} sx={{ ...(primary ? {} : textBtnSx), ...touchSx, whiteSpace: 'nowrap' }}>
@@ -226,7 +286,11 @@ export function rolloutBanner(d: RolloutData, opts: { now: number; dismissed: st
     </Button>
   );
   const buttons: ReactNode[] = [];
-  if (r?.kind === 'resize' && (kind === 'progress' || kind === 'failed')) {
+  if (kind === 'missing' || kind === 'registryUnavailable') {
+    // 닫기 단추가 없다. 초점 순서는 「자세히」 → 「새 롤아웃 만들기」(§4-3 접근성)
+    if (opts.on.registryDetail) buttons.push(btn(t('rollout.detail'), opts.on.registryDetail));
+    if (kind === 'missing') buttons.push(btn(t('rollout.action.newRollout'), opts.on.fixAndCreate ?? opts.on.start));
+  } else if (r?.kind === 'resize' && (kind === 'progress' || kind === 'failed')) {
     // 크기 롤아웃: 되돌리기·다시 시작은 없다. 멈추면 계속·그만두기(§4-2b)
     if (kind === 'progress' && r.phase === 'Paused') buttons.push(btn(t('rollout.resume'), opts.on.resume, true), ...(opts.on.abort ? [btn(t('rollout.abort'), opts.on.abort)] : []));
     else if (kind === 'progress' && !r.aborted) buttons.push(btn(t('rollout.pause'), opts.on.pause));
@@ -239,7 +303,8 @@ export function rolloutBanner(d: RolloutData, opts: { now: number; dismissed: st
   } else if (kind === 'failed' && r) {
     const n = changedAgents(r).length;
     if (n && !r.rollback_of) buttons.push(btn(t('rollout.rollbackChanged', { n }), opts.on.rollback));
-    if (!r.rollback_of) buttons.push(btn(t('rollout.retry'), opts.on.retry));
+    if (r.reason === 'ImageMissing') buttons.push(btn(t('rollout.action.fixAndCreate'), opts.on.fixAndCreate ?? opts.on.retry));
+    else if (!r.rollback_of) buttons.push(btn(t('rollout.retry'), opts.on.retry));
     buttons.push(btn(t('rollout.detail'), opts.on.detail), btn(t('rollout.close'), opts.on.close));
   } else if (kind === 'done') {
     buttons.push(btn(t('rollout.detail'), opts.on.detail), btn(t('rollout.close'), opts.on.close));
@@ -247,7 +312,14 @@ export function rolloutBanner(d: RolloutData, opts: { now: number; dismissed: st
     buttons.push(btn(t('rollout.start'), opts.on.start));
   }
   const showBar = kind === 'progress' && r && r.phase !== 'WaitingApproval' && r.total > 0;
-  const note = r && kind === 'progress' ? bandNote(r) : '';
+  const note =
+    kind === 'missing'
+      ? t('rollout.band.missingNote')
+      : kind === 'registryUnavailable'
+        ? t('rollout.band.registryHow') + (errSummary(reg?.last_error ?? null) ? t('rollout.band.registryCause', { cause: errSummary(reg?.last_error ?? null) }) : '')
+        : r && kind === 'progress'
+          ? bandNote(r)
+          : '';
   return {
     severity,
     live: false, // 알릴 사건은 RolloutLive 가 말한다(DD16)
@@ -285,10 +357,18 @@ export function rolloutBanner(d: RolloutData, opts: { now: number; dismissed: st
 }
 
 /** 숨은 알림(DD16): 단계가 바뀌거나 묶음이 끝날 때만 한 번 읽는다. 실패·승인 대기는 assertive */
-export function RolloutLive({ r }: { r: RolloutInfo | null | undefined }) {
+export function RolloutLive({ r, registry }: { r: RolloutInfo | null | undefined; registry?: RegistryStatus }) {
   const last = useRef<{ name: string; phase: string; done: number } | null>(null);
+  const missing = useRef<number | null>(null);
   const [polite, setPolite] = useState('');
   const [loud, setLoud] = useState('');
+  // missing 띠가 사라질 때 한 번 「지워졌던 이미지가 다시 확인됐습니다」(§4-3)
+  const nMissing = registry?.missing_images?.length ?? 0;
+  useEffect(() => {
+    const prev = missing.current;
+    missing.current = nMissing;
+    if (prev && !nMissing) setPolite(t('rollout.live.imageBack'));
+  }, [nMissing]);
   useEffect(() => {
     if (!r) return;
     const prev = last.current;
@@ -349,7 +429,15 @@ export function VersionCell({ x }: { x: VersionFields & { suspended?: boolean } 
         <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {x.version || short}
         </Box>
-        {x.outdated && <Pill>{t('rollout.outdated')}</Pill>}
+        {x.image_fallback ? (
+          <Tooltip title={t('rollout.pill.fallbackTip')}>
+            <span>
+              <Pill>{t('rollout.pill.fallback')}</Pill>
+            </span>
+          </Tooltip>
+        ) : (
+          x.outdated && <Pill>{t('rollout.outdated')}</Pill>
+        )}
         {x.outdated == null && !x.pinned && <Pill>{t('rollout.unknown')}</Pill>}
         {x.pinned && <Pill>{t('rollout.pinned')}</Pill>}
       </Box>
@@ -386,14 +474,21 @@ interface StartAgent {
 }
 
 /** 시작 서랍(DD10): 칸은 모두 보이는 라벨, 형식 검사, 저장소 경고(막지 않음), 대상 요약, 같은 요약을 담은 확인 창 */
-export function RolloutStartForm({ agents, target, prefill }: { agents: StartAgent[]; target?: RolloutData['target']; prefill?: Partial<RolloutInfo> }) {
+export function RolloutStartForm({ agents, target, prefill, deleted = [] }: { agents: StartAgent[]; target?: RolloutData['target']; prefill?: Partial<RolloutInfo>; deleted?: string[] }) {
   const { enqueueSnackbar } = useSnackbar();
   const { closeDrawer } = useUi();
   const confirm = useConfirm();
   const qc = useQueryClient();
   const [version, setVersion] = useState(prefill?.version ?? '');
-  const [image, setImage] = useState(prefill?.image ?? '');
-  const [sidecar, setSidecar] = useState(prefill?.sidecar_image ?? '');
+  // 지워진 digest 와 digest 가 아닌 값(목표의 차트 태그)은 미리 채우지 않는다(빈 값, §4-3 「새 롤아웃 만들기」 서랍).
+  // 2026-11-18 OKE: missing 띠에서 연 서랍이 목표 사이드카 `…:1.0.5` 를 채워 처음부터 형식 오류가 떴다
+  const isDeleted = (ref: string) => {
+    const i = ref.indexOf('@');
+    return i >= 0 && deleted.includes(ref.slice(i + 1).trim());
+  };
+  const usable = (ref?: string) => (ref && DIGEST_RE.test(ref.trim()) && !isDeleted(ref) ? ref : '');
+  const [image, setImage] = useState(usable(prefill?.image));
+  const [sidecar, setSidecar] = useState(usable(prefill?.sidecar_image));
   const [canary, setCanary] = useState(prefill?.canary?.[0] ?? '');
   const [batch, setBatch] = useState(prefill?.batch_size ?? 2);
   const [skipBusy, setSkipBusy] = useState(prefill?.skip_busy ?? true);
@@ -401,6 +496,8 @@ export function RolloutStartForm({ agents, target, prefill }: { agents: StartAge
   const [busy, setBusy] = useState(false);
   const badImage = !!image && !DIGEST_RE.test(image.trim());
   const badSidecar = !!sidecar && !DIGEST_RE.test(sidecar.trim());
+  const goneImage = !!image && isDeleted(image.trim());
+  const goneSidecar = !!sidecar && isDeleted(sidecar.trim());
   // 지금 쓰는 저장소: 목표가 있으면 그것, 없으면 가장 많은 에이전트가 도는 이미지의 저장소
   const repoNow =
     repoOf(target?.image) ||
@@ -413,7 +510,7 @@ export function RolloutStartForm({ agents, target, prefill }: { agents: StartAge
   const k = agents.filter((a) => a.pinned).length;
   const j = agents.filter((a) => a.suspended && !a.pinned).length;
   const n = agents.length - k;
-  const ready = !!version.trim() && (!!image.trim() || !!sidecar.trim()) && !badImage && !badSidecar;
+  const ready = !!version.trim() && (!!image.trim() || !!sidecar.trim()) && !badImage && !badSidecar && !goneImage && !goneSidecar;
 
   const submit = async () => {
     setError('');
@@ -442,14 +539,14 @@ export function RolloutStartForm({ agents, target, prefill }: { agents: StartAge
     }
   };
 
-  const digestField = (label: string, value: string, set: (v: string) => void, bad: boolean, extra?: string) => (
+  const digestField = (label: string, value: string, set: (v: string) => void, bad: boolean, gone = false) => (
     <TextField
       size="small"
       label={label}
       value={value}
       onChange={(e) => set(e.target.value)}
-      error={bad}
-      helperText={bad ? t('rollout.form.digestBad') : extra || t('rollout.form.digestHelp')}
+      error={bad || gone}
+      helperText={bad ? t('rollout.form.digestBad') : gone ? t('rollout.form.digestDeleted') : t('rollout.form.digestHelp')}
       multiline
       minRows={2}
       slotProps={{ htmlInput: { spellCheck: false, style: { fontFamily: MONO_FONT, fontSize: 12, wordBreak: 'break-all' } } }}
@@ -459,13 +556,13 @@ export function RolloutStartForm({ agents, target, prefill }: { agents: StartAge
   return (
     <Stack spacing={2}>
       <TextField size="small" label={t('rollout.form.version')} required value={version} onChange={(e) => setVersion(e.target.value)} placeholder={t('rollout.form.versionPlaceholder')} slotProps={{ htmlInput: { maxLength: 80 } }} />
-      {digestField(t('rollout.form.image'), image, setImage, badImage)}
+      {digestField(t('rollout.form.image'), image, setImage, badImage, goneImage)}
       {repoDiffers && (
         <Alert severity="warning" variant="outlined" sx={{ py: 0, color: 'text.primary' }}>
           {t('rollout.form.repoDiffers', { repo: repoNow })}
         </Alert>
       )}
-      {digestField(t('rollout.form.sidecar'), sidecar, setSidecar, badSidecar)}
+      {digestField(t('rollout.form.sidecar'), sidecar, setSidecar, badSidecar, goneSidecar)}
       <Box>
         <AgentPicker
           label={t('rollout.form.canary')}
@@ -514,9 +611,23 @@ export function RolloutDetail({ r, labelOf }: { r: RolloutInfo; labelOf: (n: str
     if (a.sidecarImage) parts.push(`${t('rollout.kv.sidecar')} ${shortDigest(a.previousSidecar) || '—'} → ${shortDigest(a.sidecarImage)}`);
     return parts.join(' · ');
   };
+  const refs = r.unavailable_targets ?? [];
+  const noBack = [...new Set((r.rollback_unavailable ?? []).flatMap((u) => u.agents))];
   return (
     <Stack spacing={1.5}>
       {r.message && <Typography variant="body2">{r.message}</Typography>}
+      {r.registry_check_skipped && (
+        <Typography variant="body2" color="text.secondary" data-rollout-check-skipped="">
+          {r.registry_check_skip_reason === 'annotation' ? t('rollout.detail.checkSkippedAnnotation') : t('rollout.detail.checkSkipped')}
+        </Typography>
+      )}
+      {noBack.length > 0 && <Typography variant="body2">{t('rollout.detail.rollbackUnavailable', { names: noBack.map(labelOf).join(', ') })}</Typography>}
+      {refs.length > 0 && (
+        <Box data-rollout-unavailable="">
+          <Typography variant="subtitle2">{t('rollout.detail.unavailable')}</Typography>
+          <ImageTable rows={refs.map((u) => ({ repo: u.repo, digest: u.digest, what: `${containerOf(u.repo)} · ${t(`rollout.field.${u.field}`)}`, agents: u.agents.length }))} />
+        </Box>
+      )}
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
@@ -547,6 +658,71 @@ export function RolloutDetail({ r, labelOf }: { r: RolloutInfo; labelOf: (n: str
           </TableBody>
         </Table>
       </Box>
+    </Stack>
+  );
+}
+
+/** 저장소·digest 표. digest 는 앞 12자, 전체는 복사 단추(DX 검토 H3) */
+function ImageTable({ rows, extra }: { rows: { repo: string; digest: string; what?: string; agents: number; since?: string; namespace?: string }[]; extra?: boolean }) {
+  const { enqueueSnackbar } = useSnackbar();
+  return (
+    <Box sx={{ overflowX: 'auto' }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>{t('rollout.registry.col.repo')}</TableCell>
+            <TableCell>{t('rollout.registry.col.digest')}</TableCell>
+            <TableCell>{t('rollout.registry.col.agents')}</TableCell>
+            {extra && <TableCell>{t('rollout.registry.col.since')}</TableCell>}
+            {extra && <TableCell>{t('rollout.registry.col.namespace')}</TableCell>}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((m) => (
+            <TableRow key={`${m.repo}@${m.digest}@${m.what ?? ''}`} data-registry-row={m.digest}>
+              <TableCell>
+                {m.repo}
+                {m.what && (
+                  <Typography variant="caption" color="text.secondary" component="div">
+                    {m.what}
+                  </Typography>
+                )}
+              </TableCell>
+              <TableCell sx={{ fontFamily: MONO_FONT, fontSize: 12, whiteSpace: 'nowrap' }}>
+                {m.digest.replace('sha256:', '').slice(0, 12)}
+                <IconButton
+                  size="small"
+                  aria-label={t('rollout.copy')}
+                  onClick={() => void navigator.clipboard?.writeText(`${m.repo}@${m.digest}`).then(() => enqueueSnackbar(t('rollout.copied'), { variant: 'success' }))}
+                  sx={{ p: 0.25, ml: 0.25 }}
+                >
+                  <ContentCopyOutlinedIcon sx={{ fontSize: 12 }} />
+                </IconButton>
+              </TableCell>
+              <TableCell>{m.agents}</TableCell>
+              {extra && <TableCell sx={{ whiteSpace: 'nowrap' }}>{m.since ? fmtTs(m.since) : ''}</TableCell>}
+              {extra && <TableCell>{m.namespace}</TableCell>}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
+  );
+}
+
+/** missing·registryUnavailable 띠의 「자세히」: 지워진 이미지 표, 마지막 확인 시각과 원인, 운영 문서 위치(§4-3) */
+export function RegistryDetail({ reg }: { reg: RegistryStatus }) {
+  const err = errSummary(reg.last_error);
+  return (
+    <Stack spacing={1.5}>
+      {reg.missing_images.length > 0 && (
+        <ImageTable extra rows={reg.missing_images.map((m) => ({ repo: m.repo, digest: m.digest, agents: m.agents.length, since: m.since, namespace: m.namespace }))} />
+      )}
+      {reg.last_checked && <Typography variant="body2">{t('rollout.registry.lastChecked', { time: fmtTs(reg.last_checked) })}</Typography>}
+      {err && <Typography variant="body2">{t('rollout.registry.lastError', { error: [err, reg.last_error?.message].filter(Boolean).join(' · ') })}</Typography>}
+      <Typography variant="caption" color="text.secondary">
+        {t('rollout.registry.help')}
+      </Typography>
     </Stack>
   );
 }

@@ -7,7 +7,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { tagCounts, tagMatches } from './TagBar';
+import { isWorkTag, tagCounts, tagMatches, toggleTag, WORK_TAGS } from './TagBar';
 import { TagBar } from './TagBar';
 
 const PKGS = [
@@ -65,5 +65,43 @@ describe('TagBar', () => {
     expect(screen.queryByRole('group')).not.toBeInTheDocument();
     rerender(<TagBar counts={counts} total={3} active={[]} onToggle={vi.fn()} onClear={vi.fn()} action={<button>다시</button>} />);
     expect(screen.getByRole('button', { name: '다시' })).toBeInTheDocument();
+  });
+});
+
+describe('업무 태그(스펙 2026-11-17-003)', () => {
+  it('업무 id 는 서버 어휘와 같은 11개이고 기능 id 와 겹치지 않는다', () => {
+    expect(WORK_TAGS).toHaveLength(11);
+    expect(isWorkTag('sales')).toBe(true);
+    expect(isWorkTag('common')).toBe(true);
+    expect(isWorkTag('docs')).toBe(false);
+  });
+
+  it('toggleTag: 업무 칩은 하나만 켜지고(다른 업무 칩은 꺼진다), 기능 칩은 여러 개 켜진다', () => {
+    expect(toggleTag([], 'sales')).toEqual(['sales']);
+    expect(toggleTag(['sales', 'docs'], 'marketing')).toEqual(['docs', 'marketing']);
+    expect(toggleTag(['sales', 'docs'], 'automation')).toEqual(['sales', 'docs', 'automation']);
+    expect(toggleTag(['sales', 'docs'], 'sales')).toEqual(['docs']);
+    expect(toggleTag(['sales', 'docs'], 'docs')).toEqual(['sales']);
+  });
+
+  it('업무와 기능이 둘 다 있으면 「업무별」·「기능별」 두 줄(아이콘 이름표)이고, 업무 칩은 업무 목록 순서다', () => {
+    const counts = [
+      { id: 'docs', n: 4 },
+      { id: 'sales', n: 3 },
+      { id: 'marketing', n: 1 },
+    ];
+    render(<TagBar counts={counts} total={5} active={[]} onToggle={vi.fn()} onClear={vi.fn()} />);
+    const work = screen.getByRole('group', { name: '업무별' });
+    expect(within(work).getByRole('button', { name: /전체/ })).toBeInTheDocument();
+    expect(within(work).getAllByRole('button').map((b) => b.textContent)).toEqual(['전체5', '마케팅1', '세일즈3']);
+    const kind = screen.getByRole('group', { name: '기능별' });
+    expect(within(kind).getAllByRole('button').map((b) => b.textContent)).toEqual(['문서·글쓰기4']);
+    expect(screen.queryByRole('group', { name: '태그로 거르기' })).not.toBeInTheDocument();
+  });
+
+  it('한 갈래만 있으면 이름표 없이 지금처럼 한 줄이다', () => {
+    render(<TagBar counts={[{ id: 'sales', n: 2 }]} total={2} active={[]} onToggle={vi.fn()} onClear={vi.fn()} />);
+    expect(screen.getByRole('group', { name: '태그로 거르기' })).toBeInTheDocument();
+    expect(screen.queryByText('업무별')).not.toBeInTheDocument();
   });
 });

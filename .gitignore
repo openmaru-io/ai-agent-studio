@@ -18,3 +18,6 @@ deploy/compose/.env.*
 # 저장소 루트에서 잘못 돌린 npm install, macOS 폴더 정보 파일
 /node_modules/
 .DS_Store
+
+# make push 가 잠깐 쓰는 AAS_IMAGE 줄 모음(스펙 2026-11-17-001 R1)
+.aas-images

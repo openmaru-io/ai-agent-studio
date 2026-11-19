@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..hermes import hermes_reader as hr
 from ..hermes.readers import remote
-from . import inventory, script_refs, skill_graph
+from . import image_packages, inventory, script_refs, skill_graph
 from .files import mask_line
 from ..common.i18n import tr
 from ..common.redact import clean_url
@@ -37,7 +37,7 @@ _ENV = [re.compile(r"os\.environ(?:\.get)?\s*[\[(]\s*[\"']([A-Z][A-Z0-9_]{2,})[\
         re.compile(r"\$\{?([A-Z][A-Z0-9_]{2,})\b")]
 # import 이름과 배포 이름이 다른 흔한 경우
 _ALIAS = {"yaml": "pyyaml", "googleapiclient": "google-api-python-client", "pil": "pillow", "bs4": "beautifulsoup4",
-          "dotenv": "python-dotenv", "cv2": "opencv-python", "docx": "python-docx", "pptx": "python-pptx",
+          "dotenv": "python-dotenv", "docx": "python-docx", "pptx": "python-pptx",
           "fitz": "pymupdf", "dateutil": "python-dateutil", "jwt": "pyjwt", "sklearn": "scikit-learn",
           "telegram": "python-telegram-bot", "google.oauth2": "google-auth", "google.auth": "google-auth",
           "google_auth_oauthlib": "google-auth-oauthlib", "openpyxl": "openpyxl", "markdown": "markdown"}
@@ -46,6 +46,7 @@ _NODE_BUILTINS = {"assert", "async_hooks", "buffer", "child_process", "cluster",
                   "diagnostics_channel", "dns", "domain", "events", "fs", "http", "http2", "https", "inspector", "module", "net",
                   "os", "path", "perf_hooks", "process", "punycode", "querystring", "readline", "repl", "stream", "string_decoder",
                   "sys", "timers", "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib"}
+IMAGE_UNKNOWN_NOTE = "Hermes 이미지에 든 라이브러리 목록을 아직 받지 못했습니다. 쿠버네티스에서는 이미지마다 한 번 만듭니다"  # i18n-ignore: 캐시되는 meta 값(읽는 때 _META_VALUES 로 번역)
 _SHELL_NOISE = {"PATH", "HOME", "PWD", "USER", "SHELL", "LANG", "TZ", "IFS", "PYTHONPATH", "TMPDIR", "HERMES_HOME"}
 
 
@@ -93,13 +94,17 @@ class Graph:
         return e
 
 
-def build(home: Path | None = None) -> dict:
+def build(home: Path | None = None, image: dict | None = None) -> dict:
+    """`image` 는 image_packages.parse·unknown 의 결과(Hermes 이미지 패키지 목록). 없으면 목록을 모르는 것으로 본다."""
     home = home or hr.hermes_home()
     remote.prefetch(home)                                     # 원격이면 묶음을 먼저 받는다(OMAI-1102)
     sg = skill_graph.build(home)
-    creds = inventory.credentials(home)["items"]
+    # AAS 기본 값·설정 값 행은 그림에 넣지 않는다 — 색인(cred_by_name·cred_by_file)에도 들지 않아 새 간선이 생기지 않는다(스펙 2026-11-18-007 E4)
+    creds = [c for c in inventory.credentials(home)["items"] if not c.get("aas_default") and c.get("value_kind") != "setting"]
     tools = inventory.tools(home)["items"]
-    libs = inventory.libraries(home)["items"]
+    lib_result = inventory.libraries(home, image)
+    libs = lib_result["items"]
+    image_reason = lib_result["image_reason"] if lib_result["image_list"] == "unknown" else ""
     g = Graph()
 
     tool_by_path = {t["path"]: t for t in tools}
@@ -112,8 +117,12 @@ def build(home: Path | None = None) -> dict:
         cred_by_name.setdefault(c["name"], []).append(c)
         cred_by_file.setdefault(Path(c["location"]).name, []).append(c)
     lib_by_name: dict[str, list[dict]] = {}
+    py_by_module: dict[str, set[str]] = {}                   # 최상위 모듈 → 그 모듈을 내놓는 Python 배포(정규화 이름)
     for lib in libs:
-        lib_by_name.setdefault(lib["name"].lower().replace("_", "-"), []).append(lib)
+        lib_by_name.setdefault(image_packages.normalize(lib["name"]), []).append(lib)
+        if lib["kind"] == "Python":
+            for m in lib.get("modules") or ():
+                py_by_module.setdefault(m, set()).add(image_packages.normalize(lib["name"]))
     mcp_names = {n for names in sg["mcp_configured"].values() for n in names}
     mcp_where: dict[str, list[str]] = {}
     for prof, names in sg["mcp_configured"].items():
@@ -156,17 +165,63 @@ def build(home: Path | None = None) -> dict:
         return nid
 
     def lib_node(mod: str, node_pkg: bool = False) -> str:
-        key = _ALIAS.get(mod.lower()) or _ALIAS.get(mod.split(".")[0].lower()) or mod.split(".")[0].lower().replace("_", "-")
-        hits = lib_by_name.get(key, [])
+        if node_pkg:
+            return node_lib_node(mod)
+        nid, label, hits, many = find_python_lib(mod)
+        if nid not in g.nodes:
+            g.node(nid, label=label, **python_lib_view(hits, many))
+        return nid
+
+    def node_lib_node(mod: str) -> str:
+        """Node 패키지: 판정·nid 를 바꾸지 않는다(스펙 2026-11-19-001 §4-2)."""
+        key = mod.split(".")[0].lower().replace("_", "-")
+        hits = lib_by_name.get(image_packages.normalize(key), [])
         nid = "lib:" + key
-        if nid not in g.nodes and node_pkg and not hits:          # 설치 목록은 Python 환경만 읽는다 — Node 패키지는 있는지 모르므로 경고하지 않는다(D5)
+        if nid not in g.nodes and not hits:                   # 설치 목록은 Python 환경만 읽는다 — Node 패키지는 있는지 모르므로 경고하지 않는다(D5)
             g.node(nid, label=key, sub="Node 패키지 · 설치 확인 안 함", status=None, badges=[], meta={})  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
         if nid not in g.nodes:
             vers = sorted({h["version"] for h in hits})
-            g.node(nid, label=key, sub=", ".join(vers[:3]) if hits else "설치 목록에 없음",  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
-                   status=None if hits else "warn", badges=[] if hits else ["설치 목록에 없음"] + ([] if len(vers) < 2 else ["버전 여러 개"]),  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
+            g.node(nid, label=key, sub=", ".join(vers[:3]), status=None, badges=[],
                    meta={"버전": ", ".join(vers), "설치 환경": ", ".join(sorted({h["env"] for h in hits})[:4])})  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
         return nid
+
+    def find_python_lib(mod: str) -> tuple[str, str, list[dict], list[str]]:
+        """import 이름 → (nid, 표시 이름, 찾은 패키지들, 이름공간이라 여럿인 배포 이름). 찾기는 _ALIAS·이름 비교 다음
+        최상위 모듈 표(스펙 2026-11-19-001 §4-2). nid 는 `lib:py:` 로 Node 노드(`lib:yaml` 등)와 겹치지 않게 한다."""
+        low = mod.lower()
+        top = low.split(".")[0]
+        alias = _ALIAS.get(low) or _ALIAS.get(top)
+        key = alias or top.replace("_", "-")
+        nid = "lib:py:" + (low if _ALIAS.get(low) else top)
+        hits = [h for h in lib_by_name.get(image_packages.normalize(key), []) if h["kind"] == "Python"]
+        if hits:
+            return nid, hits[0]["name"], hits, []
+        dists = sorted(py_by_module.get(top, ()))
+        if len(dists) == 1:
+            found = [h for h in lib_by_name.get(dists[0], []) if h["kind"] == "Python"]
+            return nid, found[0]["name"], found, []
+        if len(dists) > 1:
+            names = sorted({h["name"] for d in dists for h in lib_by_name.get(d, []) if h["kind"] == "Python"})
+            return nid, key, [], names
+        return nid, key, [], []
+
+    def python_lib_view(hits: list[dict], many: list[str]) -> dict:
+        """부제·상태·배지·meta. 경고는 이미지 목록이 있는데 아무 데서도 못 찾았을 때만(D4)."""
+        if many:
+            return {"sub": "이름공간 패키지 · 확인 안 함", "status": None, "badges": [],  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
+                    "meta": {"패키지": ", ".join(many[:6])}}  # i18n-ignore: meta 키(읽는 때 번역)
+        if not hits:
+            if image_reason:
+                return {"sub": "이미지 목록 확인 전", "status": None, "badges": [],  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
+                        "meta": {"설명": IMAGE_UNKNOWN_NOTE, "이유": image_reason}}  # i18n-ignore: meta 키(읽는 때 번역)
+            return {"sub": "설치 목록에 없음", "status": "warn", "badges": ["설치 목록에 없음"], "meta": {"버전": "", "설치 환경": ""}}  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
+        prof = [h for h in hits if not h.get("image")]
+        img = [h for h in hits if h.get("image")]
+        prof_vers = sorted({h["version"] for h in prof})
+        vers = sorted({h["version"] for h in hits})
+        sub = ", ".join(prof_vers[:3]) if prof else "Hermes 이미지 · " + img[0]["version"]  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
+        return {"sub": sub, "status": None, "badges": ["버전 여러 개"] if len(prof_vers) >= 2 else [],  # i18n-ignore: UI 가 맞대어 보는 배지 값
+                "meta": {"버전": ", ".join(vers), "설치 환경": ", ".join(sorted({h["env"] for h in hits})[:4])}}  # i18n-ignore: 캐시되는 그래프는 한국어로 두고 읽는 때 _localize_node 가 번역한다
 
     def mcp_node(server: str) -> str:
         nid = "mcp:" + server
@@ -386,6 +441,19 @@ def build(home: Path | None = None) -> dict:
             "totals": {"nodes": len(g.nodes), "edges": sum(len(v) for v in g.out.values())}}
 
 
+def without_job(index: dict, profile: str, job_id: str) -> dict:
+    """지운 크론 작업 하나를 뺀 그림. 원래 그림은 고치지 않는다(읽는 요청이 같은 그림을 쓰고 있을 수 있다).
+    그림 전체를 다시 만드는 데 수십 초가 걸려, 그동안 목록에 지운 작업이 남지 않게 지운 직후에 쓴다."""
+    nid = f"cron:{profile}/{job_id}"
+    if nid not in index.get("nodes", {}):
+        return index
+    nodes = {k: v for k, v in index["nodes"].items() if k != nid}
+    out = {k: v for k, v in index["out"].items() if k != nid}
+    inc = {k: [e for e in v if e.get("from") != nid] for k, v in index["inc"].items() if k != nid}
+    return {**index, "nodes": nodes, "out": out, "inc": inc,
+            "totals": {"nodes": len(nodes), "edges": sum(len(v) for v in out.values())}}
+
+
 def starts(index: dict) -> list[dict]:
     """흐름의 시작점 — 크론 작업. 무엇을 돌리는지(스킬·스크립트)와 한 단계 아래 개수."""
     rows = []
@@ -541,15 +609,19 @@ def overlay(index: dict, sub: dict, obs: dict) -> dict:
 _SUB_RULES = [  # i18n-ignore: 캐시된 한국어 문장을 찾는 패턴
     (r"^공용(?= · )", "shared"), (r" · 스킬$", " · skill"), (r"^MCP 서버", "MCP server"),  # i18n-ignore: 패턴
     (r" · (\d+)개 프로파일에 설정$", r" · set in \1 profiles"), (r" · 설정에 없음$", " · not in config"),  # i18n-ignore: 패턴
-    (r"^설치 목록에 없음$", "Not in the install list"), (r"^Node 패키지 · 설치 확인 안 함$", "Node package · install not checked"), (r"^외부 호스트$", "External host"), (r"^스크립트$", "Script"),  # i18n-ignore: 패턴
+    (r"^설치 목록에 없음$", "Not in the install list"), (r"^이미지 목록 확인 전$", "Image list not checked yet"),  # i18n-ignore: 패턴
+    (r"^이름공간 패키지 · 확인 안 함$", "Namespace package · not checked"), (r"^Hermes 이미지 · ", "Hermes image · "),  # i18n-ignore: 패턴
+    (r"^Node 패키지 · 설치 확인 안 함$", "Node package · install not checked"), (r"^외부 호스트$", "External host"), (r"^스크립트$", "Script"),  # i18n-ignore: 패턴
     (r" · 일정 없음$", " · no schedule"),  # i18n-ignore: 패턴
 ]
 _META_KEYS = {"요약": "Summary", "수정": "Modified", "범위": "Scope", "저장 위치": "Stored in", "파일": "File", "값": "Value", "만료": "Expires",  # i18n-ignore: 사전 키
               "같은 이름": "Same name", "버전": "Versions", "설치 환경": "Environment", "설정된 프로파일": "Profiles with config", "설명": "Description",  # i18n-ignore: 사전 키
               "프로파일": "Profile", "일정": "Schedule", "마지막 실행": "Last run", "마지막 결과": "Last result", "결과 전달": "Delivery",  # i18n-ignore: 사전 키
+              "이유": "Reason", "패키지": "Packages",  # i18n-ignore: 사전 키
               "AI 에이전트 없이 실행": "Runs without an AI Agent", "에이전트 없이 실행": "Runs without an AI Agent", "모델": "Model", "작업 id": "Job ID"}  # i18n-ignore: 사전 키
 _META_VALUES = {"전역": "Global", "채워져 있음": "Filled", "비어 있는 값이 있음": "Has empty values", "미실행": "Not run yet",  # i18n-ignore: 사전 키
-                "예 (스크립트만)": "Yes (script only)"}  # i18n-ignore: 사전 키
+                "예 (스크립트만)": "Yes (script only)",  # i18n-ignore: 사전 키
+                IMAGE_UNKNOWN_NOTE: "The list of libraries in the Hermes image has not arrived yet. On Kubernetes it is made once per image"}  # i18n-ignore: 사전 키
 _NOTES = {"자격증명 목록에 이 호스트용으로 적혀 있음": "Listed in the credentials for this host"}  # i18n-ignore: 사전 키
 
 

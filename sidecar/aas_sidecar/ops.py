@@ -33,6 +33,9 @@ DEFAULT_MAX_TOTAL = 8_000_000         # 한 번의 read 요청 전체
 DEFAULT_MAX_ENTRIES = 50_000          # 한 번의 glob·tree·scan 결과. 2만에서는 가상 환경이 큰 데이터 폴더의 묶음이 늘 잘렸다(GitHub #1, 스펙 2026-11-03-003 D10)
 DEFAULT_MAX_ROWS = 20_000             # 한 번의 sqlite 결과
 DEFAULT_SQL_SECONDS = 10.0
+MAX_SQL_SECONDS = 30.0                # 요청이 max_seconds 로 늘릴 수 있는 상한(스펙 2026-11-19-005 U1)
+DEFAULT_SQL_BYTES = 8_000_000         # 한 번의 sqlite 결과 바이트. 행 수만 막으면 큰 tool_calls 원문 행에서 메모리가 넘친다(같은 스펙 리뷰 H3)
+FETCH_CHUNK = 500
 TREE_WORKERS = 16                     # tree 의 stat·해시를 동시에 하는 수. NFS 에서 하나씩은 stat 8.1ms, 16개씩은 0.66ms/항목(OKE 2026-11-03)
 MAX_BATCH = 400                       # 한 번의 sqlite_batch 쿼리 수
 
@@ -86,13 +89,39 @@ def _match(parts: list[str], pat: list[str]) -> bool:
     return bool(parts) and fnmatch.fnmatchcase(parts[0], pat[0]) and _match(parts[1:], pat[1:])
 
 
+def clamp_seconds(value, default: float) -> float:
+    """요청의 max_seconds. 없으면 기본값, 상한을 넘으면 상한. 숫자가 아니거나 0 이하면 400."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise OpError(400, "max_seconds 는 0 보다 큰 숫자여야 합니다")
+    return min(float(value), MAX_SQL_SECONDS)
+
+
+def _positive_int(value, default: int, name: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise OpError(400, f"{name} 은 0 보다 큰 정수여야 합니다")
+    return value
+
+
+def _cell_bytes(value) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8", "surrogatepass"))
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return len(bytes(value)) * 4 // 3 + 16             # base64 로 보낸다
+    return 8
+
+
 class Ops:
     def __init__(self, root: Path, *, max_file: int = DEFAULT_MAX_FILE, max_total: int = DEFAULT_MAX_TOTAL,
                  max_entries: int = DEFAULT_MAX_ENTRIES, max_rows: int = DEFAULT_MAX_ROWS,
-                 sql_seconds: float = DEFAULT_SQL_SECONDS):
+                 sql_seconds: float = DEFAULT_SQL_SECONDS, max_sql_bytes: int = DEFAULT_SQL_BYTES):
         self.root = Path(os.path.realpath(root))
         self.max_file, self.max_total = max_file, max_total
         self.max_entries, self.max_rows, self.sql_seconds = max_entries, max_rows, sql_seconds
+        self.max_sql_bytes = max_sql_bytes
         self._hashes: dict[tuple, str] = {}                # (경로, 크기, 시각 ns) → sha256 — 바뀐 파일만 다시 해시한다(R7)
         self._hash_lock = threading.Lock()
         # 해시 캐시 상한은 항목 상한에 비례한다. 5만 고정이면 상한을 5만 넘게 둔 폴더에서 캐시가 자주 넘쳐 통째로 비워지고,
@@ -195,6 +224,7 @@ class Ops:
                 or ".." in pattern.split("/"):
             raise OpError(400, "패턴 모양이 맞지 않습니다")
         skip = {str(x) for x in (skip_dirs or [])}
+        asked = "/".join(self._parts(rel))                  # 결과 앞머리는 물은 경로 그대로(심링크를 푼 경로가 아니다)
         entries, truncated = [], False
         for p in (self._walk_glob(base, pattern, skip) if skip else base.glob(pattern)):
             real = Path(os.path.realpath(p))
@@ -207,7 +237,7 @@ class Ops:
             if len(entries) >= self.max_entries:
                 truncated = True
                 break
-            entries.append({"path": self._rel_under(base, p),
+            entries.append({"path": self._rel_under(base, p, asked),
                             "type": _type_of(st), "size": st.st_size, "mtime": st.st_mtime, "mtime_ns": st.st_mtime_ns,
                             "mode": st.st_mode})
         entries.sort(key=lambda e: e["path"])
@@ -494,11 +524,12 @@ class Ops:
         entries.sort(key=lambda e: e["path"])
         return {"entries": entries, "truncated": truncated, "total": total}
 
-    def _rel_under(self, base: Path, p: Path) -> str:
-        """glob 이 낸 경로를 root 기준 상대 경로로(심링크 이름은 그대로 둔다)."""
+    @staticmethod
+    def _rel_under(base: Path, p: Path, asked: str) -> str:
+        """glob 이 낸 경로를 root 기준 상대 경로로(심링크 이름은 그대로 둔다). 앞머리는 물은 경로 asked 다 —
+        base 는 심링크를 푼 실제 폴더라 그것을 붙이면 물은 폴더 밖 경로가 되어 부른 쪽의 relative_to 가 실패한다(2026-11-17)."""
         r = Path(os.path.normpath(p)).relative_to(base).as_posix()
-        pre = self._rel(base)
-        return f"{pre}/{r}" if pre else r
+        return f"{asked}/{r}" if asked else r
 
     @staticmethod
     def _open_db(real: Path) -> tuple[sqlite3.Connection, str]:
@@ -519,14 +550,18 @@ class Ops:
                 raise OpError(503, f"DB 를 지금 읽을 수 없습니다: {exc}") from None
         return sqlite3.connect(f"{uri}?immutable=1", uri=True), "immutable"
 
-    def sqlite(self, rel, sql, params) -> dict:
+    def sqlite(self, rel, sql, params, max_seconds=None, max_bytes=None) -> dict:
+        """읽기 전용 질의. max_seconds(상한 MAX_SQL_SECONDS)·max_bytes 는 요청마다 줄 수 있고, 없으면 사이드카 기본값이다.
+        결과가 행 상한이나 바이트 상한을 넘으면 거기까지만 돌려주고 truncated 를 켠다(스펙 2026-11-19-005 U1)."""
         if not isinstance(sql, str) or not isinstance(params, list):
             raise OpError(400, "sql 은 문자열, params 는 목록이어야 합니다")
+        seconds = clamp_seconds(max_seconds, self.sql_seconds)
+        limit_bytes = _positive_int(max_bytes, self.max_sql_bytes, "max_bytes")
         real = self._resolve(rel)
         if real is None or not real.is_file():
             raise OpError(404, "DB 파일이 없습니다")
         conn, read_mode = self._open_db(real)
-        deadline = time.monotonic() + self.sql_seconds
+        deadline = time.monotonic() + seconds
         timed_out = {"v": False}
 
         def _progress():
@@ -551,18 +586,31 @@ class Ops:
             try:
                 cur = conn.execute(sql, params)
                 columns = [d[0] for d in (cur.description or [])]
-                rows = cur.fetchmany(self.max_rows + 1)
+                rows, truncated = self._fetch_limited(cur, limit_bytes)
             except sqlite3.Error as exc:
                 if timed_out["v"]:
                     raise OpError(408, "SQL 시간 제한을 넘었습니다") from None
                 raise OpError(400, f"SQL 을 실행하지 못했습니다: {exc}") from None
             except (TypeError, ValueError, OverflowError) as exc:
                 raise OpError(400, f"SQL 인자가 맞지 않습니다: {type(exc).__name__}") from None
-            truncated = len(rows) > self.max_rows
-            return {"columns": columns, "rows": [[self._cell(c) for c in r] for r in rows[:self.max_rows]],
+            return {"columns": columns, "rows": [[self._cell(c) for c in r] for r in rows],
                     "truncated": truncated, "read_mode": read_mode}
         finally:
             conn.close()
+
+    def _fetch_limited(self, cur, limit_bytes: int) -> tuple[list, bool]:
+        """행 상한과 바이트 상한 안에서만 읽는다. 넘치는 행은 메모리에 쌓기 전에 멈춘다."""
+        rows, used = [], 0
+        while True:
+            chunk = cur.fetchmany(FETCH_CHUNK)
+            if not chunk:
+                return rows, False
+            for row in chunk:
+                size = sum(_cell_bytes(c) for c in row)
+                if len(rows) >= self.max_rows or used + size > limit_bytes:
+                    return rows, True
+                rows.append(row)
+                used += size
 
     def sqlite_batch(self, queries) -> dict:
         """여러 DB·쿼리를 요청 하나로(OMAI-1102). 쿼리마다 sqlite() 와 같은 검사·시간 제한을 쓰고, 하나가 실패해도 나머지는 돈다.
@@ -575,7 +623,8 @@ class Ops:
                 out.append({"error": "쿼리 모양이 맞지 않습니다", "code": 400})
                 continue
             try:
-                out.append(self.sqlite(q.get("path"), q.get("sql"), q.get("params", [])))
+                out.append(self.sqlite(q.get("path"), q.get("sql"), q.get("params", []),
+                                       max_seconds=q.get("max_seconds"), max_bytes=q.get("max_bytes")))
             except OpError as exc:
                 out.append({"error": exc.message, "code": exc.code})
         return {"results": out}
@@ -588,4 +637,4 @@ class Ops:
 
     def version(self) -> dict:
         return {"api": API, "sidecar": VERSION, "root_ok": self.root.is_dir(),
-                "ops": ["stat", "read", "list", "tree", "changes", "sqlite", "sqlite_batch", "scan", "check", "download", "version"]}
+                "ops": ["stat", "read", "list", "tree", "changes", "sqlite", "sqlite_batch", "sqlite_limits", "scan", "check", "download", "version"]}

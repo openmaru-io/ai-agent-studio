@@ -141,8 +141,9 @@ class OfficeApiTest(unittest.TestCase):
     def setUp(self):
         from aas.fleet import pods as pods_mod
         home = Path(TMP.name) / "hermes-api"
-        (home / "profiles" / "sa").mkdir(parents=True, exist_ok=True)
-        (home / "profiles" / "ma").mkdir(parents=True, exist_ok=True)
+        for name in ("sa", "ma"):
+            (home / "profiles" / name).mkdir(parents=True, exist_ok=True)
+            (home / "profiles" / name / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일로 친다
 
         class Reg:
             pods = [Pod("yj", "a@x.com", home)]

@@ -23,6 +23,7 @@ CREATE INDEX IF NOT EXISTS chat_session_meta_stored ON chat_session_meta (pod, s
 ACTIVE_FOR = 90.0                  # 마지막 기다리기 뒤 이만큼 「쓰는 중」(F8)
 TOUCH_EVERY = 50.0                 # chat_wait 는 50초마다 오므로 그보다 자주 쓰지 않는다
 KEEP = 30 * 86400
+KEEP_SCREEN = 365 * 86400          # 화면에서 연 대화의 「시작한 사람」은 공유한 작업공간의 지난 대화 목록이 1년 쓴다(스펙 2026-11-17-008 §4)
 PURPOSES = ("", "skill-test")
 
 
@@ -36,11 +37,32 @@ def opened(pod: str, sid: str, stored_id: str, profile: str, by: str, via: str, 
     now = time.time() if now is None else now
     purpose = purpose if purpose in PURPOSES else ""
     with _conn() as conn:
-        conn.execute("DELETE FROM chat_session_meta WHERE created < ?", (now - KEEP,))
+        _prune(conn, now)
         conn.execute("INSERT INTO chat_session_meta (pod, session_id, stored_id, profile, opened_by, opened_via, purpose, active_until, created) "
                      "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (pod, session_id) DO UPDATE SET stored_id=excluded.stored_id, "
                      "opened_by=excluded.opened_by, opened_via=excluded.opened_via, purpose=excluded.purpose, active_until=excluded.active_until",
                      (pod, sid, stored_id or "", profile or "", (by or "").lower(), via or "screen", purpose, now + ACTIVE_FOR, now))
+
+
+def _prune(conn, now: float) -> None:
+    conn.execute("DELETE FROM chat_session_meta WHERE created < ? AND (opened_via <> 'screen' OR created < ?)", (now - KEEP, now - KEEP_SCREEN))
+
+
+def note_starters(pod: str, rows: list[tuple[str, str, str, str]], now: float | None = None) -> int:
+    """화면 대화의 시작한 사람을 적는다(이미 있는 줄은 그대로 — Claude Code 로 연 줄을 덮지 않는다). rows = [(session_id, stored_id, profile, by)].
+    지난 대화 목록을 읽을 때 이 서버 메모리의 열린 대화로 부른다. 적은 줄 수."""
+    now = time.time() if now is None else now
+    todo = [r for r in rows if r[0] and r[1] and r[3]]
+    if not todo:
+        return 0
+    n = 0
+    with _conn() as conn:
+        _prune(conn, now)
+        for sid, stored, profile, by in todo:
+            n += conn.execute("INSERT INTO chat_session_meta (pod, session_id, stored_id, profile, opened_by, opened_via, purpose, active_until, created) "
+                              "VALUES (?,?,?,?,?,'screen','',0,?) ON CONFLICT (pod, session_id) DO NOTHING",
+                              (pod, sid, stored, profile or "", by.lower(), now)).rowcount
+    return n
 
 
 def touch(pod: str, sid: str, stored_id: str = "", now: float | None = None) -> bool:
@@ -75,5 +97,6 @@ def for_stored(pod: str, stored_ids: list[str], now: float | None = None) -> dic
             rows = conn.execute(f"SELECT * FROM chat_session_meta WHERE pod=? AND stored_id IN ({','.join('?' * len(part))}) ORDER BY created",
                                 (pod, *part)).fetchall()
             for r in rows:
-                out[r["stored_id"]] = {"via": r["opened_via"], "purpose": r["purpose"], "active": float(r["active_until"]) > now}
+                out[r["stored_id"]] = {"via": r["opened_via"], "purpose": r["purpose"], "active": float(r["active_until"]) > now,
+                                       "by": r["opened_by"]}
     return out

@@ -18,10 +18,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ..common import config
 from ..hermes import hermes_reader as hr
 from ..hermes.readers import remote, secret_scrub
-from . import skill_graph
+from . import image_packages, skill_graph, skill_setup
 from ..common import store
 from ..common.i18n import tr
 from ..common.redact import clean_url, mcp_target
@@ -243,44 +242,52 @@ def _credentials(home, with_usage: bool = True) -> dict:
     share = _Share()
     usage = _usage_index(home) if with_usage else {}
     src_secrets = tr("secrets 파일", "secrets file")
-    # AAS 가 넣는 기본 값은 표에서 뺀다 — 같은 값 묶음·합계에도 들지 않게 share.add 전에 거른다(스펙 2026-10-28-006 R3)
-    hidden: dict[str, int] = {}
-    hidden_kinds: set[str] = set()
+    # 모든 행을 싣고 두 칸으로 나눈다(스펙 2026-11-18-007 §4-1).
+    # value_kind: .env 의 이름이 키 규칙에 맞지 않고 값도 JWT 가 아니면 "setting", 그 밖은 "secret".
+    # aas_default: AAS 가 넣은 값 — "llm"(LiteLLM 키·참조), "auth_derived"(설정 사본 auth.json), "auth_anonymous"(Nous 익명 로그인).
+    # 두 종류는 같은 값 묶음·「비어 있음」·만료·「쓰는 곳을 찾지 못함」에서 뺀다 — 넣으면 모든 프로파일에서 거짓 경고가 난다(2026-10-28-006 의 원래 문제).
     from ..ops import models
     llm_key = models.server_llm_key()[0]
     llm_fp = secret_scrub.digest(llm_key) if llm_key else None
 
-    def hide(profile: str, kind: str) -> None:
-        hidden[profile] = hidden.get(profile, 0) + 1
-        hidden_kinds.add(kind)
+    def is_llm_default(value) -> bool:
+        v = str(value or "").strip()
+        return v == AAS_LLM_KEY_REF or bool(llm_fp and v and secret_scrub.digest(v) == llm_fp)
 
-    def add(name, scope, profile, source, location, value, iface=None, extra=None):
+    def add(name, scope, profile, source, location, value, iface=None, extra=None, value_kind="secret", aas_default=None):
+        quiet = bool(aas_default) or value_kind == "setting"
         item = {"id": f"{scope}:{profile}:{location}:{name}", "name": name, "scope": scope, "profile": profile,
                 "source": source, "location": location, "interface": iface or _iface(name),
-                "set": bool(value), "expires": _jwt_exp(value), "shared_group": None, "shared_with": 0,
-                "used_by": sorted(usage.get(name, ()))[:12], "used_count": len(usage.get(name, ())), "flags": []}
+                "set": bool(value), "expires": None if quiet else _jwt_exp(value), "shared_group": None, "shared_with": 0,
+                "used_by": sorted(usage.get(name, ()))[:12], "used_count": len(usage.get(name, ())), "flags": [],
+                "value_kind": value_kind, "aas_default": aas_default}
         if extra:
             item.update(extra)
-        share.add(item, value)
+        if not quiet:
+            share.add(item, value)
         items.append(item)
         return item
 
-    compose_env = config.compose_env_file()
-    if compose_env and compose_env.is_file():
-        for name, value in _env_file(compose_env):
-            if _SECRET_KEY.search(name):
-                hide("", "compose_env")                         # AAS 운영 값(관리자 비밀번호·사이드카 토큰 등) — 이 화면에서 바꿀 수 없다(D3)
     import yaml
     for prof in hr.profiles(home):
         scope, pname = (GLOBAL, "") if prof.name == "default" else (PROFILE, prof.name)
         base = "" if prof.name == "default" else f"profiles/{prof.name}/"
         env = prof.path / ".env"
-        for name, value in _env_file(env):
-            if _SECRET_KEY.search(name):
-                if name == "HERMES_LLM_API_KEY" and llm_fp and value and secret_scrub.digest(value) == llm_fp:
-                    hide(pname, "llm_default")                  # AAS 가 넣은 LiteLLM 키 그대로(R10). 사용자가 바꿨으면 보인다
-                    continue
-                add(name, scope, pname, ".env", base + ".env", value, extra={"modified": _mtime(env)})
+        # 같은 이름이 여러 줄이면 마지막 줄만 — dotenv 와 같고 행 id 가 겹치지 않는다(R1)
+        env_rows = dict(_env_file(env))
+        parsed = skill_setup.env_values_of(_read(env)) if any(skill_setup.is_aas_managed(n) for n in env_rows) else {}
+        for name, value in env_rows.items():
+            extra = {"modified": _mtime(env)}
+            if name == "HERMES_LLM_API_KEY" and llm_fp and value and secret_scrub.digest(value) == llm_fp:
+                add(name, scope, pname, ".env", base + ".env", value, extra=extra, aas_default="llm")   # AAS 가 넣은 LiteLLM 키 그대로(R10)
+            elif skill_setup.is_aas_managed(name) and skill_setup.managed_source_of(name, parsed) == "aas":
+                # 스킬의 LLM 접속값 줄이 빈 값·${…} 참조면 Hermes 가 AAS 값으로 잇는다 — 「비어 있음」·같은 값 묶음에서 뺀다.
+                # 사용자가 넣은 값이 있는 줄은 지금처럼 점검한다(스펙 2026-11-19-002 §4-2 #6)
+                add(name, scope, pname, ".env", base + ".env", value, extra=extra, aas_default="llm")
+            elif _SECRET_KEY.search(name) or _jwt_exp(value):
+                add(name, scope, pname, ".env", base + ".env", value, extra=extra)
+            else:                                                # 이름 규칙 밖 — 설정 값(R2). JWT 는 위에서 키로 올렸다(E5)
+                add(name, scope, pname, ".env", base + ".env", value, iface=tr("설정 값", "Setting"), extra=extra, value_kind="setting")
         cfg_path = prof.path / "config.yaml"
         try:
             cfg = yaml.safe_load(_read(cfg_path)) or {}
@@ -309,12 +316,19 @@ def _credentials(home, with_usage: bool = True) -> dict:
         providers = cfg.get("providers")
         for pname2, sect in (providers if isinstance(providers, dict) else {}).items():
             if isinstance(sect, dict) and sect.get("api_key"):
-                if str(sect["api_key"]).strip() == AAS_LLM_KEY_REF:
-                    hide(pname, "llm_default")                  # AAS 시드가 넣은 참조(H1). 글자 그대로 적은 키는 보인다
-                    continue
                 add("api_key", scope, pname, "config.yaml › providers", f"{base}config.yaml › providers.{pname2}",
                     str(sect["api_key"]), iface=f"LLM: {pname2}",
-                    extra={"modified": _mtime(cfg_path), "target": clean_url(str(sect.get("base_url") or ""))})
+                    extra={"modified": _mtime(cfg_path), "target": clean_url(str(sect.get("base_url") or ""))},
+                    aas_default="llm" if is_llm_default(sect["api_key"]) else None)
+        # 음성 인식(stt)·보조 LLM(auxiliary)의 api_key(R4). 모양이 깨졌으면 건너뛴다 — providers 와 같은 규칙
+        for part, label in (("stt", "STT"), ("auxiliary", tr("LLM 보조", "Auxiliary LLM"))):
+            sects = cfg.get(part)
+            for sub, sect in (sects if isinstance(sects, dict) else {}).items():
+                if not isinstance(sect, dict) or not sect.get("api_key"):
+                    continue
+                add("api_key", scope, pname, f"config.yaml › {part}", f"{base}config.yaml › {part}.{sub}", str(sect["api_key"]),
+                    iface=f"{label}: {sub}", extra={"modified": _mtime(cfg_path)},
+                    aas_default="llm" if is_llm_default(sect["api_key"]) else None)
         for d in (prof.path / "secrets",):
             if not d.is_dir():
                 continue
@@ -345,18 +359,26 @@ def _credentials(home, with_usage: bool = True) -> dict:
         for fname, iface in (("auth.json", tr("LLM (자격증명 풀)", "LLM (credential pool)")), ("google_token.json", google),
                              ("google_client_secret.json", google)):
             f = prof.path / fname
-            if f.is_file():
-                if fname == "auth.json":
-                    try:
-                        auth = json.loads(_read(f) or "null")
-                    except ValueError:
-                        auth = None                              # 읽지 못하면 지금처럼 보인다
-                    kind = _auth_kind(auth, providers if isinstance(providers, dict) else {}) if auth is not None else "user"
-                    if kind != "user":
-                        hide(pname, "auth_" + kind)              # 설정 사본·Nous 익명 로그인뿐(H2)
-                        continue
+            if not f.is_file():
+                continue
+            if fname != "auth.json":
                 add(fname, scope, pname, tr("파일", "File"), base + fname, hashlib.sha256(f.read_bytes()).hexdigest(), iface=iface,
                     extra={"modified": _mtime(f)})
+                continue
+            try:
+                auth = json.loads(_read(f) or "null")
+            except ValueError:
+                auth = None                                  # 읽지 못하면 사람 행으로 보인다
+            kind = _auth_kind(auth, providers if isinstance(providers, dict) else {}) if auth is not None else "user"
+            names: list[str] = []                            # 제공자 이름(비밀 아님, 사이드카에서도 키는 토큰으로 바뀌지 않는다, R5)
+            if isinstance(auth, dict):
+                for part in ("credential_pool", "providers"):
+                    sect = auth.get(part)
+                    names += [str(k) for k in (sect if isinstance(sect, dict) else {}) if str(k) not in names]
+            if names:
+                iface = f"{iface}: {names[0]}" + (tr(f" 외 {len(names) - 1}", f" +{len(names) - 1}") if len(names) > 1 else "")
+            add(fname, scope, pname, tr("파일", "File"), base + fname, hashlib.sha256(f.read_bytes()).hexdigest(), iface=iface,
+                extra={"modified": _mtime(f), "keys": names[:12]}, aas_default=None if kind == "user" else "auth_" + kind)
     share.finish()
 
     # secrets 파일은 경로로 참조된다 — 같은 이름이 루트와 프로파일에 따로 있으므로 이름만 보면
@@ -386,6 +408,8 @@ def _credentials(home, with_usage: bool = True) -> dict:
 
     now = datetime.now().astimezone()
     for i in items:
+        if i["aas_default"] or i["value_kind"] == "setting":    # 점검 대상 아님(R6)
+            continue
         if not i["set"] and not i.get("oauth"):                   # OAuth 토큰은 「로그인 필요」로 따로 알린다
             i["flags"].append("비어 있음")  # i18n-ignore: UI 가 맞대어 보는 값
         if i["expires"]:
@@ -400,17 +424,27 @@ def _credentials(home, with_usage: bool = True) -> dict:
         if with_usage and i["set"] and not i["used_count"] and i["source"] in (".env", src_secrets) and "백업·임시 파일" not in i["flags"]:  # i18n-ignore: 플래그 비교
             i["flags"].append("쓰는 곳을 찾지 못함")  # i18n-ignore: 다른 모듈이 맞대어 보는 값
     _attach_registry("credential", items)
-    # name_pattern: 이 표가 .env 에서 행으로 싣는 이름의 규칙. 화면이 새 비밀값 이름이 표에 나타날지 같은 식으로 미리 알린다(스펙 2026-10-14-025 D9)
-    return {"collected_at": now.isoformat(timespec="seconds"), "items": items, "name_pattern": _SECRET_KEY.pattern,
-            "totals": {"items": len(items), "global": sum(1 for i in items if i["scope"] == GLOBAL),
-                       "profile": sum(1 for i in items if i["scope"] == PROFILE),
-                       "empty": sum(1 for i in items if not i["set"]),
-                       "expiring": sum(1 for i in items if any("만료" in f for f in i["flags"])),  # i18n-ignore: 플래그 비교
-                       "backups": sum(1 for i in items if "백업·임시 파일" in i["flags"]),  # i18n-ignore: 플래그 비교
-                       "shared_groups": len({i["shared_group"] for i in items if i["shared_group"]}),
-                       "registered": sum(1 for i in items if i["reg"])},
-            # 감춘 기본 값의 수만 알린다(값·이름은 싣지 않는다, D5). 화면은 고른 프로파일의 수를 쓴다(외부 검토 OV-9)
-            "hidden": {"count": sum(hidden.values()), "by_profile": hidden, "kinds": sorted(hidden_kinds)}}
+    return {"collected_at": now.isoformat(timespec="seconds"), "items": items, "totals": _totals(items)}
+
+
+def _totals(items: list[dict]) -> dict:
+    """자격증명 합계. `/api/credentials` 가 숨긴 루트의 기본 값 행을 뺀 뒤에도 같은 식으로 다시 센다(스펙 2026-11-18-007 R9·E3).
+    `_attach_registry` 뒤에 부른다(`registered`). 기본 값·설정 값 행은 플래그가 없으므로 empty·expiring·backups·shared_groups 에 들지 않는다."""
+    return {"items": len(items), "global": sum(1 for i in items if i["scope"] == GLOBAL),
+            "profile": sum(1 for i in items if i["scope"] == PROFILE),
+            "empty": sum(1 for i in items if not i["set"] and not i.get("aas_default") and i.get("value_kind") != "setting"),
+            "expiring": sum(1 for i in items if any("만료" in f for f in i["flags"])),  # i18n-ignore: 플래그 비교
+            "backups": sum(1 for i in items if "백업·임시 파일" in i["flags"]),  # i18n-ignore: 플래그 비교
+            "shared_groups": len({i["shared_group"] for i in items if i["shared_group"]}),
+            "registered": sum(1 for i in items if i.get("reg"))}
+
+
+def without_hidden_root_defaults(d: dict) -> dict:
+    """숨긴 루트의 AAS 기본 값 행을 뺀 새 결과(R9). 받은 dict 는 `remote.memo` 가 다른 호출자와 나눠 쓰므로 고치지 않는다(E1)."""
+    kept = [i for i in d["items"] if not (i.get("profile") == "" and i.get("aas_default"))]
+    if len(kept) == len(d["items"]):
+        return d
+    return {**d, "items": kept, "totals": _totals(kept)}
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +634,9 @@ def _mcp(home) -> tuple[list[dict], list[dict]]:
 # 라이브러리
 # ---------------------------------------------------------------------------
 
+IMAGE_ENV_KEY = "Hermes 이미지"  # i18n-ignore: 등록부·판정에 쓰는 고정 키
+
+
 def _dist_infos(site: Path) -> list[dict]:
     # top_level.txt 는 묶어 읽는다. 가상 환경 폴더를 묶음에서 건너뛰면(스펙 2026-11-03-003 R2) 패키지마다 사이드카 왕복이 생겼다(R9·D14).
     # 작은 파일이라 크기를 먼저 묻지 않고(_read_many 는 파일마다 stat 한다) 바로 묶어 읽는다. 없는 파일은 빈 글(_read 와 같다)
@@ -614,14 +651,16 @@ def _dist_infos(site: Path) -> list[dict]:
     return out
 
 
-def libraries(home: Path | None = None) -> dict:
+def libraries(home: Path | None = None, image: dict | None = None) -> dict:
+    """프로파일 가상 환경·package.json 의 패키지와, `image`(image_packages.parse 결과)가 있으면 Hermes 이미지 패키지.
+    `image` 가 없거나 목록이 없으면 결과의 `image_list` 가 "unknown" 이다(스펙 2026-11-19-001 D4)."""
     home = home or hr.hermes_home()
     remote.prefetch(home)                                     # 원격이면 묶음을 먼저 받는다(OMAI-1102)
-    # 묶음 memo 에 넣지 않는다 — 서버 로컬 파일(hermes_image_packages.json)을 읽어 묶음 지문이 그 변화를 보지 못한다(스펙 2026-10-24-013 OV3)
-    return _libraries(home)
+    # 묶음 memo 에 넣지 않는다 — 이미지 목록은 데이터 폴더 밖이라 묶음 지문이 그 변화를 보지 못한다(스펙 2026-10-24-013 OV3)
+    return _libraries(home, image)
 
 
-def _libraries(home) -> dict:
+def _libraries(home, image: dict | None = None) -> dict:
     tool_items = tools(home)["items"]
     imported: dict[str, set[str]] = {}
     for t in tool_items:
@@ -633,24 +672,20 @@ def _libraries(home) -> dict:
         envs.append({"env": label, "scope": scope, "profile": profile, "kind": kind, "path": path,
                      "packages": len(packages), "note": note})
         for p in packages:
-            mods = [m.lower() for m in p.get("modules") or [p["name"].replace("-", "_").lower()]]
+            mods = [m.lower() for m in p.get("modules") or image_packages.default_modules(p["name"])]
             users = sorted({u for m in mods for u in imported.get(m, ())})
             items.append({"id": f"{key or label}:{p['name']}", "name": p["name"], "version": p.get("version", ""),
                           "env": label, "scope": scope, "profile": profile, "kind": kind,
-                          "used_by": users[:12], "used_count": len(users), "flags": [],
-                          "_missing": bool(p.get("missing"))})
+                          "used_by": users[:12], "used_count": len(users), "flags": [], "modules": mods,
+                          "image": key == IMAGE_ENV_KEY, "_missing": bool(p.get("missing"))})
 
-    snap = store.data_dir() / "hermes_image_packages.json"
-    if snap.is_file():
-        try:
-            data = json.loads(snap.read_text(encoding="utf-8"))
-            taken = data.get("taken_at", "")[:16].replace("T", " ")
-            runtime = ", ".join(data.get("runtime", []))
-            add_env(tr("Hermes 이미지 (/opt/hermes/.venv)", "Hermes image (/opt/hermes/.venv)"), GLOBAL, "", "Python",
-                    data.get("packages", []), note=tr(f"{taken} 에 떠 둔 목록 · {runtime}", f"List saved at {taken} · {runtime}"),
-                    key="Hermes 이미지 (/opt/hermes/.venv)")  # i18n-ignore: 등록부에 저장되는 키
-        except ValueError:
-            pass
+    img = image or {}
+    if img.get("packages") is not None:
+        when = img.get("taken_at", "")[:16].replace("T", " ")
+        add_env(tr(f"Hermes 이미지 ({img.get('prefix') or '/opt/hermes/.venv'})", f"Hermes image ({img.get('prefix') or '/opt/hermes/.venv'})"),
+                GLOBAL, "", "Python", img["packages"], note=tr(f"{when} 에 뜬 목록 · Python {img.get('python', '')}",
+                                                               f"List taken at {when} · Python {img.get('python', '')}"),
+                key=IMAGE_ENV_KEY)
     for prof in hr.profiles(home):
         scope, pname = (GLOBAL, "") if prof.name == "default" else (PROFILE, prof.name)
         roots = [prof.path / ".venvs", prof.path / ".venv-google", prof.path / ".hermes", prof.path / ".local",
@@ -659,7 +694,13 @@ def _libraries(home) -> dict:
             if not root.is_dir():
                 continue
             for site in root.glob("**/site-packages"):
-                if "node_modules" in site.parts or len(site.relative_to(root).parts) > 6:
+                try:
+                    depth = len(site.relative_to(root).parts)
+                except ValueError:
+                    # 2026-11-17 판보다 옛 사이드카는 심링크 폴더(home/.local -> 공유 폴더) 아래 결과를 심링크를 푼 경로로 준다.
+                    # 그대로 relative_to 하면 스킬 연결도 전체가 ValueError 로 뜨지 않는다. 깊이는 home 기준으로 따진다
+                    depth = len(site.relative_to(home).parts) - len(root.relative_to(home).parts)
+                if "node_modules" in site.parts or depth > 6:
                     continue
                 rel = str(site.relative_to(home))
                 add_env(rel.split("/lib/")[0], scope, pname, "Python", _dist_infos(site), path=rel)
@@ -689,7 +730,9 @@ def _libraries(home) -> dict:
         if i.pop("_missing"):
             i["flags"].append("설치되지 않음")  # i18n-ignore: UI 가 맞대어 보는 값
     _attach_registry("library", items)
+    known = img.get("packages") is not None
     return {"collected_at": datetime.now().astimezone().isoformat(timespec="seconds"), "envs": envs, "items": items,
+            "image_list": "known" if known else "unknown", "image_reason": "" if known else str(img.get("reason") or "not_built"),
             "totals": {"items": len(items), "envs": len(envs),
                        "global": sum(1 for i in items if i["scope"] == GLOBAL),
                        "profile": sum(1 for i in items if i["scope"] == PROFILE),

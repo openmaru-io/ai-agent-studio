@@ -8,6 +8,11 @@
             — 같은 판으로는 허브에 다시 게시되지 않아 고친 내용이 아무에게도 가지 않기 때문이다.
 
   python -m aas.market.skill_bundle lock   잠금 파일을 다시 쓴다(판을 올린 뒤).
+
+  MCP 짝 스킬 cogentai-mindwiki·cogentai-database(-reb)·cogentai-chart·docmost·outline 도 여기 둔다(OMAI-2031). 원본은 마켓 레포
+  (cogentai-aas-marketplace)였지만 그 레포는 Bitbucket 이라 CI 가 돌지 않아 main 에 합쳐도 허브에 올라가지 않았다.
+  조건  CONDITIONAL 의 패키지는 설치 값에 따라 게시·배달한다(enabled_names) — REB 설치는 database-reb 만, 아니면 database 만.
+        names() 는 묶음 전체(잠금·기본 스킬 표시).
 """
 from __future__ import annotations
 
@@ -16,6 +21,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from ..common import config
 
 PACKAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "aas_skill_packages"
 LOCK = "versions.lock.json"
@@ -29,6 +36,22 @@ class BundleError(Exception):
 
 def names(root: Path = PACKAGES_DIR) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
+
+
+# 설치 값에 따라 게시·배달하는 패키지 → (설치 값 이름, 켜졌을 때 넣는가). 부동산원 청약 통계 판은 REB 설치에만, 일반판
+# cogentai-database 는 REB 가 아닌 설치에만 넣는다 — 카탈로그(mcp_servers.simple_builtins)도 둘 중 하나만 보인다
+# (사용자 결정 2026-11-16·2026-11-17). 값을 읽는 규칙은 aas/ops/mcp_servers.py reb_enabled 와 같다
+CONDITIONAL = {"cogentai-database-reb": ("AAS_COGENTAI_DATABASE_REB_ENABLED", True),
+               "cogentai-database": ("AAS_COGENTAI_DATABASE_REB_ENABLED", False)}
+
+
+def _on(key: str) -> bool:
+    return config.get(key, "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def enabled_names(root: Path = PACKAGES_DIR) -> list[str]:
+    """이 설치에서 게시·배달할 묶음 패키지."""
+    return [n for n in names(root) if n not in CONDITIONAL or _on(CONDITIONAL[n][0]) == CONDITIONAL[n][1]]
 
 
 def front(name: str, root: Path = PACKAGES_DIR) -> dict[str, str]:

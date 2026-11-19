@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS market_update_pending (
   origin TEXT NOT NULL DEFAULT 'manual', by TEXT, ts TEXT, PRIMARY KEY (pod, profile, package));
 CREATE TABLE IF NOT EXISTS market_update_auto (
   pod TEXT NOT NULL, profile TEXT NOT NULL, package TEXT NOT NULL, version TEXT NOT NULL, request TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'queued', message TEXT NOT NULL DEFAULT '', ts TEXT, PRIMARY KEY (pod, profile, package, version));
+  status TEXT NOT NULL DEFAULT 'queued', message TEXT NOT NULL DEFAULT '', ts TEXT, code TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pod, profile, package, version));
 """
 AUTO_KEY = "market_auto_upgrade"               # meta 표의 관리자 설정. 저장한 적 없으면 켬(스펙 2026-10-29-001 R7, 처음엔 기본 꺼짐 R2)
 AUTO_EPOCH = "market_auto"                     # 켜짐을 바꾸면 다른 서버의 기억도 버린다(cache_epoch, 스펙 2026-10-26-002 §9-12)
@@ -49,9 +50,19 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+_MIGRATED: set = set()
+HANGUL = re.compile(r"[\uac00-\ud7a3]")
+
+
 def _conn():
     conn = store.connect()
     conn.executescript(SCHEMA)
+    key = (db.backend(), os.environ.get("AAS_DATA_DIR", ""), os.environ.get("AAS_DB_SCHEMA", ""))
+    if key not in _MIGRATED:
+        # code: 실패 원인의 종류(needs_choice 등). 저장된 message 는 한국어라 영어 화면이 문장을 고르는 데 쓴다(스펙 2026-11-19-004 §2)
+        if "code" not in db.columns(conn, "market_update_auto"):
+            db.add_column(conn, "market_update_auto", "code TEXT NOT NULL DEFAULT ''")
+        _MIGRATED.add(key)
     return conn
 
 
@@ -93,7 +104,7 @@ def scan(pod_id: str, home, cat: list[dict], records: list[dict] | None = None, 
     """이 작업공간에서 허브 판이 지금 판보다 높은 줄. cat = marketplace.catalog() 결과, records = marketplace.installed(pod_id).
     granted = 허용받은 네임스페이스(허용이 필요한 곳), skips = {(프로파일, 패키지): 건너뛴 판}. 읽지 못하면(사이드카) 예외를 그대로 올린다."""
     records = marketplace.installed(pod_id) if records is None else records
-    granted = {g["namespace"] for g in marketplace.grants() if g["pod"] == pod_id} if granted is None else granted
+    granted = marketplace.granted_namespaces(pod_id) if granted is None else granted   # 전체 허용('*') 포함(스펙 2026-11-18-015 X1)
     skips = skipped(pod_id) if skips is None else skips
     by_id = {p["id"]: p for p in cat}
     by_name: dict[str, list[dict]] = {}
@@ -406,13 +417,19 @@ def _settle(pod_id: str, waiting: list[dict]) -> None:
         for w in waiting:
             r = done.get(w["request"])
             if r is not None:
-                conn.execute("UPDATE market_update_auto SET status=?, message=?, ts=? WHERE pod=? AND profile=? AND package=? AND version=?",
-                             (r["status"], str(r.get("message") or "")[:300], _now(), pod_id, w["profile"], w["package"], w["version"]))
+                needs = r.get("needs") if isinstance(r.get("needs"), dict) else None
+                if needs:                                     # 고친 스킬이 있어 멈췄다 — 문장은 화면 언어로 만들고 경로만 남긴다
+                    code = "needs_choice"
+                    message = ", ".join(str(x) for k in ("modified", "occupied") for x in (needs.get(k) or []))
+                else:
+                    code, message = str(r.get("code") or ""), str(r.get("message") or "")
+                conn.execute("UPDATE market_update_auto SET status=?, message=?, code=?, ts=? WHERE pod=? AND profile=? AND package=? AND version=?",
+                             (r["status"], message[:300], code[:60], _now(), pod_id, w["profile"], w["package"], w["version"]))
 
 
 def auto_rows(pod_id: str) -> list[dict]:
     with _conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT profile, package, version, request, status, message, ts FROM market_update_auto WHERE pod=?", (pod_id,))]
+        return [dict(r) for r in conn.execute("SELECT profile, package, version, request, status, message, code, ts FROM market_update_auto WHERE pod=?", (pod_id,))]
 
 
 def affected(rows: list[dict]) -> int:
@@ -421,16 +438,28 @@ def affected(rows: list[dict]) -> int:
     return len({(r["pod"], r["profile"]) for r in alerts(rows) if r["package"] in defaults and r["kind"] == "skill"})
 
 
+def cause(code: str, message: str) -> str:
+    """자동 올리기 실패 원인 한 줄. 요청 기록의 문장은 한국어로 저장되므로(배달기) 영어 화면에는 코드로 문장을 만들거나 요청 기록을 가리킨다."""
+    if code == "needs_choice":
+        return tr(f"내가 고쳤거나 직접 만든 스킬이 있습니다: {message} — 스킬 허브에서 지키거나 덮을지 고르세요",
+                  f"There are skills you changed or made yourself: {message}. Choose to keep or overwrite them in the Skill hub")
+    if not message:
+        return tr("원인 모름", "unknown cause")
+    if HANGUL.search(message):
+        return tr(message, "See the request log in the Skill hub for the cause")
+    return message
+
+
 def auto_issues(pod_id: str, profile: str) -> list[dict]:
     """「확인할 것」 항목: 자동 올리기 실패(bad, 사람이 올리거나 다음 버전까지) · 저절로 올렸다는 안내(info, 7일 또는 사람이 확인할 때까지)."""
     since = (datetime.now().astimezone() - timedelta(days=NOTICE_DAYS)).isoformat(timespec="seconds")
     with _conn() as conn:
-        rows = [dict(r) for r in conn.execute("SELECT package, version, status, message, ts FROM market_update_auto WHERE pod=? AND profile=? ORDER BY ts",
+        rows = [dict(r) for r in conn.execute("SELECT package, version, status, message, code, ts FROM market_update_auto WHERE pod=? AND profile=? ORDER BY ts",
                                               (pod_id, profile))]
     out = []
     for r in rows:
         name = r["package"].split("/", 1)[-1]
-        why = r["message"] or tr("원인 모름", "unknown cause")
+        why = cause(r.get("code") or "", r["message"] or "")
         if r["status"] == "failed":
             out.append({"code": "market_auto_failed", "level": "bad", "package": r["package"], "version": r["version"],
                         "text": tr(f"{name} 스킬을 v{r['version']} 로 자동 업그레이드 하지 못했습니다. 스킬 허브에서 직접 업그레이드 하세요: {why}", f"Could not upgrade the {name} skill to v{r['version']} automatically: {why}")})

@@ -49,11 +49,8 @@ SNAPSHOT_WAIT = 10.0                                          # 턴 앞뒤 작�
 CHIP_NOTE = "files"                                           # 에이전트 결과 파일 행의 kind
 ROOT = attach_notice.ROOT                                      # 에이전트 파드의 데이터 폴더(/opt/data)
 GUARD_KIND = "guard_blocked"                                  # 가드레일이 막은 답 행의 kind(스펙 2026-10-20-026 R6·R6b)
-# 차단 답을 알아보는 구절. 출처는 openmaru-cogentai docker/litellm-plugins/aas_guardrail_hook.py 의 BLOCKED_NOTICE
-# (「🚫 죄송합니다. 입력하신 내용이 정책에 위반되어 처리할 수 없습니다.」). 문장 앞부분·이모지가 바뀌어도 알아보도록 핵심 구절만 보고,
-# 정책을 설명하는 긴 답을 잘못 보지 않도록 GUARD_MAX 자 이하일 때만 차단으로 본다(R6). 화면(MeetingRoom.tsx)도 같은 값을 쓴다
-GUARD_PHRASE = "정책에 위반되어 처리할 수 없습니다"  # i18n-ignore: 훅 차단 안내를 알아보는 구절(비교용)
-GUARD_MAX = 80
+# 차단 답을 알아보는 구절과 길이 한도는 aas/market/tags.py 의 GUARD_PHRASE·GUARD_MAX 에 둔다(답 저장 채우기와 함께 쓴다).
+# 화면(MeetingRoom.tsx)도 같은 값을 쓴다(R6)
 
 
 def rooms_dir(room_id: int) -> str:
@@ -62,8 +59,8 @@ def rooms_dir(room_id: int) -> str:
 
 
 def is_guard_blocked(answer: str) -> bool:
-    text = (answer or "").strip()
-    return 0 < len(text) <= GUARD_MAX and GUARD_PHRASE in text
+    from ..market import tags
+    return tags.guardrail_reply(answer)
 LOST_KIND = "reply_lost"                                      # 서버가 다시 시작돼 답을 받지 못한 행의 kind(스펙 2026-10-20-030 R8). 화면은 호박색 줄과 「다시 묻기」
 LAST_EVERY = 2.0                                              # 답 글이 조금씩 올 때 마지막 말 시각을 공유 DB 에 쓰는 최소 간격(초)
 ALIVE = 30.0                                                  # 서버 신호가 이만큼 끊기면 그 서버의 답 기다림을 믿지 않는다(shared.ALIVE 와 같다)

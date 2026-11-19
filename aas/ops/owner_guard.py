@@ -5,7 +5,7 @@
 파드 안 파일을 직접 고치는 것은 막지 못한다(R3, 모델·가드레일의 경계는 LiteLLM 가상 키다).
 
   비밀값(D3)   카탈로그 범주 tool·skill 과 카탈로그에 없는 이름만. provider·setting·messaging 범주, 동작·접속 변수 이름은 거절. 카탈로그를 읽지 못하면 거절.
-  채널(D2·R2)  저장·삭제할 수 있는 변수는 `{채널}_BOT_TOKEN`·`SLACK_APP_TOKEN`·`{채널}_ALLOWED_USERS`(실제 사용자 ID 만) 뿐.
+  채널(D2·R2)  저장·삭제할 수 있는 변수는 `{채널}_BOT_TOKEN`·`SLACK_APP_TOKEN`·`{채널}_ALLOWED_USERS`(실제 사용자 ID 만)·`{채널}_HOME_CHANNEL`(팀 공지 대화방 id, 2026-11-17-008 §6-4) 뿐.
                `*`·빈 항목은 열린 봇이 되므로 거절하고, 그 밖의 인가 변수(`*_ALLOW*`·`GATEWAY_*`·`*_ROLES`·`*_DM_POLICY` 등)도 거절.
   숨긴 루트(R5) 루트 default 가 숨겨진 POD 에서는 주인의 모든 동작이 거절된다.
   설정 파일(D4)  저장하려는 글을 파싱한 값으로 「잠글 키」가 지금 값과 같은지 비교한다(주석·순서는 상관없고 YAML 앵커도 풀린 값으로 본다):
@@ -31,8 +31,8 @@ _BLOCKED_PREFIX = ("HERMES_", "GATEWAY_", "TERMINAL_", "AAS_", "LITELLM_", "PYTH
 _BLOCKED_EXACT = frozenset({"PATH", "HOME", "SHELL", "USER", "LANG", "TZ"})
 _BLOCKED_SUFFIX = ("_BASE_URL", "_PROXY", "_ENDPOINT")
 _BLOCKED_CATEGORY = frozenset({"provider", "setting", "messaging"})
-_USER_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,80}$")
-_SERVER_URL = re.compile(r"^https?://[^\s@/?#]+(?::\d{1,5})?(?:/[^\s@?#]*)?$")      # 메신저 서버 주소(Mattermost). 계정·공백·질의 문자열 없이
+_USER_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,80}\Z")
+_SERVER_URL = re.compile(r"^https?://[^\s@/?#]+(?::\d{1,5})?(?:/[^\s@?#]*)?\Z")      # 메신저 서버 주소(Mattermost). 계정·공백·질의 문자열 없이
 
 
 def root_error(pod_id: str, profile: str) -> str:
@@ -65,13 +65,17 @@ def env_key_error(key: str, catalog: dict[str, str] | None) -> str:
     return env_key_check(key, catalog)[1]
 
 
+_HOME_CHANNEL = {"telegram": re.compile(r"^-?\d{3,20}\Z"), "slack": re.compile(r"^[CG][A-Z0-9]{6,20}\Z"),
+                 "discord": re.compile(r"^\d{6,22}\Z"), "mattermost": re.compile(r"^[a-z0-9]{20,32}\Z")}   # 팀 공지 대화방(그룹·채널) id 형식
+
+
 def _allowed_names(platform: str) -> set[str]:
     p = platform.upper()
-    names = {f"{p}_BOT_TOKEN", f"{p}_ALLOWED_USERS"}
+    names = {f"{p}_BOT_TOKEN", f"{p}_ALLOWED_USERS", f"{p}_HOME_CHANNEL"}   # 홈 채널 = 팀 공지 대화방(스펙 2026-11-17-008 §6-4)
     if platform == "slack":
         names.add("SLACK_APP_TOKEN")
     if platform == "mattermost":                       # Mattermost 는 봇 토큰 이름이 다르고 서버 주소가 필수다(Hermes plugins/platforms/mattermost, 스펙 2026-10-19-008 D2)
-        names = {"MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"}
+        names = {"MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS", "MATTERMOST_HOME_CHANNEL"}
     return names
 
 
@@ -79,6 +83,9 @@ def channel_env_check(platform: str, key: str, value: str) -> tuple[str, str]:
     """주인이 채널 탭에서 저장하는 변수 한 개의 검사. (사유 코드, 문장). 코드: auth_var_blocked·allow_list_invalid·url_invalid."""
     if platform not in CHANNELS or key not in _allowed_names(platform):
         return "auth_var_blocked", tr(f"{key} 는 소유자가 바꿀 수 없는 변수입니다. 봇 토큰과 허용 사용자만 바꿀 수 있습니다.", f"{key} cannot be changed by the owner. Only the bot token and allowed users can be changed.")
+    if key.endswith("_HOME_CHANNEL") and not _HOME_CHANNEL[platform].match(value.strip()):
+        return "home_channel_invalid", tr("팀 공지 대화방 id 형식이 맞지 않습니다. 그룹·채널에서 /sethome 을 보내면 봇이 직접 정합니다.",
+                                          "The team notice chat id format is wrong. Send /sethome in the group or channel and the bot sets it itself.")
     if key.endswith("_URL") and not _SERVER_URL.match(value.strip()):
         return "url_invalid", tr("서버 주소는 http:// 또는 https:// 로 시작하는 주소만 적습니다. 계정(@)이나 공백은 넣을 수 없습니다.",
                                  "Enter a server address starting with http:// or https://, without an account (@) or spaces.")

@@ -154,8 +154,15 @@ def run_task(pod, kind: str, profile: str, source: str, backup: str, who: str, w
 
 
 def _restart(pod, profile: str) -> None:
+    """가져오기 끝의 다시 시작. 다시 시작 잠금을 지나고, 성공하면 다시 시작 필요 기록을 지운다(스펙 2026-11-18-016 4-3).
+    profile 은 Hermes 이름(루트는 None)이다."""
+    from ..ops import restart_pending
     path, query = profiles.gateway_request("restart", profile, shared=profiles.gateway_shared(in_k8s=bool(pod.sidecar_url), profile=profile))
-    _api(pod).call("POST", path, {}, query or None)
+    asked = time.time()
+    with restart_pending.restart_gate(pod.id, step=40.0):
+        _api(pod).call("POST", path, {}, query or None)
+        restart_pending.clear(pod.id, None if pod.sidecar_url else [profile or primary.ROOT], before=asked)
+        restart_pending.forget_starts(pod.id)
 
 
 def _env_listing(pod, profile: str):

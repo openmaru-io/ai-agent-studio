@@ -7,6 +7,8 @@
 // 서버는 이유를 코드로만 보내고 문구는 여기서 번역 키로 바꾼다(재검토 O-7). 화면과 네트워크 말고는 기대지 않는다.
 import { getLang, t } from '@/i18n';
 
+import { aasUrl, apiConfig, apiFetch, apiUrl } from './api';
+
 export const MAX_FILES = 10; // 한 메시지에 붙이는 파일 수(D7)
 export const MAX_SIZE = 100 * 1024 * 1024; // 한 파일 상한(D8, 단계 0 의 Ingress 실측이 더 작으면 그 값으로)
 export const PARALLEL = 2; // 화면이 동시에 올리는 수(D7)
@@ -108,7 +110,7 @@ export const fileUrl = (pod: string, path: string) =>
 /** 받기 전에 확인한다(R16). 되면 '', 아니면 이유 코드. */
 export async function checkDownload(pod: string, path: string): Promise<string> {
   try {
-    const r = await fetch(fileUrl(pod, path), { method: 'HEAD', headers: { 'X-AAS': '1', 'Accept-Language': getLang() } });
+    const r = await apiFetch(fileUrl(pod, path), { method: 'HEAD', headers: { 'X-AAS': '1', 'Accept-Language': getLang() } });
     return r.ok ? '' : r.headers.get('X-AAS-Code') || 'unknown';
   } catch {
     return 'agent_unreachable';
@@ -117,6 +119,11 @@ export async function checkDownload(pod: string, path: string): Promise<string> 
 
 /** 확인이 되면 브라우저가 디스크로 받게 한다(메모리에 올리지 않는다, R11). */
 export async function download(pod: string, path: string, name: string): Promise<string> {
+  // 다른 사이트에 붙은 위젯: <a href> 는 Bearer 를 실을 수 없어 AAS 새 탭으로 연다(그 탭은 AAS 로그인 쿠키를 쓴다, OMAI-1873)
+  if (apiConfig().embed) {
+    window.open(aasUrl(fileUrl(pod, path)), '_blank', 'noopener');
+    return '';
+  }
   const code = await checkDownload(pod, path);
   if (code) return code;
   const a = document.createElement('a');
@@ -129,7 +136,9 @@ export async function download(pod: string, path: string, name: string): Promise
 }
 
 export async function listFiles(pod: string): Promise<Listing> {
-  const r = await fetch(`/api/chat/files/list?pod=${encodeURIComponent(pod)}`, { headers: { 'Accept-Language': getLang() } });
+  // 다른 사이트에 붙은 위젯은 파일 기능을 끈다. 목록을 부르면 서버가 403 으로 거절해 콘솔에 오류만 남았다(OMAI-1873, OKE 확인)
+  if (apiConfig().embed) return { entries: [], truncated: false, used: null, quota: 0 };
+  const r = await apiFetch(`/api/chat/files/list?pod=${encodeURIComponent(pod)}`, { headers: { 'Accept-Language': getLang() } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(reasonText((body as { code?: string }).code));
   return body as Listing;
@@ -138,7 +147,7 @@ export async function listFiles(pod: string): Promise<Listing> {
 /** 파일(또는 recursive 면 폴더 통째로, 스펙 2026-10-28-002)을 지운다. 성공이면 '', 실패면 이유 코드 */
 export async function deleteFile(pod: string, path: string, recursive = false): Promise<string> {
   try {
-    const r = await fetch(fileUrl(pod, path) + (recursive ? '&recursive=1' : ''), { method: 'DELETE', headers: { 'X-AAS': '1', 'Accept-Language': getLang() } });
+    const r = await apiFetch(fileUrl(pod, path) + (recursive ? '&recursive=1' : ''), { method: 'DELETE', headers: { 'X-AAS': '1', 'Accept-Language': getLang() } });
     if (r.ok) return '';
     return ((await r.json().catch(() => ({}))) as { code?: string }).code || 'unknown';
   } catch {
@@ -154,7 +163,9 @@ export function sendUpload(pod: string, u: Upload, onChange: () => void): Promis
     u.state = 'up';
     u.pct = 0;
     onChange();
-    xhr.open('PUT', `/api/chat/files?pod=${encodeURIComponent(pod)}&name=${encodeURIComponent(u.name)}`);
+    xhr.open('PUT', apiUrl(`/api/chat/files?pod=${encodeURIComponent(pod)}&name=${encodeURIComponent(u.name)}`));
+    const auth = apiConfig().authHeader?.();
+    if (auth) xhr.setRequestHeader('Authorization', auth);
     xhr.setRequestHeader('X-AAS', '1');
     xhr.setRequestHeader('Accept-Language', getLang());
     xhr.upload.onprogress = (e) => {

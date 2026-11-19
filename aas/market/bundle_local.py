@@ -99,7 +99,7 @@ def install(pods: list, profiles_of, reader_of, writer_of) -> list[str]:
     for pod in pods:
         read, write = reader_of(pod), writer_of(pod)
         for profile in [p for p in profiles_of(pod) if p != "default"]:
-            for name in skill_bundle.names():
+            for name in skill_bundle.enabled_names():
                 version = skill_bundle.front(name)["version"]
                 base = f"profiles/{profile}/skills/market/{name}"
                 row = record(pod.id, profile, name)

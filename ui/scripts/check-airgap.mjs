@@ -66,7 +66,12 @@ export const XLSX_HOSTS = ['schemas.openxmlformats.org', 'schemas.microsoft.com'
 //    github.com), SVG 메타데이터 네임스페이스(purl.org), 스키마 주소(json-schema.org·nsteffel.github.io). 얼굴은 문자열로 만들어 접속하지 않는다
 export const AVATAR_BUNDLE = /(^|[\\/])vendor-avatar-[^\\/]*\.js$/;
 export const AVATAR_HOSTS = ['www.figma.com', 'www.dicebear.com', 'creativecommons.org', 'github.com', 'purl.org', 'json-schema.org', 'nsteffel.github.io'];
+//  - aas-widget.js(다른 사이트에 붙는 채팅 위젯, OMAI-1873): 파일 하나라 위 묶음들(Markdown·다이어그램·차트·MUI)의 문자열이 한 파일에 모인다.
+//    그 호스트에 더해 localhost 는 react-router MemoryRouter 가 주소를 풀 때 쓰는 가짜 기준 주소(new URL(x, "http://localhost"))다. 접속하지 않는다
+export const WIDGET_BUNDLE = /(^|[\\/])aas-widget\.js$/;
+export const WIDGET_HOSTS = [...new Set([...MARKDOWN_HOSTS, ...MERMAID_HOSTS, ...ECHARTS_HOSTS, ...MUI_HOSTS, 'localhost'])];
 const BUNDLE_HOSTS = [
+  [WIDGET_BUNDLE, WIDGET_HOSTS],
   [THREE_BUNDLE, THREE_HOSTS],
   [MONACO_BUNDLE, MONACO_HOSTS],
   [MARKDOWN_BUNDLE, MARKDOWN_HOSTS],

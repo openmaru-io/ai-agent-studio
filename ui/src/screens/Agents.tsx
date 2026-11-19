@@ -43,7 +43,8 @@ import { useTopic } from '@/lib/ws';
 
 import { capacityAvailable, capacityCard, CapacityData, CapacityPanel, DefaultSizePanel, ownerSizeChanges, SizeDialog, SizeForm, sizeKv, sizeShort, useCapacity, useSizes } from './agents/capacity';
 import { OomAlert, type OomNotice, OomPill } from './agents/oom';
-import { dismissedRollouts, dismissRollout, rolloutBanner, RolloutData, RolloutDetail, RolloutInfo, RolloutLive, RolloutStartForm, shortDigest, useRolloutActions, VersionCell, VersionFields } from './agents/rollout';
+import { deletedDigests, dismissedRollouts, dismissRollout, RegistryDetail, rolloutBanner, RolloutData, RolloutDetail, RolloutInfo, RolloutLive, RolloutStartForm, shortDigest, useRolloutActions, VersionCell, VersionFields } from './agents/rollout';
+import { SharePanel } from './agents/share';
 
 interface AgentRow extends VersionFields {
   name: string;
@@ -72,6 +73,8 @@ interface AgentRow extends VersionFields {
   busy?: boolean;
   /** 이 사람이 닫지 않은 메모리 초과 안내(서버 agents.oom_notice, 스펙 2026-11-06-005 D3·D8) */
   oom?: OomNotice | null;
+  /** 공유받은 작업공간이면 내 권한(use·edit). 소유자 동작(수정·지우기)을 그리지 않는다(스펙 2026-11-17-008 §3-4) */
+  shared_role?: string;
 }
 interface AgentsData extends RolloutData {
   enabled: boolean;
@@ -585,7 +588,8 @@ function AgentDetail({ x, d, focus }: { x: AgentRow; d: AgentsData; focus?: 'siz
             : []),
         ]}
       />
-      <AgentActions x={x} admin={!!d.admin} />
+      {!x.shared_role && <AgentActions x={x} admin={!!d.admin} />}
+      <SharePanel pod={x.name} />
       {d.admin && (
         // 「이 사람의 설정」: 개수 한도와 크기 다섯 칸(1A). 주인을 지운 작업공간은 사람이 없어 크기를 두지 않는다
         <Section title={t('agents.ownerLimit')}>
@@ -679,6 +683,7 @@ export function Agents() {
                 {t('agents.mineBadge')}
               </Pill>
             )}
+            {x.shared_role && <Pill>{t('agents.share.sharedBadge')}</Pill>}
           </>
         ),
       };
@@ -776,8 +781,9 @@ export function Agents() {
   const r = d.rollout ?? null;
   const label = (n: string) => labelOf[n] ?? n;
   const startAgents = d.agents.map((a) => ({ name: a.name, label: label(a.name), suspended: a.suspended, pinned: a.pinned, image_digest: a.image_digest }));
+  const deleted = deletedDigests(d);
   const openStart = (prefill?: Partial<RolloutInfo>) =>
-    openDrawer({ title: t('rollout.start'), sub: t('rollout.form.sub'), body: <RolloutStartForm agents={startAgents} target={d.target} prefill={prefill} /> });
+    openDrawer({ title: t('rollout.start'), sub: t('rollout.form.sub'), body: <RolloutStartForm agents={startAgents} target={d.target} prefill={prefill} deleted={deleted} /> });
   const readError = !!d.admin && !!q.error;
   const banner = d.admin
     ? rolloutBanner(d, {
@@ -799,6 +805,9 @@ export function Agents() {
           },
           start: () => openStart(),
           reload: () => void q.refetch(),
+          // 지워진 이미지(스펙 2026-11-17-001 §4-3): 자세히는 표, 새로 만들기는 지워진 칸을 비운 서랍
+          registryDetail: () => d.registry && openDrawer({ title: t('rollout.registry.title'), body: <RegistryDetail reg={d.registry} /> }),
+          fixAndCreate: () => openStart(r?.reason === 'ImageMissing' ? r : (d.target ? { image: d.target.image, sidecar_image: d.target.sidecar_image } : undefined)),
         },
       })
     : null;
@@ -851,7 +860,7 @@ export function Agents() {
 
   return (
     <>
-    {d.admin && <RolloutLive r={r} />}
+    {d.admin && <RolloutLive r={r} registry={d.registry} />}
     <ListView<AgentRow>
       guide="agents.list"
       title={t('views.agents.label')}

@@ -1,0 +1,8 @@
+# Copyright 2026 The OPENMARU Authors.
+name: cogentai-reb-route
+version: "0.2.0"
+description: "부동산 질문이면 사용자 메시지 바로 뒤에 「먼저 청약 통계 도구에 질문 원문을 넘긴다」는 안내를 붙인다. AAS 가 cogentai-database-reb 를 설치할 때 함께 넣고, 지우면 함께 지운다. 후보 clarify 에 덧붙은 선택지 없는 질문은 뺀다. (OMAI-1850)"
+author: "OPENMARU"
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call

@@ -12,13 +12,18 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from aas.market import skill_bundle
 
 ROOT = skill_bundle.PACKAGES_DIR
 # aas-help 는 화면 빌드(ui/src/lib/helpSkill.ts)가 만든다(스펙 2026-10-29-001 §10-9)
-NAMES = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "korean-business-writing", "markdown-to-doc", "ocr-to-markdown")
+ORIGINAL = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "korean-business-writing", "markdown-to-doc", "ocr-to-markdown")
+# 마켓 레포(cogentai-aas-marketplace packages/free)에서 옮긴 MCP 짝 스킬(OMAI-2031). 마켓 레포는 Bitbucket 이라 CI 가 돌지 않아
+# main 에 합쳐도 허브에 올라가지 않았다 — 서버 이미지에 실어 기본 스킬처럼 게시·배달한다. 설명은 옮기기 전 그대로(판을 올리지 않음)
+MOVED = ("cogentai-chart", "cogentai-database", "cogentai-database-reb", "cogentai-mindwiki", "docmost", "outline")
+NAMES = tuple(sorted(ORIGINAL + MOVED))
 # Hermes 가 함께 싣는 스킬 이름 — 같은 이름이면 프로파일에서 어느 쪽이 쓰일지 모른다(옛 이미지 빌드 확인 줄의 이름 겹침 검사)
 HERMES_BUNDLED = {"docx", "pdf", "xlsx", "powerpoint", "pptx"}
 NO_OPENPYXL = "import sys\nclass B:\n    def find_spec(self, name, *a):\n        if name.split('.')[0] == 'openpyxl':\n            raise ImportError('no openpyxl')\nsys.meta_path.insert(0, B())\n"
@@ -34,16 +39,31 @@ def _run(script: Path, *args, env=None, block_openpyxl=False, cwd=None):
 
 
 class PackagesTest(unittest.TestCase):
-    def test_exactly_the_seven_packages_with_matching_name_and_version(self):
+    def test_exactly_the_bundled_packages_with_matching_name_and_version(self):
         self.assertEqual(tuple(skill_bundle.names()), NAMES)
         for name in NAMES:
             front = skill_bundle.front(name)
             self.assertEqual(front["name"], name)
             self.assertRegex(front["version"], r"^\d+\.\d+\.\d+$")
             self.assertRegex(front["description"], "[가-힣]")
+            self.assertNotIn(name, HERMES_BUNDLED)
+        for name in ORIGINAL:                                    # 처음 일곱은 한/영 설명·400자 규칙을 지킨다
+            front = skill_bundle.front(name)
             self.assertRegex(front["description"], " / [A-Z]")
             self.assertLessEqual(len(front["description"]), 400)
-            self.assertNotIn(name, HERMES_BUNDLED)
+
+    def test_reb_package_only_when_the_reb_setting_is_on(self):
+        # 부동산원 청약 통계 판은 설치 값 AAS_COGENTAI_DATABASE_REB_ENABLED 를 켠 설치에만, 일반판은 끈 설치에만 게시·배달한다
+        with mock.patch.dict(os.environ, {"AAS_COGENTAI_DATABASE_REB_ENABLED": ""}):
+            off = skill_bundle.enabled_names()
+        with mock.patch.dict(os.environ, {"AAS_COGENTAI_DATABASE_REB_ENABLED": "true"}):
+            on = skill_bundle.enabled_names()
+        self.assertNotIn("cogentai-database-reb", off)
+        self.assertIn("cogentai-database", off)
+        # REB 설치는 일반판을 숨긴다 — 카탈로그(mcp_servers.simple_builtins)도 둘 중 하나만 보인다(사용자 지적 2026-11-17)
+        self.assertNotIn("cogentai-database", on)
+        self.assertEqual(sorted(set(on) ^ set(off)), ["cogentai-database", "cogentai-database-reb"])
+        self.assertEqual(sorted(set(on) & set(off)), sorted(set(NAMES) - {"cogentai-database", "cogentai-database-reb"}))
 
     def test_writing_skill_is_picked_from_the_first_60_characters(self):
         # Hermes 는 시스템 프롬프트의 스킬 목록에 description 을 60자(57자 + "...")만 넣는다

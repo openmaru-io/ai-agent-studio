@@ -187,6 +187,10 @@ def cascade(pod_id: str) -> dict[str, int]:
             counts["cards"] = conn.execute("DELETE FROM office_cards WHERE pod=?", (pod_id,)).rowcount
         if "market_grants" in have:
             counts["market"] = conn.execute("DELETE FROM market_grants WHERE pod=?", (pod_id,)).rowcount
+        if "restart_pending" in have:                                 # 게이트웨이 다시 시작 필요 기록(스펙 2026-11-18-016 4-3)
+            counts["restart_pending"] = conn.execute("DELETE FROM restart_pending WHERE pod=?", (pod_id,)).rowcount
+            conn.execute("DELETE FROM restart_lock WHERE pod=?", (pod_id,))
+            conn.execute("DELETE FROM meta WHERE key=?", ("messenger_restart:" + pod_id,))
         if "access_grants" in have:
             n = 0
             for r in conn.execute("SELECT email, pods FROM access_grants").fetchall():

@@ -30,7 +30,18 @@ export interface InboxItem {
     | 'connection'
     | 'workspace_oom'
     | 'size_failed'
-    | 'blocked_route';
+    | 'blocked_route'
+    | 'workspace_shared'
+    | 'messenger_linked';
+  /** messenger_linked(§5-2): 연결한 사람·메신저 계정 이름·메신저 */
+  member_name?: string;
+  user_name?: string;
+  platform?: string;
+  /** 승인·되묻기를 메신저 DM 으로도 보냈다(스펙 2026-11-17-008 §6-2) */
+  messenger?: boolean;
+  /** workspace_shared(스펙 2026-11-17-008 §3-4): 공유한 사람 이름과 받은 권한(use·edit) */
+  owner_name?: string;
+  role?: string;
   /** workspace_oom·size_failed·workspace_size(스펙 2026-11-06-005 O2): 메모리 초과 때 한도, 결과의 이전·새 메모리(바이트). 작업공간은 pod */
   limit_memory?: string;
   /** blocked_route(OMAI-1857 D10): 막힌 주소(host:port)와 그 주소로 부르는 모델 */

@@ -5,6 +5,7 @@
 
 // 마켓: 따로 설치된 SkillHub 의 패키지를 골라 프로파일에 설치한다.
 // 스킬 패키지는 있는 프로파일에 얹고, 에이전트 패키지는 그 스킬만 있는 프로파일에 넣거나 이미 만든 프로파일을 올린다. 설치는 요청으로 남고 서버의 배달기와 오퍼레이터가 처리한다.
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import BadgeOutlinedIcon from '@mui/icons-material/BadgeOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
@@ -12,10 +13,11 @@ import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import RestoreFromTrashOutlinedIcon from '@mui/icons-material/RestoreFromTrashOutlined';
+import UpgradeIcon from '@mui/icons-material/Upgrade';
 import { Alert, Box, Button, Checkbox, CircularProgress, FormControlLabel, NativeSelect, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { SnackbarKey, useSnackbar } from 'notistack';
-import { MouseEvent, ReactNode, useState } from 'react';
+import { MouseEvent, ReactNode, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { AddIconButton } from '@/components/AddIconButton';
@@ -28,9 +30,11 @@ import { DescTranslation } from '@/components/DescTranslation';
 import { DrawerAction, DrawerActions } from '@/components/DrawerActions';
 import { ListView, tabOf, Tone } from '@/components/ListView';
 import { Markdown } from '@/components/Markdown';
-import { TagBar, tagCounts, tagLabel, tagMatches } from '@/components/TagBar';
+import { TagBar, tagCounts, tagLabel, tagMatches, toggleTag } from '@/components/TagBar';
 import { tier1, tier2 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
+import { type PodLabel, whoseOf, whoseProfile, WhoseTag } from '@/components/WhoseTag';
+import { RequestAdminButton } from '@/features/requests/RequestAdminButton';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
 import { useAgents, useMe } from '@/lib/data';
@@ -38,6 +42,8 @@ import { fmtTs, profileName } from '@/lib/format';
 import { useNameOfEmail } from '@/lib/people';
 import { useTopic } from '@/lib/ws';
 import { HiddenBody, HiddenRow, HubPublishDrawer, useHubPackageActions } from '@/screens/market/HubPublish';
+import { useGrantsTab } from '@/screens/market/NamespaceGrants';
+import { type WorkPrefix, WorkPrefixesButton } from '@/screens/market/WorkPrefixes';
 
 import { batchPlan, needsChoice, oneConfirm, progressOf, reasonOf, rowKey, selectable, shownRows, stateOf, UpdData, UpdRow } from './marketUpdates';
 import { DeleteBody } from './profiles/DeleteProfile';
@@ -101,7 +107,8 @@ interface Req {
   /** 덮기 전에 남긴 백업(AAS 서버, 30일) */
   backup?: string;
 }
-interface MarketData {
+/** pod·name·owner_name: 이 설치 기록이 누구의 작업공간 것인지(OMAI-2086). 옛 서버는 보내지 않는다 */
+interface MarketData extends PodLabel {
   configured: boolean;
   error?: string;
   admin: boolean;
@@ -114,8 +121,12 @@ interface MarketData {
   requests: Req[];
   /** slug → 화면에 보일 네임스페이스 이름(free → shared). 옛 서버는 보내지 않는다 → slug 를 보인다 */
   namespace_labels?: Record<string, string>;
+  /** 스킬 이름 접두어 → 업무(관리자 설정, 스펙 2026-11-17-003). 옛 서버는 보내지 않는다 */
+  work_prefixes?: WorkPrefix[];
 }
 /** 설치·지우기 단추를 쓸 수 있는가. 허용이 필요한 네임스페이스의 허용 단추는 계속 admin 만 본다 */
+/** 작업공간 단위 관리자 요청의 프로파일 자리표시(서버 admin_requests.WORKSPACE) */
+const WORKSPACE_REQUEST = '_workspace';
 export const canInstall = (m: Pick<MarketData, 'admin' | 'can_install'>) => m.can_install ?? m.admin;
 
 interface PkgDetail {
@@ -129,6 +140,8 @@ interface PkgDetail {
   version: string;
   versions: { version: string }[];
   allowed: boolean;
+  /** 허용의 출처: all(전체 허용)·pod(이 작업공간 행)·빈 값(스펙 2026-11-18-015 §3-3). 서랍 자물쇠가 읽는다 */
+  allowed_by?: 'all' | 'pod' | '';
   origin?: Origin;
   tags?: string[];
   /** 파일 합계·묶음 한도(바이트)와, 눌러도 한도에 들 수 없는 크기인지(C5) */
@@ -318,7 +331,20 @@ const requestColumns = (): GridColumn<Req>[] => [
   ageColumn<Req>({ id: 'ts', label: t('market.grid.requestedTs'), value: (r) => r.ts }),
 ];
 
-function PackageDetail({ p, market, onDone, onPublishNew }: { p: Pkg; market: MarketData; onDone: (toLog: boolean) => void; onPublishNew?: (expected: string) => void }) {
+function PackageDetail({
+  p,
+  market,
+  onDone,
+  onPublishNew,
+  template,
+}: {
+  p: Pkg;
+  market: MarketData;
+  onDone: (toLog: boolean) => void;
+  onPublishNew?: (expected: string) => void;
+  /** AI 에이전트 템플릿(/api/market/templates 에 있는 패키지). 서랍에 「이 템플릿으로 AI 에이전트 만들기」를 둔다(스펙 2026-11-18-014) */
+  template?: boolean;
+}) {
   const hubActions = useHubPackageActions({
     admin: !!market.admin && !!onPublishNew,
     namespace: p.namespace,
@@ -408,7 +434,7 @@ function PackageDetail({ p, market, onDone, onPublishNew }: { p: Pkg; market: Ma
             ]}
           />
           <Section title={t('market.install')}>
-            <InstallForm p={p} d={d} market={market} onDone={onDone} />
+            <InstallForm p={p} d={d} market={market} onDone={onDone} template={template} />
           </Section>
           <Places p={p} d={d} market={market} onDone={onDone} />
           {d.body && (
@@ -454,12 +480,15 @@ function InstallForm({
   d,
   market,
   onDone,
+  template,
 }: {
   p: Pkg;
   d: PkgDetail;
   market: MarketData;
   onDone: (toLog: boolean) => void;
+  template?: boolean;
 }) {
+  const { closeDrawer } = useUi();
   const { enqueueSnackbar } = useSnackbar();
   const confirm = useConfirm();
   const agents = useAgents();
@@ -509,7 +538,8 @@ function InstallForm({
     : d.too_big
     ? t('market.tooBig', { size: Math.ceil((d.bytes ?? 0) / 1024), limit: Math.round((d.limit ?? 0) / 1024) })
     : !d.allowed
-    ? t('market.paidNotAllowed', { ns: nsLabel(p.namespace, market.namespace_labels) })
+    ? // 허용 단추는 서랍 머리의 자물쇠이고 관리자에게만 있다 — 그 밖의 사람에게는 요청하라고 쓴다(스펙 2026-11-18-014)
+      t(market.admin ? 'market.paidNotAllowedAdmin' : 'market.paidNotAllowedAsk', { ns: nsLabel(p.namespace, market.namespace_labels) })
     : !market.helper.alive
     ? t('market.helperDownQueued')
     : '';
@@ -521,6 +551,26 @@ function InstallForm({
         <Alert severity={canInstall(market) && d.allowed && !d.too_big ? 'info' : 'warning'} role="alert">
           {blocked}
         </Alert>
+      )}
+      {isRestricted(p) && (market.admin ? !d.allowed || d.allowed_by === 'all' : !d.allowed) && (
+        // 관리자: 여러 곳은 「제한 스킬·템플릿 설치 허용」에서, 전체 허용 중이면 자물쇠 대신 그 안내(링크는 꺼진 단추 밖에 — 꺼진 단추 안 글은 눌리지 않는다).
+        // 그 밖의 사람: 관리자에게 허용 요청(X2, 스펙 2026-11-18-015 §3-4·§3-5)
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          {market.admin ? (
+            <>
+              {d.allowed_by === 'all' && (
+                <Typography variant="body2" color="text.secondary">
+                  {t('market.grants.allByAll')}
+                </Typography>
+              )}
+              <Link to="/market?tab=grants" onClick={() => closeDrawer()} data-grants-link="">
+                {d.allowed_by === 'all' ? t('market.grants.tab') : t('market.grants.goto')}
+              </Link>
+            </>
+          ) : (
+            <RequestAdminButton profile={WORKSPACE_REQUEST} kind="namespace_grant" namespace={p.namespace} label={t('market.grants.askAdmin')} />
+          )}
+        </Stack>
       )}
       {!d.too_big && d.bytes != null && d.limit != null && d.bytes > d.limit && (
         <Alert severity="info">{t('market.mayBeTooBig', { size: Math.ceil(d.bytes / 1024), limit: Math.round(d.limit / 1024) })}</Alert>
@@ -544,13 +594,38 @@ function InstallForm({
         </Typography>
       )}
       {/* 에이전트 패키지는 새 프로파일로 설치하지 않는다 — 스킬만 넣거나 이미 만든 프로파일을 올린다(2026-10-14-002 §8) */}
+      {/* AI 에이전트 템플릿은 새 AI 에이전트를 프로파일 화면의 「새 프로파일」 › 템플릿에서 만든다 — 그 창을 이 템플릿을 고른 채 연다(스펙 2026-11-18-014) */}
+      {template && (
+        <Stack spacing={0.5} alignItems="flex-start">
+          {/* 주 동작은 Tier 1, 앞 아이콘으로 단추임을 보인다(스펙 2026-11-18-017) */}
+          <Button
+            variant="outlined"
+            color="inherit"
+            sx={tier1}
+            startIcon={<AddCircleOutlineIcon />}
+            component={Link}
+            to={`/profiles?template=${encodeURIComponent(p.id)}`}
+            disabled={installOff || !canInstall(market) || !d.allowed}
+          >
+            {t('market.makeFromTemplate')}
+          </Button>
+          <Typography variant="caption" color="text.secondary">
+            {t('market.makeFromTemplateNote')}
+          </Typography>
+        </Stack>
+      )}
       {d.kind === 'agent' ? (
         mine.length > 0 && (
-          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-            {mine.map((n) => (
-              <Button key={n} disabled={off} onClick={() => send(n, 'update')}>{t('market.upgradeProfile', { name: n })}</Button>
-            ))}
-          </Stack>
+          // 글자만 있던 단추가 단추로 안 보였다 — Tier 2 테두리와 올리기 아이콘, 위에 이름표(스펙 2026-11-18-017)
+          <Labeled label={t('market.upgradeLabel')}>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ pt: 0.5 }}>
+              {mine.map((n) => (
+                <Button key={n} variant="outlined" color="inherit" sx={tier2} startIcon={<UpgradeIcon />} disabled={off} onClick={() => send(n, 'update')}>
+                  {t('market.upgradeProfile', { name: n })}
+                </Button>
+              ))}
+            </Stack>
+          </Labeled>
         )
       ) : (
         <>
@@ -627,16 +702,18 @@ function Places({
   const { closeDrawer, openDrawer } = useUi();
   const openHere = useOpenInDrawer();
   if (!p.installed.length) return null;
+  // 사용자마다 주 프로파일이 main 이라 「main」만으로는 누구의 것인지 모른다 — 모델 화면처럼 주인 이름을 붙인다(OMAI-2086)
+  const w = whoseOf(market);
   const drop = async (profile: string) => {
     if (
       !(await confirm(
-        t('market.confirmRemove', { profile, name: p.name })
+        t('market.confirmRemove', { profile: whoseProfile(market, profile), name: p.name })
       ))
     )
       return;
     try {
       await post('/api/market/remove', { namespace: p.namespace, name: p.name, profile });
-      enqueueSnackbar(t('market.removeRequested', { name: p.name, profile }), { variant: 'success' });
+      enqueueSnackbar(t('market.removeRequested', { name: p.name, profile: whoseProfile(market, profile) }), { variant: 'success' });
       onDone(true);
     } catch (e) {
       enqueueSnackbar((e as Error).message, { variant: 'error' });
@@ -646,8 +723,10 @@ function Places({
     <Section title={t('market.installedPlaces')}>
       {p.installed.map((r) => (
         <Stack key={r.profile} direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }}>
-          <Box sx={{ flex: 1 }}>
-            {profileName(r.profile)} <Tag tone={r.version === d.version ? 'good' : 'warn'}>{'v' + r.version}</Tag>
+          <Box sx={{ flex: 1 }} data-testid="market-installed-place">
+            {profileName(r.profile)}
+            <WhoseTag w={w} />{' '}
+            <Tag tone={r.version === d.version ? 'good' : 'warn'}>{'v' + r.version}</Tag>
             {r.mode === 'skills' && <Tag>{t('market.skillsOnlyTag')}</Tag>}
             {r.skills_version && <Tag>{t('market.skillsVersionTag', { version: r.skills_version })}</Tag>}
           </Box>
@@ -676,7 +755,7 @@ function Places({
                   size="small"
                   color="error"
                   onClick={() =>
-                    openDrawer({ title: t('profiles.deleteTitle'), sub: r.profile, body: <DeleteBody name={r.profile} /> })
+                    openDrawer({ title: t('profiles.deleteTitle'), sub: whoseProfile(market, r.profile), body: <DeleteBody name={r.profile} /> })
                   }
                 >
                   {t('market.deleteProfile')}
@@ -712,7 +791,9 @@ function Grant({
 }) {
   const { enqueueSnackbar } = useSnackbar();
   if (!isRestricted(p) || !market.admin) return extra.length ? <DrawerActions actions={extra} /> : null;
-  const on = d.allowed;
+  // 전체 허용 중이면 끈다 — 이 작업공간 행만 지우면 허용은 그대로인데 「해제됨」이 떴다(스펙 2026-11-18-015 §3-4). 안내와 링크는 서랍 본문(단추 밖)에
+  const byAll = d.allowed_by === 'all';
+  const on = d.allowed_by ? d.allowed_by === 'pod' : d.allowed;
   const toggle = async () => {
     try {
       await post('/api/market/grant', { namespace: p.namespace, allow: !on });
@@ -729,14 +810,18 @@ function Grant({
       actions={[
         {
           id: 'grant',
-          label,
+          label: byAll ? t('market.grants.allByAll') : label,
           description: t('market.grantNote'),
-          icon: on ? LockOutlinedIcon : LockOpenOutlinedIcon,
-          confirm: {
-            message: t(on ? 'market.grantRevokeConfirm' : 'market.grantAllowConfirm', { ns }),
-            okLabel: label,
-            onConfirm: toggle,
-          },
+          icon: on || byAll ? LockOutlinedIcon : LockOpenOutlinedIcon,
+          ...(byAll
+            ? { disabled: t('market.grants.allLocked') }
+            : {
+                confirm: {
+                  message: t(on ? 'market.grantRevokeConfirm' : 'market.grantAllowConfirm', { ns }),
+                  okLabel: label,
+                  onConfirm: toggle,
+                },
+              }),
         },
         ...extra,
       ]}
@@ -1164,6 +1249,15 @@ export function Market() {
     enabled: hubAdmin,
   });
   const hiddenRows = hiddenq.data?.items ?? [];
+  // 「AI 에이전트 템플릿」 보기 카드(스펙 2026-11-18-011·013): 템플릿 목록 API(템플릿으로 만들기 화면과 같은 것)로 패키지 행을 거른다.
+  // 목록 행에는 종류가 없다 — 종류는 패키지 파일을 봐야 안다. 설치할 수 없는 사람에게는 403 이라 카드가 없다
+  const tplq = useQuery<{ items?: { namespace: string; name: string }[] }>({
+    queryKey: ['market', pod, 'templates'],
+    queryFn: () => get('/api/market/templates'),
+    enabled: !me.isPending && !!d && canInstall(d),
+    retry: false,
+    staleTime: 60_000,
+  });
   // 새 버전 있음(스펙 2026-10-24-003 §10). 범위는 주소 scope= 에 둔다(D17)
   const confirm = useConfirm();
   const { closeSnackbar } = useSnackbar();
@@ -1181,11 +1275,19 @@ export function Market() {
       return rows.some((r) => r.state === 'pending' || r.state === 'installing') || progressOf(new Set(batch.keys()), rows).waiting ? 5000 : false;
     },
   });
+  // 「제한 스킬·템플릿 설치 허용」 보기 카드(관리자, 스펙 2026-11-18-015). 훅이라 이른 return 앞에서 부른다
+  // 펼친 구역 목록의 이름 → 패키지 서랍. 서랍 내용(packageSpec)은 아래에서 정해지므로 누를 때 읽는 ref 로 잇는다
+  const openPkgRef = useRef<(id: string) => void>(() => {});
+  const grantsTab = useGrantsTab(!!d?.admin, (id) => openPkgRef.current(id));
   if (!d) return <ScreenLoading title={t('market.title')} error={q.error?.message} />;
   const publishes = pubq.data?.items ?? [];
   const archived = arch.data?.items ?? [];
 
-  const pk = d.packages;
+  // 「스킬」 카드는 AI 에이전트 템플릿을 빼고 센다(스펙 2026-11-18-013). 두 카드가 겹치지 않게 한다.
+  // 템플릿 목록을 못 읽으면(설치할 수 없는 사람·불러오는 중) 지금처럼 모두 「스킬」에 둔다
+  const tplIds = new Set((tplq.data?.items ?? []).map((x) => `${x.namespace}/${x.name}`));
+  const pkAll = d.packages;
+  const pk = pkAll.filter((p) => !tplIds.has(p.id));
   // 태그 거르기(OMAI-1275): 주소 ?tag=a,b 가 정본이다. 지금 어떤 패키지도 갖지 않은 태그는 켜져 있어도 무시한다
   const tagCount = tagCounts(pk);
   const activeTags = (params.get('tag') ?? '').split(',').filter((id) => tagCount.some((c) => c.id === id));
@@ -1261,10 +1363,14 @@ export function Market() {
         />
       ),
     });
+  openPkgRef.current = (id: string) => {
+    const p = pkAll.find((x) => x.id === id);
+    if (p) openDrawer(packageSpec(p));
+  };
   const packageSpec = (p: Pkg) => ({
     title: p.name,
     sub: `${nsLabel(p.namespace, d.namespace_labels)} · v${p.version}`,
-    body: <PackageDetail p={p} market={d} onDone={done} onPublishNew={hubAdmin ? openPublish : undefined} />,
+    body: <PackageDetail p={p} market={d} onDone={done} onPublishNew={hubAdmin ? openPublish : undefined} template={tplIds.has(p.id)} />,
   });
 
   const failedReqs = d.requests.filter((r) => r.status === 'failed').length;
@@ -1402,13 +1508,16 @@ export function Market() {
               counts={tagCount}
               total={pk.length}
               active={activeTags}
-              onToggle={(id) => setTags(activeTags.includes(id) ? activeTags.filter((x) => x !== id) : [...activeTags, id])}
+              onToggle={(id) => setTags(toggleTag(activeTags, id))}
               onClear={() => setTags([])}
               action={
                 d.admin ? (
-                  <Button startIcon={<RefreshIcon />} size="small" variant="outlined" color="inherit" sx={tier2 as object} onClick={() => void refreshTags()}>
-                    {t('market.tagsRefresh')}
-                  </Button>
+                  <Stack direction="row" spacing={1}>
+                    {d.work_prefixes && <WorkPrefixesButton rules={d.work_prefixes} onSaved={() => void qc.invalidateQueries({ queryKey: ['market'] })} />}
+                    <Button startIcon={<RefreshIcon />} size="small" variant="outlined" color="inherit" sx={tier2 as object} onClick={() => void refreshTags()}>
+                      {t('market.tagsRefresh')}
+                    </Button>
+                  </Stack>
                 ) : undefined
               }
             />
@@ -1418,6 +1527,23 @@ export function Market() {
           rowId: (p) => p.id,
           detail: packageSpec,
         }),
+        ...(Array.isArray(tplq.data?.items)
+          ? [
+              (() => {
+                const rows = pkAll.filter((p) => tplIds.has(p.id));
+                return tabOf<Pkg>({
+                  id: 'templates',
+                  label: t('market.templatesTab'),
+                  items: rows,
+                  card: { sub: t('market.templatesSub') },
+                  empty: t('market.templatesEmpty'),
+                  columns: pkgColumns(rows.some(needsGrantNow), tagCount.length > 0),
+                  rowId: (p) => p.id,
+                  detail: packageSpec,
+                });
+              })(),
+            ]
+          : []),
         tabOf<Installed>({
           id: 'inst',
           label: t('market.installedItems'),
@@ -1578,6 +1704,7 @@ export function Market() {
               }),
             ]
           : []),
+        ...(grantsTab ? [tabOf(grantsTab)] : []),
       ]}
       id="market"
       titleAction={hubAdmin ? <AddIconButton label={t('market.hub.publish')} onClick={() => openPublish()} /> : undefined}
@@ -1600,8 +1727,9 @@ export function Market() {
         },
       ]}
       text={(i) => {
-        const x = i as Partial<Pkg & Req>;
-        // 화면에 보이는 이름(shared)으로도 찾는다
+        const x = i as Partial<Pkg & Req> & { owner_name?: string; owner?: string; grants?: unknown };
+        // 화면에 보이는 이름(shared)으로도 찾는다. 「제한 스킬·템플릿 설치 허용」 줄은 이름 칸 글자(주인 · 작업공간)와 id 로 찾는다(§3-1)
+        if (x.grants) return [x.owner_name, x.name, x.owner, x.id].filter(Boolean).join(' ');
         return [x.name, x.summary, x.summary_src, x.namespace, x.namespace && nsLabel(x.namespace, d.namespace_labels), x.profile, x.message, (x.tags ?? []).map(tagLabel).join(' ')].filter(Boolean).join(' ');
       }}
     />

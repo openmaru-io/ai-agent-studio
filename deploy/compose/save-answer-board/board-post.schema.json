@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {"type": "string", "title": "제목", "description": "게시글 제목 한 줄", "maxLength": 80},
+    "category": {"title": "분류", "enum": ["질문", "공지", "장애", "작업 기록", "기타"]},
+    "summary": {"type": "string", "title": "요약", "description": "세 줄 이내", "maxLength": 300},
+    "body": {"type": "string", "title": "본문", "description": "답의 핵심을 정리한 본문(마크다운 그대로 둠)", "maxLength": 4000},
+    "tags": {"type": "array", "title": "태그", "description": "3개까지", "items": {"type": "string", "maxLength": 20}},
+    "important": {"type": "boolean", "title": "중요 표시"},
+    "dueAt": {"type": "string", "title": "기한", "description": "답에 날짜가 있을 때만", "format": "date-time"}
+  },
+  "required": ["title", "category", "body"],
+  "additionalProperties": false
+}

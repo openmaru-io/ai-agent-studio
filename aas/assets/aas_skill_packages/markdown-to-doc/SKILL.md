@@ -1,7 +1,7 @@
 ---
 name: markdown-to-doc
 description: "hwpx·docx·pdf 만들기. 업무 문서 쓰기는 korean-business-writing 먼저. Markdown 글을 hwpx(한글)·docx·pptx·xlsx·pdf·odt·html 파일로 만들고, 공문서 모양 hwpx 와 한글 서식 빈칸 채우기도 한다. / Turn Markdown into HWPX (Korean Hancom), DOCX, PPTX, XLSX, PDF, ODT or HTML files, including Korean official-document HWPX and form filling."
-version: 1.2.0
+version: 1.2.1
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [markdown, hwpx, docx, pptx, xlsx, pdf, pandoc, kordoc, korean, convert]
     category: productivity
     related_skills: [korean-business-writing, hwp-to-markdown, doc-to-markdown, docx, xlsx, powerpoint, pdf]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # Markdown → 문서 파일

@@ -41,7 +41,7 @@ ALLOWED_ORIGINS = ("local", "agent", "bundled_modified", "market")
 SECRET = re.compile(r"(glpat-[\w-]{20,}|sk_[A-Za-z0-9]{24,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
                     r"|xox[abp]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
                     r"|gh[pousr]_[A-Za-z0-9]{36})")
-_RID = re.compile(r"^\d{20}-[0-9a-f]{6}$")
+_RID = re.compile(r"^\d{20}-[0-9a-f]{6}\Z")
 VISIBILITY = {"free": "PUBLIC"}                       # 그 밖의 네임스페이스는 구성원만(marketplace.json 의 paid 와 같다)
 ADMIN_ORIGIN = "admin_upload"                          # 관리자가 zip 으로 바로 게시한 기록(스펙 2026-10-29-002)
 STALE_PUBLISHING = 600                                # 게시 중(publishing)이 이만큼(초) 넘으면 결과를 모르는 실패로 본다(R9)
@@ -121,14 +121,112 @@ def bundle_path(rid: str) -> Path | None:
 
 # ---- 묶음 만들기 ------------------------------------------------------------------------------------
 
-def collect(folder, excluded: list[str] | None = None) -> list[tuple[str, bytes]]:
+# 스킬 묶음(허브 게시·AI 에이전트 템플릿·내려받기)에서 빼는 실행 기록 이름(스펙 2026-11-18-019 D4·R1). 스킬 폴더 바로 아래의 폴더일 때만
+# 뺀다 — cache·sessions 는 스킬이 미리 만든 색인·예시를 담는 이름으로도 쓰여 깊은 곳은 담는다. mcp-tokens 만 어느 깊이든 뺀다.
+# 의존성 이름은 skill_keep.dependency_names()(018, 어느 깊이든). 두 이름은 깊이 규칙이 달라 하나로 합치지 않는다(019 Eng F8).
+# 운영자 AAS_TREE_SKIP_DIRS_EXTRA 는 사이드카 성능 설정이라 묶음 내용에 쓰지 않는다(019 D6 — 설치마다 같은 스킬이 다른 묶음이 되지 않게).
+RUN_LOG_DIRS = frozenset({"logs", "cache", "sessions", "terminal-sessions", "mcp-tokens"})
+ANY_DEPTH_RUN_LOG = frozenset({"mcp-tokens"})
+
+
+def run_log_dirs() -> frozenset[str]:
+    return RUN_LOG_DIRS
+
+
+def _scan(folder, incomplete: list) -> tuple[list[tuple[str, object]], list[str]]:
+    """스킬 폴더를 훑어 (담을 후보 [(상대 경로, 경로)], 뺀 폴더·파일 [상대 경로]) 를 돌려준다. 파일을 읽기 전에 끝낸다 — 한도 오류가 나도
+    뺀 목록이 완전하다(019 Eng F3).
+    - 의존성·실행 기록 이름·실행 부산물·사이드카가 안 보는 점 이름은 훑기 skip 에 넣어 원격에서 그 안을 사이드카에 묻지 않는다. 실행 기록
+      이름을 skip 에서 빼면 logs/ 하나만 있어도 사이드카가 묶음에서 안 보는 폴더(partial)를 만나 스킬 전체가 대체 길로 간다(019 Eng F1).
+    - skip 에 걸린 것 중 깊이 2 이상의 실행 기록 이름 폴더는 그 폴더만 다시 훑어 담고, 같은 이름의 파일은 그대로 담는다(D4).
+    - 원격에서 묶음이 답하지 못하면(대체 길) 사이드카에는 실행 기록 이름을 빼고 묻고(fallback_skip), 깊이 규칙은 여기서 적용한다.
+      건너뛴 이름을 찾으려고 폴더마다 다시 묻지 않으며(skipped_probe=False), 대체 길로 간 것은 incomplete 에 남는다(019 R7).
+      깊은 같은 이름 폴더를 다시 훑을 때는 사이드카가 그 폴더 안을 늘 보지 않아 언제나 대체 길로 간다 — 이것은 incomplete 로 치지 않는다
+      (치면 cache·sessions 가 든 스킬마다 「목록이 완전하지 않을 수 있다」가 붙었다, OKE 실화면 2026-11-18). 그 안의 의존성 폴더는 목록에 안 나올 수 있다."""
+    from ..hermes.readers import remote
+    deps = skill_keep.dependency_names()
+    dots = frozenset(n for n in remote.TREE_SKIP_DIRS if n.startswith("."))
+    runtime = frozenset(skill_keep.RUNTIME_DIRS)
+    skip = runtime | deps | RUN_LOG_DIRS | dots
+    opts = {} if isinstance(folder, Path) else {"skipped_probe": False, "incomplete": incomplete,
+                                                 "fallback_skip": runtime | deps | ANY_DEPTH_RUN_LOG | dots}
+    entries: list[tuple[str, object]] = []
+    gone: list[str] = []
+    queue = [("", folder)]
+    while queue:
+        prefix, base = queue.pop()
+        found: set = set()
+        call = opts if not prefix or not opts else {**opts, "incomplete": []}
+        for p in remote.search_rglob(base, "*", skip, skipped=found, **call):
+            entries.append((prefix + Path(str(p.relative_to(base))).as_posix(), p))
+        for s in sorted(found):
+            rel = prefix + s
+            parts = rel.split("/")
+            if any(x.startswith(".") for x in parts[:-1]):
+                continue                                   # 점 폴더 안 — 어차피 통째로 빠진다
+            name = parts[-1]
+            if name in RUN_LOG_DIRS and name not in ANY_DEPTH_RUN_LOG:
+                target = base / s
+                if not target.is_dir():
+                    entries.append((rel, target))          # 같은 이름의 파일은 담는다
+                    continue
+                if len(parts) >= 2:
+                    queue.append((rel + "/", target))      # 깊은 같은 이름 폴더는 담는다 — 그 폴더만 다시 훑는다
+                    continue
+            gone.append(rel)
+    keep = []
+    for rel, p in entries:                                 # 대체 길·다시 훑기 결과에도 깊이 규칙을 적용한다
+        parts = rel.split("/")
+        if parts[0] in RUN_LOG_DIRS and parts[0] not in ANY_DEPTH_RUN_LOG and (len(parts) > 1 or p.is_dir()):
+            if len(parts) == 1:
+                gone.append(rel)
+            continue
+        cut = next((i for i, x in enumerate(parts[:-1]) if x in ANY_DEPTH_RUN_LOG), None)
+        if cut is not None:
+            gone.append("/".join(parts[:cut + 1]))
+            continue
+        keep.append((rel, p))
+    shown = sorted({g for g in gone if not g.split("/")[-1].startswith(".") and g.split("/")[-1] not in runtime})
+    return sorted(keep, key=lambda e: e[0]), shown
+
+
+def skipped_line(skipped: list[str], incomplete: list | None = None) -> dict | None:
+    """뺀 폴더·파일을 알리는 한 줄(019 R7): {message, paths(전체), doc}. 문장에는 앞 5개와 「외 N개」만 적는다. 뺀 것이 없고 대체 길도 아니면 None."""
+    names = list(skipped)
+    if not names and not incomplete:
+        return None
+    parts = []
+    if names:
+        head = ", ".join(names[:5]) + (tr(f" 외 {len(names) - 5}개", f" and {len(names) - 5} more") if len(names) > 5 else "")
+        parts.append(tr(f"담지 않은 폴더·파일: {head}", f"Folders and files left out: {head}"))
+    last = [n.split("/")[-1] for n in names]
+    if any(n in skill_keep.dependency_names() for n in last):
+        parts.append(tr("받는 쪽에서 의존성을 설치해야 동작합니다(requirements.txt·설치 스크립트를 스킬에 넣으세요)",
+                        "The receiver must install the dependencies (put requirements.txt or a setup script in the skill)"))
+    if any(n in RUN_LOG_DIRS - ANY_DEPTH_RUN_LOG for n in last):
+        parts.append(tr("실행 기록 폴더를 담으려면 data/logs/ 처럼 한 단계 아래로 옮기세요",
+                        "To include a run-log folder, move it one level down, such as data/logs/"))
+    if incomplete:
+        parts.append(tr("원격에서 일부 폴더를 확인하지 못해 목록이 완전하지 않을 수 있습니다",
+                        "Some remote folders could not be checked, so the list may be incomplete"))
+    doc = tr("manual/user-guide/chapters/407-profile-templates.md#템플릿에-들어가지-않는-것",
+             "manual/user-guide/chapters/407-profile-templates.en.md#what-a-template-never-includes")
+    return {"message": " — ".join(parts), "paths": names, "doc": doc}
+
+
+def collect(folder, excluded: list[str] | None = None, skipped: list[str] | None = None,
+            incomplete: list | None = None) -> list[tuple[str, bytes]]:
     """스킬 폴더 안의 일반 파일만 모은다(R4). 링크·점 파일·폴더 밖·너무 큰 것·비밀값이 든 것은 MarketError.
-    excluded 를 주면(내려받기, OMAI-1195 R4) 비밀값이 든 파일은 거절하지 않고 빼서 그 이름을 excluded 에 담는다."""
+    excluded 를 주면(내려받기, OMAI-1195 R4) 비밀값이 든 파일은 거절하지 않고 빼서 그 이름을 excluded 에 담는다.
+    의존성 폴더(어느 깊이든)와 스킬 바로 아래 실행 기록 폴더는 담지 않는다(스펙 2026-11-18-019). skipped 를 주면 뺀 폴더·파일을,
+    incomplete 를 주면 원격 대체 길로 간 경로를 담는다 — 돌려주는 값이 아니라 채우는 인자인 것은 MarketError 로 실패해도 쓰기 위해서다."""
     out, total = [], 0
     local = isinstance(folder, Path)          # 사이드카 경로(RemotePath)는 사이드카가 링크를 따라가지 않고 폴더 밖을 막는다
-    root = folder.resolve() if local else folder
-    for f in sorted(folder.rglob("*")):
-        rel = Path(str(f.relative_to(folder)))
+    entries, gone = _scan(folder, incomplete if incomplete is not None else [])
+    if skipped is not None:
+        skipped.extend(gone)
+    for rel_s, f in entries:
+        rel = Path(rel_s)
         if any(part.startswith(".") for part in rel.parts) or skill_keep.is_runtime(rel):
             continue
         if local and f.is_symlink():
@@ -258,11 +356,11 @@ def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skil
     if not marketplace.PROFILE.match(profile or "") and profile != "default":
         raise MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"))
     if not NAME.match(name or ""):
-        raise MarketError(tr("패키지 이름은 소문자·숫자·하이픈으로 2~63자로 적습니다(원본 스킬 이름은 그대로 둡니다)", "Write the package name with lowercase letters, digits, and hyphens (2-63 characters)"))
+        raise MarketError(tr("스킬 이름은 소문자·숫자·하이픈으로 2~63자로 적습니다(원본 스킬 이름은 그대로 둡니다)", "Write the skill name with lowercase letters, digits, and hyphens (2-63 characters)"))
     if not VERSION.match(version or ""):
         raise MarketError(tr("버전은 1.2.3 꼴이어야 합니다", "The version must look like 1.2.3"))
-    parts = [p for p in str(skill_path or "").split("/") if p]
-    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    parts = skill_keep.profile_rel(profile, skill_path)  # 기록에는 떼어 낸 프로파일 기준 경로가 남는다(화면의 r.path === inRoot 비교)
+    if parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
     rel = "/".join(parts)
     root = skill_keep.profile_root(home, profile)
@@ -289,9 +387,9 @@ def request_publish(pod_id: str, home, who: str, admin: bool, profile: str, skil
         try:
             paid = bool(marketplace.package(have["namespace"], have["name"])["paid"])
         except MarketError:
-            raise MarketError(tr("원본 패키지가 허용이 필요한 패키지인지 확인하지 못해 올릴 수 없습니다", "Could not confirm whether the original package is restricted")) from None
+            raise MarketError(tr("원본 스킬이 허용이 필요한 스킬인지 확인하지 못해 올릴 수 없습니다", "Could not confirm whether the original skill is restricted")) from None
         if paid:
-            raise MarketError(tr("허용이 필요한 패키지를 고친 것은 올릴 수 없습니다", "A modified restricted package cannot be published"))
+            raise MarketError(tr("허용이 필요한 스킬을 고친 것은 올릴 수 없습니다", "A modified restricted skill cannot be published"))
         derived = f"{have['namespace']}/{have['name']}@{have['version']}"
     declare = [e for e in dict.fromkeys(str(x) for x in declare_env or []) if ENV_NAME.match(e)][:20]
     with name_lock(name):
@@ -324,8 +422,12 @@ def _request_locked(pod_id: str, who: str, admin: bool, profile: str, rel: str, 
     extra = {"name": name, "version": version}
     if derived:
         extra["derived_from"] = derived
-    extra.update(_declare_fields(md, declare or []))
-    files = [(r, set_header(d.decode("utf-8"), **extra).encode("utf-8") if r == "SKILL.md" else d) for r, d in files]
+    # 관리 이름(LLM_*)은 화면이 보낸 declare_env 와 상관없이 같은 계산으로 다시 구한다 — 점검 미리 보기와 올라간 머리말이
+    # 같다(스펙 2026-11-19-002 §4-2 #4). 덧붙일 수 없으면 점검과 같은 문구로 거절한다
+    from ..assets import skill_setup
+    general = [n for n in declare or [] if not skill_setup.is_aas_managed(n)]
+    md = apply_env_declare(md, general, managed_add_of(md, env_reads(files)))
+    files = [(r, set_header(md, **extra).encode("utf-8") if r == "SKILL.md" else d) for r, d in files]
     rid = datetime.now().strftime("%Y%m%d%H%M%S%f") + "-" + secrets.token_hex(3)
     (_dir() / (rid + ".zip")).write_bytes(zip_of(files))
     return _write({"id": rid, "ts": _now(), "who": who, "pod": pod_id, "profile": profile, "path": rel, "name": name, "version": version,
@@ -338,7 +440,7 @@ def _request_locked(pod_id: str, who: str, admin: bool, profile: str, rel: str, 
 # 「점검 → 미리보기 → 게시」: 요청과 같은 검사를 모두 돌려 걸리는 것을 한 번에 보이고, 묶음에 들어갈 파일과
 # SKILL.md 머리말이 어떻게 바뀌는지 보여 준다. 아무것도 저장하지 않는다.
 
-ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,63}\Z")
 # 코드가 읽는 환경변수(연결도 flow.py 와 같은 모양). 셸·실행 환경 변수는 비밀값이 아니다
 _ENV_READ = [re.compile(r"os\.environ(?:\.get)?\s*[\[(]\s*[\"']([A-Z][A-Z0-9_]{2,})[\"']"),
              re.compile(r"os\.getenv\(\s*[\"']([A-Z][A-Z0-9_]{2,})[\"']"),
@@ -375,6 +477,87 @@ def _declare_fields(md: str, declare: list[str]) -> dict:
     return {"required_environment_variables": "[" + ", ".join(add) + "]"} if add else {}
 
 
+# ---- AAS 가 주는 LLM 접속값의 선언(스펙 2026-11-19-002 §4-2 #4, OMAI-2123) --------------------------------------
+# Hermes 는 스킬이 선언한 이름만 파드의 HERMES_LLM_* 값으로 잇는다. 그래서 코드가 LLM_BASE_URL·LLM_API_KEY·LLM_MODEL 을
+# 읽으면 이미 선언 목록이 있어도 그 목록에 덧붙인다. 덧붙일 수 없으면 게시를 막는다(받는 쪽마다 빈 값을 받으므로).
+_REQ_KEY = "required_environment_variables"
+
+
+def managed_add_of(md: str, reads) -> list[str]:
+    """코드가 읽지만 선언하지 않은 LLM 접속값 이름(LLM_* 셋만 — HERMES_LLM_* 는 더하지 않는다)."""
+    from ..assets import skill_setup
+    declared = {e["name"] for e in skill_setup.required_env(skill_setup.frontmatter(md))}
+    return [n for n in skill_setup.AAS_LLM_ALIAS if n in reads and n not in declared]
+
+
+def hermes_llm_reads(files: list[tuple[str, bytes]]) -> list[str]:
+    """코드가 직접 읽는 HERMES_LLM_* 이름(env_reads 는 HERMES_ 를 빼므로 따로 찾는다)."""
+    from ..assets import skill_setup
+    found: set[str] = set()
+    for rel, data in files:
+        if not rel.lower().endswith(_CODE_EXT):
+            continue
+        text = data.decode("utf-8", errors="ignore")
+        for pat in _ENV_READ:
+            found |= {n for n in pat.findall(text) if n.startswith("HERMES_LLM_") and skill_setup.is_aas_managed(n)}
+    return sorted(found)
+
+
+def managed_fix_lines(add: list[str]) -> str:
+    return "\n".join(f"- {n}" for n in add)
+
+
+def _managed_error(add: list[str]) -> str:
+    lines = managed_fix_lines(add)
+    return tr(f"코드가 읽는 LLM 접속값을 선언에 더해야 AAS 가 줍니다. `required_environment_variables` 목록에 이 줄을 더하세요:\n{lines}",
+              f"Declare the LLM connection values the code reads so AAS can provide them. Add these lines to the `required_environment_variables` list:\n{lines}")
+
+
+def _append_managed(md: str, add: list[str]) -> str:
+    """머리말에 이미 있는 required_environment_variables 목록에 관리 이름을 덧붙인다.
+    한 줄 꼴([A, B])이면 그 목록에, 여러 줄 꼴(- A 줄들)이면 마지막 항목 뒤에 같은 들여쓰기로 더한다. 덧붙인 뒤 머리말을
+    YAML 로 다시 읽어 이름 목록(문자열이나 name: 을 가진 항목)이고 더한 이름이 들었는지 본다 — 항목이 여러 줄 사전이면
+    붙인 줄이 사전 안으로 들어가 깨질 수 있어서다. 두 꼴이 아니거나 확인에 실패하면 MarketError."""
+    from ..assets import skill_setup
+    head, sep, body = md[4:].partition("\n---")
+    lines = head.split("\n")
+    idx = next((i for i, ln in enumerate(lines) if re.match(rf"^{_REQ_KEY}\s*:", ln)), None)
+    if idx is None:
+        raise MarketError(_managed_error(add))
+    rest = lines[idx].split(":", 1)[1].strip()
+    if rest.startswith("[") and rest.endswith("]"):
+        inner = rest[1:-1].strip().rstrip(",").strip()
+        lines[idx] = f"{_REQ_KEY}: [" + ", ".join(([inner] if inner else []) + add) + "]"
+    elif not rest:
+        last, indent = None, None
+        for j in range(idx + 1, len(lines)):
+            m = re.match(r"^(\s*)-(\s|$)", lines[j])
+            if not m or (indent is not None and m.group(1) != indent):
+                break
+            last, indent = j, m.group(1)
+        if last is None:
+            raise MarketError(_managed_error(add))
+        lines[last + 1:last + 1] = [f"{indent}- {n}" for n in add]
+    else:
+        raise MarketError(_managed_error(add))
+    out = "---\n" + "\n".join(lines) + "\n---" + body
+    raw = skill_setup.frontmatter(out).get(_REQ_KEY)
+    ok = isinstance(raw, list) and all(isinstance(i, str) or (isinstance(i, dict) and i.get("name")) for i in raw)
+    names = {i if isinstance(i, str) else str(i.get("name")) for i in raw} if ok else set()
+    if not ok or not set(add) <= names:
+        raise MarketError(_managed_error(add))
+    return out
+
+
+def apply_env_declare(md: str, declare: list[str], managed_add: list[str]) -> str:
+    """머리말에 선언을 더한 SKILL.md. 목록이 없으면 한 줄(일반 이름 + 관리 이름), 있으면 관리 이름만 그 목록에 덧붙인다
+    (일반 이름은 지금처럼 건드리지 않는다). 관리 이름을 덧붙일 수 없으면 MarketError."""
+    if _REQ_KEY not in header_of(md):
+        fields = _declare_fields(md, list(dict.fromkeys(list(declare) + list(managed_add))))
+        return set_header(md, **fields) if fields else md
+    return _append_managed(md, managed_add) if managed_add else md
+
+
 def _bump(version: str) -> str:
     parts = (str(version or "0.0.0").split(".") + ["0", "0", "0"])[:3]
     try:
@@ -390,24 +573,27 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
     hub 가 거짓이면 허브 조회(같은 이름·버전)를 건너뛴다(시험·허브 장애)."""
     checks: list[dict] = []
 
-    def add(cid: str, level: str, message: str) -> None:
-        checks.append({"id": cid, "level": level, "message": message})
+    def add(cid: str, level: str, message: str, **extra) -> None:
+        checks.append({"id": cid, "level": level, "message": message, **extra})
 
-    parts = [p for p in str(skill_path or "").split("/") if p]
-    if (not marketplace.PROFILE.match(profile or "") and profile != "default") or len(parts) < 2 or parts[0] != "skills" \
-            or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    if not marketplace.PROFILE.match(profile or "") and profile != "default":   # 빈 profile 을 경로 오류로 알리면 원인을 못 찾는다
+        raise MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"))
+    parts = skill_keep.profile_rel(profile, skill_path)
+    if parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"))
     rel = "/".join(parts)
     root = skill_keep.profile_root(home, profile)
     folder = root / rel
     excluded: list[str] = []
+    skipped: list[str] = []
+    incomplete: list = []
     try:
         if skill_keep.escapes(root, folder) or not folder.is_dir() or not (folder / "SKILL.md").is_file():
             raise MarketError(tr("그 프로파일에 이 스킬 폴더가 없습니다", "That skill folder is not in the profile"), 404)
         skill_name = skill_keep.skill_name(folder)
         origin = skill_origin.origin(skill_origin.Facts(root), skill_name, rel, folder)
         try:
-            files = collect(folder, excluded)
+            files = collect(folder, excluded, skipped, incomplete)
         except MarketError as exc:
             files = []
             add("files", "fail", str(exc))
@@ -424,11 +610,14 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
         add("origin", "pass", tr("올릴 수 있는 출처입니다", "The skill's origin can be published"))
     if files:
         add("files", "pass", tr(f"파일 {len(files)}개, {sum(len(d) for _r, d in files) // 1024 + 1}KiB", f"{len(files)} files, {sum(len(d) for _r, d in files) // 1024 + 1} KiB"))
+    line = skipped_line(skipped, incomplete)
+    if line:                                               # warn 은 게시를 막지 않는다(스펙 2026-11-18-019 R7)
+        add("skipped_dirs", "warn", line["message"], paths=line["paths"], doc=line["doc"])
     for f in excluded:
         add("secret", "fail", tr(f"비밀값으로 보이는 문자열이 있습니다: {f} — 값을 지우고 환경변수로 읽게 고치세요",
             f"Looks like it contains a secret: {f}. Remove the value and read it from an environment variable"))
     if not NAME.match(name or ""):
-        add("name", "fail", tr("패키지 이름은 소문자·숫자·하이픈 2~63자입니다", "The package name must be 2-63 lowercase letters, digits, or hyphens"))
+        add("name", "fail", tr("스킬 이름은 소문자·숫자·하이픈 2~63자입니다", "The skill name must be 2-63 lowercase letters, digits, or hyphens"))
     if md and not md.startswith("---\n"):
         add("header", "fail", tr("SKILL.md 는 --- 로 시작하는 머리말이 있어야 합니다", "SKILL.md must start with a --- header"))
     desc = fm.get("description", "")
@@ -469,12 +658,34 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
     from ..assets import skill_setup
     declared = [e["name"] for e in skill_setup.required_env(skill_setup.frontmatter(md))]
     reads = env_reads(files)
-    undeclared = [n for n in reads if n not in declared]
+    # 일반 이름은 env 줄, AAS 가 주는 LLM 접속값은 env_aas 줄로 나눈다(스펙 2026-11-19-002 §4-2 #4)
+    undeclared = [n for n in reads if n not in declared and not skill_setup.is_aas_managed(n)]
+    managed_add = managed_add_of(md, reads)
+    general_declared = [n for n in declared if not skill_setup.is_aas_managed(n)]
+    general_reads = [n for n in reads if not skill_setup.is_aas_managed(n)]
     if undeclared:
         add("env", "warn", tr(f"코드가 읽지만 선언하지 않은 환경변수: {', '.join(undeclared)} — 머리말에 선언을 더합니다",
             f"Read by the code but not declared: {', '.join(undeclared)}. The header will declare them"))
-    elif declared or reads:
+    elif general_declared or general_reads:
         add("env", "pass", tr("필요한 환경변수가 선언돼 있습니다", "The required environment variables are declared"))
+    env_md, env_fail = md, ""
+    if md.startswith("---\n") and "\n---" in md[4:]:
+        try:
+            env_md = apply_env_declare(md, undeclared, managed_add)
+        except MarketError as exc:
+            env_fail = str(exc)
+    if env_fail:
+        add("env_aas", "fail", env_fail, lines=managed_fix_lines(managed_add))
+    elif managed_add:
+        add("env_aas", "pass", tr(f"LLM 접속값은 AAS 가 줍니다(선언에 더함: {', '.join(managed_add)})",
+            f"AAS provides the LLM connection values (added to the declaration: {', '.join(managed_add)})"))
+    elif any(skill_setup.is_aas_managed(n) for n in declared) or any(skill_setup.is_aas_managed(n) for n in reads):
+        add("env_aas", "pass", tr("LLM 접속값은 AAS 가 줍니다", "AAS provides the LLM connection values"))
+    if hermes_llm_reads(files):
+        add("env_aas", "warn", tr("LLM_BASE_URL·LLM_API_KEY·LLM_MODEL 이름으로 읽고 선언하세요. HERMES_LLM_* 는 AAS 내부 이름이라 바뀔 수 있고, "
+                                  "선언하지 않으면 execute_code 에서 HERMES_LLM_API_KEY 는 빈 값입니다",
+                                  "Read and declare them as LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL. HERMES_LLM_* are internal AAS names that may change, "
+                                  "and without a declaration HERMES_LLM_API_KEY is empty in execute_code"))
     try:
         refs = publish_auto_refs(files)
     except Exception:
@@ -502,12 +713,11 @@ def check_publish(pod_id: str, home, who: str, admin: bool, profile: str, skill_
     before = md.split("\n---", 1)[0][4:] if md.startswith("---\n") else ""
     after = before
     if md.startswith("---\n") and "\n---" in md[4:]:
-        extra = {"name": name, "version": version} | _declare_fields(md, undeclared)
-        after = set_header(md, **extra).split("\n---", 1)[0][4:]
+        after = set_header(env_md, name=name, version=version).split("\n---", 1)[0][4:]
     return {"ok": not any(c["level"] == "fail" for c in checks), "checks": checks, "name": name, "version": version,
             "hub_version": hub_version, "origin": origin, "path": rel, "profile": profile,
             "files": [{"path": r, "size": len(d)} for r, d in files], "excluded": excluded,
-            "env": {"declared": declared, "reads": reads, "undeclared": undeclared},
+            "env": {"declared": declared, "reads": reads, "undeclared": undeclared, "managed_add": managed_add},
             "header": {"before": before, "after": after}}
 
 
@@ -572,7 +782,7 @@ def _publish(row: dict, namespace: str, admin_who: str) -> dict:
         from . import publish_auto
         files = _public_files(_unzip(blob))
         refs = publish_auto.internal_refs(files, publish_auto.config(marketplace.settings()["namespaces"])["domains"])
-        if refs:
+        if refs and not row.get("internal_refs_ack"):    # 템플릿을 올린 사람이 사내 주소를 확인했으면 통과(기록에 누가·무엇을 남김, 스펙 2026-11-18-010)
             raise MarketError(tr(f"사내 도메인이나 사설 IP 가 있어 공개 네임스페이스에 게시할 수 없습니다: {', '.join(refs[:5])}",
                                  f"It contains internal domains or private IPs, so it cannot go to a public namespace: {', '.join(refs[:5])}"))
         blob = zip_of(files)

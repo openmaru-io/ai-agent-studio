@@ -53,6 +53,7 @@ export const VIEWS: View[] = [
   view('users', 'u', 'admin'),
   view('soul-templates', 'w', 'admin'), // 「역할 템플릿」
   view('notices', 'y', 'admin'), // 「공지」(스펙 공지 바 4-6)
+  view('embed-apps', 'd', 'admin'), // 「임베드 앱」 채팅 위젯을 붙일 호스트 사이트(OMAI-1873)
   view('preferences', 'v', 'settings'), // 「내 화면」
   view('credentials', 'k', 'settings'), // 「API 키·토큰」
   view('connections', 'z', 'settings'), // 「Claude Code 연결」(스펙 2026-10-28-001 §3-7 ②)
@@ -70,7 +71,7 @@ const URL_ONLY_VIEWS: View[] = [view('libraries', 'l', 'skill'), view('tools', '
 
 /** 관리자만 쓰는 화면(서버도 403). 관리자가 아니면 사이드바·검색창·단축키에서 뺀다. 변경 기록은 관리자와 에이전트 주인만(OMAI-1122·1126).
  * 회사 정보(settings)는 일반 사용자에게도 열린다: 자기 부서의 슬로건·목표만 고친다(OMAI-1230). 회사 이름·소개 문장은 화면 안에서 관리자에게만 보인다. */
-const ADMIN_ONLY = new Set(['users', 'soul-templates', 'notices']);
+const ADMIN_ONLY = new Set(['users', 'soul-templates', 'notices', 'embed-apps']);
 export interface Viewer {
   admin: boolean;
   owner?: boolean;

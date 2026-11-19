@@ -371,6 +371,149 @@ class SearchRglobTest(SidecarBase):
         self.assertNotIn("p", names)
 
 
+class DepsSkipNamesTest(unittest.TestCase):
+    """스펙 2026-11-18-018 R1: 스킬마다 깐 파이썬 패키지 폴더 .deps 와 uv 파이썬 설치 .python 은 묶음·찾기 모두 건너뛴다.
+    backup·backups 는 넣지 않는다(스킬 안 state/backup 이 찾기를 사이드카로 보낸다 — 사용자 최종 승인)."""
+
+    def test_두_목록에_deps_python_이_있고_backup_은_없다(self):
+        for names in (remote.tree_skip_dirs({}), remote.search_skip_dirs({})):
+            for n in (".deps", ".python"):
+                self.assertIn(n, names)
+            for n in ("backup", "backups", "deps"):
+                self.assertNotIn(n, names)
+
+
+class DepsSidecarTreeTest(unittest.TestCase):
+    """R1: 실제 사이드카 tree 가 .deps 를 넘겨받으면 상한에서 끊기지 않는다(전에는 끊겼다)."""
+
+    def test_deps_를_넘기면_끊기지_않는다(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write(root / "skills" / "a" / "SKILL.md")
+            for i in range(100):
+                write(root / "skills" / "a" / ".deps" / f"p{i}" / "x.py")
+            ops = sc_ops.Ops(root, max_entries=50)
+            old = [n for n in remote.tree_skip_dirs({}) if n not in {".deps", ".python"}]
+            self.assertTrue(ops.tree("", skip_dirs=old, _listing=True)["cut"])
+            out = ops.tree("", skip_dirs=remote.tree_skip_dirs({}), _listing=True)
+        self.assertFalse(out["cut"])
+        self.assertIn("skills/a/.deps", out["partial"])
+
+
+class DepsSearchRglobTest(SidecarBase):
+    """R1·R6: 스킬 안 .deps 아래는 찾기 결과에 없고(로컬=원격), skipped 에 건너뛴 폴더가 담긴다(묶음·사이드카 두 길)."""
+
+    def setUp(self):
+        super().setUp()
+        s = self.home / "skills" / "dev" / "web"
+        write(s / "SKILL.md", "---\nname: web\n---\n")
+        write(s / ".deps" / "pkg" / "x.py", "x")
+        write(s / "scripts" / ".deps" / "pkg" / "y.py", "y")
+        write(s / "scripts" / "run.py", "print(1)")
+
+    def rels(self, paths, base):
+        return sorted(str(p.relative_to(base)) for p in paths)
+
+    def test_로컬과_원격이_같고_deps_아래가_없다(self):
+        want = self.rels(hr.search_rglob(self.home / "skills", "*"), self.home / "skills")
+        self.assertFalse([p for p in want if ".deps" in p])
+        b = self.backend()
+        self.assertTrue(b.snapshot())
+        self.assertEqual(self.rels(hr.search_rglob(remote.RemotePath(b, "skills"), "*"), remote.RemotePath(b, "skills")), want)
+
+    def test_skipped_에_깊은_deps_가_담긴다(self):
+        skip = frozenset([".deps"])
+        want = {"dev/web/.deps", "dev/web/scripts/.deps"}
+        local = set()
+        remote.search_rglob(self.home / "skills", "*", skip, skipped=local)
+        self.assertEqual(local, want)
+        b = self.backend()
+        self.assertTrue(b.snapshot())
+        bundle = set()
+        remote.search_rglob(remote.RemotePath(b, "skills"), "*", skip, skipped=bundle)
+        self.assertEqual(bundle, want)
+        side = set()
+        remote.search_rglob(remote.RemotePath(self.backend(), "skills"), "*", skip, skipped=side)   # 묶음 없음 — 사이드카에 묻는 길
+        self.assertEqual(side, want)
+
+    def test_원격_skill_keep_훑기는_묶음으로_답하고_사이드카에_묻지_않는다(self):
+        from aas.market import market_publish, skill_keep
+        b = self.backend()
+        self.assertTrue(b.snapshot())
+        folder = remote.RemotePath(b, "skills/dev/web")
+        before = b.count("/v1/list")
+        d = skill_keep.digest(folder)
+        skill_keep.installed_skills(remote.RemotePath(b, ""))
+        rels = [r for r, _ in market_publish.collect(folder)]
+        self.assertEqual(b.count("/v1/list"), before)
+        self.assertEqual(sorted(d), ["SKILL.md", "scripts/run.py"])
+        self.assertEqual(sorted(rels), ["SKILL.md", "scripts/run.py"])
+        self.assertEqual(skill_keep.modified(remote.RemotePath(b, "skills/dev"), "web", {"SKILL.md": d["SKILL.md"], "scripts/run.py": d["scripts/run.py"]}), "changed")
+
+
+class CutWarningTest(unittest.TestCase):
+    """R5: 끊김 경고에 받은 항목 기준 많은 폴더 이름(구조·카테고리·파일 이름 제외, 같은 줄기 생략), EXTRA 지금 값, 조치 순서."""
+
+    def names(self, paths):
+        return remote._top_folder_names([{"path": p} for p in paths])
+
+    def test_구조_이름과_파일_이름은_세지_않는다(self):
+        paths = [f"profiles/p/skills/cat/big/f{i}.md" for i in range(30)] + [f"profiles/p/skills/cat/small/f{i}.md" for i in range(5)]
+        got = self.names(paths)
+        self.assertEqual(got[0], ("big", 30))
+        flat = [n for n, _ in got]
+        for n in ("profiles", "p", "skills", "cat") + tuple(f"f{i}.md" for i in range(3)):
+            self.assertNotIn(n, flat)
+
+    def test_데이터_폴더_바로_아래_폴더는_센다(self):
+        paths = [f"bulk/f{i}" for i in range(40)] + [f"profiles/p/skills/cat/big/f{i}" for i in range(30)]
+        self.assertEqual(self.names(paths)[0], ("bulk", 40))
+
+    def test_같은_줄기는_건너뛴다(self):
+        paths = [f"profiles/p/skills/cat/s/.deps/pkg/f{i}" for i in range(950)] + \
+            [f"profiles/p/skills/cat/s/.deps/z{i}" for i in range(50)] + [f"other/f{i}" for i in range(300)]
+        flat = [n for n, _ in self.names(paths)]
+        self.assertEqual(flat, [".deps", "other"])                  # .deps 안(pkg)과 .deps 를 가진 스킬 폴더(s)는 같은 줄기
+
+    def test_제어_문자를_빼고_자른다(self):
+        got = self.names([f"x\nfake/{'a' * 100}/f{i}" for i in range(3)])
+        self.assertTrue(all("\n" not in n and len(n) <= 64 for n, _ in got))
+
+    def test_경고_문장과_한_번(self):
+        b = remote.RemoteBackend("http://127.0.0.1:9", TOKEN, label="aas-agent-x")
+        listing = {"entries": [{"path": f"profiles/p/skills/cat/s/.deps/f{i}"} for i in range(10)]}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), unittest.mock.patch.dict(os.environ, {"AAS_TREE_SKIP_DIRS_EXTRA": ""}):
+            b._warn_cut(listing)
+            b._warn_cut(listing)
+            b._warn_cut({})
+        out = buf.getvalue()
+        self.assertEqual(out.count("[AAS-TREE-CUT]"), 1)
+        self.assertTrue(out.startswith("[AAS-TREE-CUT] "))
+        self.assertIn(".deps 10", out)
+        self.assertIn("EXTRA=(비움)", out)
+        self.assertLess(out.index("AAS_TREE_SKIP_DIRS_EXTRA"), out.index("AAS_SIDECAR_MAX_ENTRIES"))
+
+    def test_항목이_없는_응답과_잘림_경고(self):
+        b = remote.RemoteBackend("http://127.0.0.1:9", TOKEN, label="aas-agent-y")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), unittest.mock.patch.dict(os.environ, {"AAS_TREE_SKIP_DIRS_EXTRA": ".saflow"}):
+            b._warn_cut({})
+            b._mark_truncated(70000)
+        lines = [l for l in buf.getvalue().splitlines() if l]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(l.startswith("[AAS-TREE-CUT] ") for l in lines))
+        self.assertTrue(all("EXTRA=.saflow" in l for l in lines))
+        self.assertLess(lines[1].index("AAS_TREE_SKIP_DIRS_EXTRA"), lines[1].index("AAS_SIDECAR_MAX_ENTRIES"))
+
+    def test_5만_개_세기는_1초_아래(self):
+        import time
+        entries = [{"path": f"profiles/p/skills/cat/s{i % 50}/.deps/pkg{i % 300}/m{i % 7}/f{i}.py"} for i in range(50_000)]
+        t = time.monotonic()
+        remote._top_folder_names(entries)
+        self.assertLess(time.monotonic() - t, 1.0)
+
+
 class CredentialsNoUsageTest(SidecarBase):
     """R4·D5: 색인 없는 자격증명은 사용처 집계와 secrets 참조 찾기를 하지 않고 「쓰는 곳 없음」을 붙이지 않는다.
     같은 묶음에서 색인 있는 결과와 섞이지 않는다(OV1)."""

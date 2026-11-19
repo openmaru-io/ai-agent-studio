@@ -36,8 +36,8 @@ def _skill_folder(home, profile: str, path: str):
     """프로파일 안 skills/ 아래의 스킬 폴더. 상위 경로·점 폴더·skills/ 밖은 400, 없는 프로파일·폴더는 404."""
     if profile != "default" and not marketplace.PROFILE.match(profile or ""):
         raise MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"), 400)
-    parts = [p for p in str(path or "").split("/") if p]
-    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+    parts = skill_keep.profile_rel(profile, path)      # profiles/<이름>/skills/… 도 받는다(MCP skill_get zip 링크)
+    if parts is None:
         raise MarketError(tr("스킬 폴더 경로가 올바르지 않습니다", "The skill folder path is not valid"), 400)
     root = skill_keep.profile_root(home, profile)
     try:
@@ -53,22 +53,32 @@ def _skill_folder(home, profile: str, path: str):
     return folder
 
 
-def _excluded_note(names: list[str]) -> bytes:
-    lines = [tr("이 zip 에 넣지 않은 파일입니다. 비밀값으로 보이는 문자열이 들어 있어 뺐습니다.", "These files are not in this zip. They contain text that looks like a secret."),
-             tr("이 파일이 없으면 스킬이 동작하지 않을 수 있습니다.", "The skill may not work without these files."), ""]
-    return "\n".join(lines + names + [""]).encode("utf-8")
+def _excluded_note(names: list[str], dirs: list[str] | None = None) -> bytes:
+    lines: list[str] = []
+    if names:
+        lines += [tr("이 zip 에 넣지 않은 파일입니다. 비밀값으로 보이는 문자열이 들어 있어 뺐습니다.", "These files are not in this zip. They contain text that looks like a secret."),
+                  tr("이 파일이 없으면 스킬이 동작하지 않을 수 있습니다.", "The skill may not work without these files."), "", *names, ""]
+    if dirs:                                       # 의존성·실행 기록 폴더는 비밀값 구역과 따로 적는다(스펙 2026-11-18-019 R7)
+        line = market_publish.skipped_line(dirs) or {"message": ""}
+        lines += [tr("담지 않은 폴더·파일(의존성·실행 기록)입니다.", "Folders and files left out (dependencies and run logs)."),
+                  line["message"], "", *dirs, ""]
+    return "\n".join(lines).encode("utf-8")
 
 
-def build_download(home, profile: str, path: str) -> tuple[str, bytes, list[str]]:
-    """(스킬 이름, zip 바이트, 뺀 파일 이름들). 실패는 MarketError."""
+def build_download(home, profile: str, path: str, skipped_dirs: list[str] | None = None) -> tuple[str, bytes, list[str]]:
+    """(스킬 이름, zip 바이트, 뺀 파일 이름들). 실패는 MarketError. skipped_dirs 를 주면 담지 않은 의존성·실행 기록 폴더를 담는다
+    (반환값을 바꾸지 않고 채우는 인자 — 스펙 2026-11-18-019 Eng F6)."""
     folder = _skill_folder(home, profile, path)
     excluded: list[str] = []
+    dirs: list[str] = []
     try:
-        files = market_publish.collect(folder, excluded)
+        files = market_publish.collect(folder, excluded, dirs)
     except OSError as exc:
         raise MarketError(tr(f"스킬 폴더를 읽지 못했습니다: {type(exc).__name__}", f"Could not read the skill folder: {type(exc).__name__}"), 503) from None
-    if excluded:
-        files = [*files, (EXCLUDED_NOTE, _excluded_note(excluded))]
+    if skipped_dirs is not None:
+        skipped_dirs.extend(dirs)
+    if excluded or dirs:
+        files = [*files, (EXCLUDED_NOTE, _excluded_note(excluded, dirs))]
     return skill_keep.skill_name(folder), market_publish.zip_of(files), excluded
 
 

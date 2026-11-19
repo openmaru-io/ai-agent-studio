@@ -8,7 +8,7 @@ AAS_PUBLIC_URLS(쉼표로 구분한 추가 접속 주소 — 예: https://aas.ex
 권한은 토큰 claim 에서 로그인할 때마다 다시 읽는다:
   AAS_OIDC_USERS_GROUP(기본 aas-users): 이 그룹에 속해야 들어온다. 비우면 그룹을 따지지 않는다.
   AAS_OIDC_ADMIN_ROLE(기본 aas-admin): 이 역할이 있으면 관리자(그룹이 없어도 들어온다). 비우면 역할로는 관리자를 만들지 않는다.
-  AAS_OIDC_GROUPS_CLAIM(기본 groups): 그룹 목록이 담긴 claim 이름. 역할은 realm_access.roles 와 resource_access.<client>.roles 에서 읽는다.
+  AAS_OIDC_GROUPS_CLAIM(기본 groups): 그룹 목록이 담긴 claim 이름. 역할은 realm_access.roles 와 AAS 로그인 client 의 resource_access.<AAS_OIDC_CLIENT_ID>.roles 에서만 읽는다(다른 client 역할은 보지 않는다).
   AAS_ALLOWED_DOMAIN(기본 없음): 정하면 그 도메인 이메일만 받는다.
 신원 키는 sub 다. 이메일은 표시와 검색용이다.
 
@@ -22,6 +22,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import threading
@@ -34,7 +35,7 @@ from pathlib import Path
 from ..common import cache_epoch, config, db, store, table_cache
 from ..common.names import person_name
 from ..common.i18n import tr
-from . import tls
+from . import login_alias, tls
 
 USERS_FILE = config.users_file()
 COOKIE = "aas_session"
@@ -104,8 +105,46 @@ def unseal(sealed: str, secret: str, token: str) -> str:
         return ""
 
 
+LOG = logging.getLogger("aas.auth")
+
+
 class AuthError(Exception):
-    pass
+    """로그인 실패. 콜백이 이유 코드를 기록하고 실패 화면을 고르도록 reason·next·popup 을 싣는다(스펙 2026-11-14-002 3-1).
+    finish 는 auth_pending 행을 지운 뒤에 실패하므로 next·popup 을 여기 실어 보낸다(콜백이 다시 읽을 수 없다)."""
+
+    def __init__(self, *args, reason: str = "", next: str = "/", popup: bool = False, status: int = 403, code: str = ""):
+        super().__init__(*args)
+        self.reason, self.next, self.popup = reason, next, popup
+        self.status, self.code = status, code      # 로그인 도메인 처리의 거절(스펙 2026-11-15-005): HTTP 상태와 고정 코드(AAS-LM-…)
+
+
+def safe_next(value) -> str:
+    """로그인 뒤 이동할 주소. 같은 출처의 경로만 받고, 아니면 "/" (스펙 2026-11-14-002 F1).
+    `startswith("//")` 만으로는 막지 못한다: 브라우저는 `\\` 를 `/` 로 읽고 탭·줄바꿈을 지워 `/\\evil`·`/\t/evil` 이 `//evil` 이 된다.
+    ASCII 가 아닌 값도 거른다 — 응답 머리는 latin-1 이라 한글이 들어가면 응답을 만들다 오류가 난다(서버가 만드는 next 는 퍼센트 인코딩된 ASCII).
+    거른 값은 남기지 않고 이유만 DEBUG 로 남긴다."""
+    reason = ""
+    if not isinstance(value, str) or not value:
+        reason = "empty"
+    elif not value.isascii():
+        reason = "non_ascii"
+    elif "\\" in value:
+        reason = "backslash"
+    elif any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in value):
+        reason = "control"
+    elif not value.startswith("/"):
+        reason = "not_absolute"
+    elif value.startswith("//"):
+        reason = "double_slash"
+    else:
+        u = urllib.parse.urlsplit(value)
+        if u.scheme or u.netloc:
+            reason = "scheme"
+    if reason:
+        if reason != "empty":
+            LOG.debug("next_rejected reason=%s", reason)
+        return "/"
+    return value
 
 
 # ---- 자체 계정(아이디·비밀번호). IP 로 접속할 때 쓴다 — 구글 OAuth 는 localhost 가 아니면 https 도메인만 받는다.
@@ -231,6 +270,7 @@ class Auth:
         self._discovery: dict | None = None
         self.on_login = None                    # 로그인에 성공한 신원(dict)을 받는 함수. 첫 로그인 등록에 쓴다(서버가 정한다)
         self.on_change = None                   # 세션을 지웠거나 관리자 여부가 바뀐 이메일을 받는 함수. 웹소켓을 바로 다시 검사한다(서버가 정한다)
+        self.on_access_token = None             # (sub, email, 액세스 토큰) — 로그인·갱신 성공 뒤. MindWiki 자동 점검(스펙 2026-11-14-012). 메모리로만 넘긴다
         with store.connect() as conn:
             # 로그인 진행 상태(state → nonce·PKCE verifier·돌아갈 곳). 서버 메모리가 아니라 DB 라 서버가 둘이어도 콜백을 어느 서버가
             # 받든 된다 — 로그인 전 서버 고정(쿠키)이 필요 없다(스펙 2026-11-05-005 §5-1 U7, 2026-11-05 메모리에서 옮김).
@@ -242,7 +282,7 @@ class Auth:
             for col, ddl in (("sub", "TEXT NOT NULL DEFAULT ''"), ("admin", "INTEGER NOT NULL DEFAULT 0"),
                              ("max_until", "REAL NOT NULL DEFAULT 0"), ("rt", "TEXT NOT NULL DEFAULT ''"),
                              ("refreshed", "REAL NOT NULL DEFAULT 0"), ("refresh_lock", "REAL NOT NULL DEFAULT 0"),
-                             ("revoked", "REAL NOT NULL DEFAULT 0")):
+                             ("revoked", "REAL NOT NULL DEFAULT 0"), ("login_idp", "TEXT NOT NULL DEFAULT 'unknown'")):
                 if col not in cols:             # 옛 DB: 열을 더한다. PostgreSQL 의 REAL 은 4바이트라 에포크 초가 1분 가까이 뭉개진다 — to_pg 로 바꾼다
                     conn.execute(f"ALTER TABLE auth_sessions ADD COLUMN {col} " + (db.to_pg(ddl) if db.is_pg(conn) else ddl))
             conn.execute("CREATE INDEX IF NOT EXISTS auth_sessions_email ON auth_sessions (email)")   # 로그인·끊기·관리자 확인이 email 로 찾는다(스펙 2026-10-24-006 R1)
@@ -326,7 +366,7 @@ class Auth:
         _forget(others=True)
         return n
 
-    def _new_session(self, email: str, name: str, sub: str = "", admin: bool = False, refresh_token: str = "") -> str:
+    def _new_session(self, email: str, name: str, sub: str = "", admin: bool = False, refresh_token: str = "", login_idp: str = "") -> str:
         token = secrets.token_urlsafe(32)
         now = time.time()
         max_until = now + self.cfg["hours"] * 3600
@@ -334,10 +374,11 @@ class Auth:
         with store.connect() as conn:
             # 유휴로 끝난 행은 최대까지 남긴다 — lifecycle.known_sub 가 sub 를 읽는다
             conn.execute("DELETE FROM auth_sessions WHERE (max_until>0 AND max_until<?) OR (max_until<=0 AND expires<?)", (now, now))
-            conn.execute("INSERT INTO auth_sessions (hash, email, name, created, expires, sub, admin, max_until, rt, refreshed) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO auth_sessions (hash, email, name, created, expires, sub, admin, max_until, rt, refreshed, login_idp) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                          (hashlib.sha256(token.encode()).hexdigest(), email.lower(), name, now,
-                          min(now + self._idle(), max_until), sub, 1 if admin else 0, max_until, rt, now))
+                          min(now + self._idle(), max_until), sub, 1 if admin else 0, max_until, rt, now,
+                          login_idp or ("password" if not sub else "unknown")))
         store.log_usage("login", email.lower())
         return token
 
@@ -380,17 +421,18 @@ class Auth:
                 with tls.urlopen(base + "/.well-known/openid-configuration", timeout=10) as resp:
                     self._discovery = json.loads(resp.read())
             except Exception as exc:
-                raise AuthError(tr(f"로그인 공급자 설정을 읽지 못했습니다: {type(exc).__name__}", f"Cannot read the login provider settings: {type(exc).__name__}")) from None
+                raise AuthError(tr(f"로그인 공급자 설정을 읽지 못했습니다: {type(exc).__name__}", f"Cannot read the login provider settings: {type(exc).__name__}"),
+                                reason="token_exchange_failed") from None
         return self._discovery
 
-    def begin(self, next_path: str = "/", base: str | None = None, popup: bool = False) -> str:
-        """base: 돌아올 접속 주소(base_for 가 돌려준 값). 없으면 기본 주소. popup: 로그인 창을 팝업으로 열었다(끝나면 팝업을 닫는 화면을 준다)."""
+    def begin(self, next_path: str = "/", base: str | None = None, popup: bool = False, with_state: bool = False):
+        """base: 돌아올 접속 주소(base_for 가 돌려준 값). 없으면 기본 주소. popup: 로그인 창을 팝업으로 열었다(끝나면 팝업을 닫는 화면을 준다).
+        with_state 면 (인가 주소, state) — 콜백이 이 브라우저를 알아보도록 state 쿠키를 함께 준다(F2, finish 의 with_popup 과 같은 방식)."""
         d = self.discovery()
         base = base or self.cfg["public_url"]
         state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)       # RFC 7636: 43~128자. 짧으면 Keycloak 이 invalid_code_verifier 로 거절한다
-        if not next_path.startswith("/") or next_path.startswith("//"):
-            next_path = "/"
+        next_path = safe_next(next_path)
         now = time.time()
         pend = {"nonce": nonce, "verifier": verifier, "next": next_path, "base": base, "popup": bool(popup)}
         with store.connect() as conn:
@@ -404,7 +446,41 @@ class Auth:
             q["prompt"] = "select_account"
             if self.cfg["domain"]:
                 q["hd"] = self.cfg["domain"]      # 구글: 계정 선택 화면을 이 도메인으로 좁힌다(검증은 아래에서 따로)
-        return d["authorization_endpoint"] + "?" + urllib.parse.urlencode(q)
+        url = d["authorization_endpoint"] + "?" + urllib.parse.urlencode(q)   # response_mode 는 붙이지 않는다(기본 query, 최상위 GET — SameSite=Lax 쿠키가 따라간다)
+        return (url, state) if with_state else url
+
+    # ---- state 쿠키(스펙 2026-11-14-002 F2, 로그인 CSRF). 임베드 embed.py 와 같은 방식이지만 접두어·표·수명이 달라 따로 둔다 ----
+    @staticmethod
+    def _state_hash(state: str) -> str:
+        return hashlib.sha256(state.encode()).hexdigest()
+
+    @classmethod
+    def state_cookie_name(cls, state: str) -> str:
+        """state 마다 이름이 다르다 — 탭 두 개에서 동시에 로그인해도 서로 덮어쓰지 않는다."""
+        return "aas_oidc_" + cls._state_hash(state)[:16]
+
+    @classmethod
+    def state_cookie(cls, state: str, secure: bool, path: str = "/auth/callback") -> str:
+        """__Host- 는 쓰지 않는다: Secure 가 있어야 하는데 Keycloak 은 http 접속 주소로도 SSO 를 쓴다(_oidc_base)."""
+        return (f"{cls.state_cookie_name(state)}={cls._state_hash(state)}; Path={path}; HttpOnly; SameSite=Lax; Max-Age={PENDING_TTL}"
+                + ("; Secure" if secure else ""))
+
+    @classmethod
+    def clear_state_cookie(cls, state: str, secure: bool, path: str = "/auth/callback") -> str:
+        """이름·Path·속성이 같아야 브라우저가 지운다."""
+        return f"{cls.state_cookie_name(state)}=; Path={path}; HttpOnly; SameSite=Lax; Max-Age=0" + ("; Secure" if secure else "")
+
+    @classmethod
+    def state_ok(cls, cookie_header: str | None, state: str) -> bool:
+        got = _cookie(cookie_header, cls.state_cookie_name(state))
+        return bool(got) and hmac.compare_digest(got, cls._state_hash(state))
+
+    @classmethod
+    def state_reject_reason(cls, cookie_header: str | None, state: str) -> str:
+        """맞으면 빈 문자열, 아니면 이유 코드: no_state_cookie(이 state 이름의 쿠키가 없다)·state_mismatch(이름은 있는데 값이 다르다)."""
+        if cls.state_ok(cookie_header, state):
+            return ""
+        return "state_mismatch" if _cookie(cookie_header, cls.state_cookie_name(state)) else "no_state_cookie"
 
     def _take_pending(self, state: str) -> dict | None:
         """로그인 진행 상태를 한 번만 꺼낸다(지우면서 읽는다 — 같은 state 를 두 번 쓰지 못한다). 없거나 만료면 None."""
@@ -420,7 +496,16 @@ class Auth:
         """(세션 토큰, 돌아갈 경로). with_popup 이면 (세션 토큰, 돌아갈 경로, 팝업 여부). 실패하면 AuthError."""
         pend = self._take_pending(state)
         if not pend:
-            raise AuthError(tr("로그인 요청이 만료됐거나 알 수 없는 요청입니다. 다시 시도하세요.", "The login request expired or is unknown. Try again."))
+            raise AuthError(tr("로그인 요청이 만료됐거나 알 수 없는 요청입니다. 다시 시도하세요.", "The login request expired or is unknown. Try again."),
+                            reason="pending_missing")
+        try:
+            return self._finish(code, pend, with_popup)
+        except AuthError as exc:                # 행을 지운 뒤라 콜백이 다시 읽지 못한다 — 실패 화면에 쓸 값을 싣는다
+            exc.reason = exc.reason or "id_token_invalid"
+            exc.next, exc.popup = safe_next(pend.get("next")), bool(pend.get("popup"))
+            raise
+
+    def _finish(self, code: str, pend: dict, with_popup: bool):
         d = self.discovery()
         body = urllib.parse.urlencode({
             "grant_type": "authorization_code", "code": code,
@@ -431,12 +516,24 @@ class Auth:
             with tls.urlopen(urllib.request.Request(d["token_endpoint"], data=body), timeout=15) as resp:
                 tokens = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            raise AuthError(tr(f"로그인 공급자가 코드를 거부했습니다 (HTTP {exc.code})", f"The login provider rejected the code (HTTP {exc.code})")) from None
+            raise AuthError(tr(f"로그인 공급자가 코드를 거부했습니다 (HTTP {exc.code})", f"The login provider rejected the code (HTTP {exc.code})"),
+                            reason="token_exchange_failed") from None
         except Exception as exc:
-            raise AuthError(tr(f"로그인 공급자에 연결할 수 없습니다: {type(exc).__name__}", f"Cannot reach the login provider: {type(exc).__name__}")) from None
+            raise AuthError(tr(f"로그인 공급자에 연결할 수 없습니다: {type(exc).__name__}", f"Cannot reach the login provider: {type(exc).__name__}"),
+                            reason="token_exchange_failed") from None
         claims = self._claims(tokens.get("id_token") or "")
         self._merge_access_claims(claims, tokens.get("access_token") or "")
-        who = self._validate(claims, pend["nonce"])
+        idp = login_alias.login_idp(claims, self.cfg["client_id"])
+        try:                                     # 로그인 도메인(@legacy.example.com) → 회사 도메인(스펙 2026-11-15-005 4절 나). _validate 의 허용 도메인 검사 앞이다
+            changed = login_alias.at_login(claims, tokens, self.cfg["client_id"], self._refresh_tokens)
+        except login_alias.AliasError as exc:
+            raise AuthError(exc.text(), reason="login_alias", status=exc.status, code=exc.code) from None
+        if changed:
+            tokens, fresh = changed
+            who = self._validate(fresh, "", first=claims)
+            claims = fresh
+        else:
+            who = self._validate(claims, pend["nonce"])
         self._remember_department(who["email"], claims)
         if self.on_login:
             try:
@@ -444,8 +541,21 @@ class Auth:
             except Exception as exc:            # 등록(첫 Hermes 만들기)이 실패해도 로그인은 막지 않는다. 다음 로그인에 다시 한다
                 # i18n-ignore: 서버 로그
                 print(f"로그인 후처리 실패 ({type(exc).__name__}): {exc}", flush=True)
-        token = self._new_session(who["email"], who["name"], who["sub"], who["admin"], str(tokens.get("refresh_token") or ""))
-        return (token, pend["next"], bool(pend.get("popup"))) if with_popup else (token, pend["next"])
+        token = self._new_session(who["email"], who["name"], who["sub"], who["admin"], str(tokens.get("refresh_token") or ""), idp)
+        self._access_token_ready(who["sub"], who["email"], str(tokens.get("access_token") or ""))   # 세션을 만든 뒤(첫 Hermes 만들기는 on_login 이 끝냈다)
+        nxt = safe_next(pend.get("next"))                     # 배포 전에 들어간 행도 거른다(F1 나가는 곳)
+        return (token, nxt, bool(pend.get("popup"))) if with_popup else (token, nxt)
+
+    def _refresh_tokens(self, refresh_token: str) -> tuple[dict, dict]:
+        """이메일을 바꾼 뒤 리프레시 토큰으로 토큰을 다시 받는다(스펙 2026-11-15-005 4절 나 ②). (tokens, id_token claim). 검사는 _validate 갱신 모드."""
+        d = self.discovery()
+        body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": self.cfg["client_id"],
+                                       "client_secret": self.cfg["client_secret"]}).encode()
+        with tls.urlopen(urllib.request.Request(d["token_endpoint"], data=body), timeout=15) as resp:
+            tokens = json.loads(resp.read())
+        claims = self._claims(tokens.get("id_token") or "")
+        self._merge_access_claims(claims, tokens.get("access_token") or "")
+        return tokens, claims
 
     def _merge_access_claims(self, claims: dict, access_token: str) -> None:
         """Keycloak 은 기본 설정에서 realm_access·resource_access 를 액세스 토큰에만 싣는다.
@@ -469,9 +579,11 @@ class Auth:
             raise AuthError(tr("로그인 응답을 해석하지 못했습니다", "Cannot parse the login response")) from None
 
     def _roles(self, c: dict) -> set[str]:
+        """realm 역할과 AAS 로그인 client 의 역할. 다른 client 의 역할은 보지 않는다 — 같은 realm 의 다른 client 에 같은 이름의 역할을
+        만들 수 있는 사람이 AAS 관리자가 되지 않게(스펙 2026-11-14-013, OMAI-2025)."""
         out = set(((c.get("realm_access") or {}).get("roles")) or [])
-        for body in (c.get("resource_access") or {}).values():
-            out |= set((body or {}).get("roles") or [])
+        mine = ((c.get("resource_access") or {}).get(self.cfg.get("client_id") or "")) or {}
+        out |= set(mine.get("roles") or [])
         return {str(r) for r in out}
 
     def _groups(self, c: dict) -> set[str]:
@@ -479,39 +591,57 @@ class Auth:
         raw = [raw] if isinstance(raw, str) else raw
         return {str(g).strip().strip("/") for g in raw}      # Keycloak 은 그룹 경로를 /aas-users 처럼 줄 수 있다
 
-    def _validate(self, c: dict, nonce: str) -> dict:
-        """토큰 claim 을 검사하고 신원 {sub, email, name, admin} 을 돌려준다. 그룹·역할은 이때마다 새로 읽는다."""
+    def _validate(self, c: dict, nonce: str, first: dict | None = None) -> dict:
+        """토큰 claim 을 검사하고 신원 {sub, email, name, admin} 을 돌려준다. 그룹·역할은 이때마다 새로 읽는다.
+        first 를 주면 갱신 모드다(스펙 2026-11-15-005 4절): 리프레시로 받은 id_token 에는 nonce 가 없을 수 있어 nonce 대신
+        처음 토큰(nonce 를 이미 검사한 것)과 iss·aud·sub 가 같은지 본다."""
         aud = c.get("aud")
+        if first is not None and (c.get("iss") != first.get("iss") or str(c.get("sub") or "") != str(first.get("sub") or "")
+                                  or c.get("aud") != first.get("aud")):
+            raise AuthError(tr("로그인 요청과 응답이 맞지 않습니다", "The login request and response do not match"))
         if c.get("iss") not in (self.cfg["issuer"], self.cfg["issuer"].replace("https://", "")):
             raise AuthError(tr("발급자가 다릅니다", "Issuer mismatch"))
         if not (aud == self.cfg["client_id"] or (isinstance(aud, list) and self.cfg["client_id"] in aud)):
             raise AuthError(tr("이 앱을 위한 로그인이 아닙니다", "This login is not for this app"))
         if float(c.get("exp") or 0) < time.time():
             raise AuthError(tr("로그인 응답이 만료됐습니다", "The login response expired"))
-        if not secrets.compare_digest(str(c.get("nonce") or ""), nonce):
+        if first is None and not secrets.compare_digest(str(c.get("nonce") or ""), nonce):
             raise AuthError(tr("로그인 요청과 응답이 맞지 않습니다", "The login request and response do not match"))
-        email = str(c.get("email") or "").lower()
-        if not email or c.get("email_verified") is not True:
-            raise AuthError(tr("확인된 이메일이 없는 계정입니다", "This account has no verified email"))
+        email = self.verified_email(c)
         sub = str(c.get("sub") or "")
         if not sub:
             raise AuthError(tr("계정 식별자(sub)가 없는 응답입니다", "The response has no account identifier (sub)"))
-        dom = self.cfg["domain"]
-        if dom and (not email.endswith("@" + dom) or ("hd" in c and str(c["hd"]).lower() != dom)):
-            raise AuthError(tr(f"{dom} 계정만 쓸 수 있습니다", f"Only {dom} accounts are allowed"))
         allowed, admin = self._access(c)
         if not allowed:
             group = self.cfg.get("users_group") or ""
-            raise AuthError(tr(f"{group} 그룹에 속한 계정만 쓸 수 있습니다. 관리자에게 그룹 추가를 요청하세요.", f"Only members of the {group} group are allowed. Ask an admin to add you to the group."))
+            raise AuthError(tr(f"{group} 그룹에 속한 계정만 쓸 수 있습니다. 관리자에게 그룹 추가를 요청하세요.", f"Only members of the {group} group are allowed. Ask an admin to add you to the group."),
+                            reason="access_denied_policy")
         # 토큰의 name 은 「이름 성」 순이라 사용자 목록(성+이름)과 달랐다. 성·이름이 있으면 같은 규칙으로 만든다(2026-10-18)
         name = person_name(str(c.get("given_name") or ""), str(c.get("family_name") or "")) or str(c.get("name") or "")
         return {"sub": sub, "email": email, "name": name, "admin": admin,
                 "department": str(c.get("department") or "")}
 
+    def verified_email(self, c: dict, require_verified: bool = True) -> str:
+        """claim 의 이메일(소문자). 없거나(require_verified 면 email_verified 가 true 가 아니거나) 허용 도메인 밖이면 AuthError.
+        로그인(_validate)과 임베드 토큰 교환(OMAI-1873)이 같은 규칙을 쓴다."""
+        email = str(c.get("email") or "").lower()
+        if not email or (require_verified and c.get("email_verified") is not True):
+            raise AuthError(tr("확인된 이메일이 없는 계정입니다", "This account has no verified email"), reason="access_denied_policy")
+        dom = self.cfg["domain"]
+        if dom and (not email.endswith("@" + dom) or ("hd" in c and str(c["hd"]).lower() != dom)):
+            raise AuthError(tr(f"{dom} 계정만 쓸 수 있습니다", f"Only {dom} accounts are allowed"), reason="access_denied_policy")
+        return email
+
     def _access(self, c: dict) -> tuple[bool, bool]:
         """(들어올 수 있는가, 관리자인가). 로그인과 토큰 갱신이 같은 규칙을 쓴다."""
         role = self.cfg.get("admin_role") or ""
         admin = bool(role and role in self._roles(c))
+        if role and not admin:
+            # 다른 client 에서만 나온 관리자 역할은 버린다. 「관리자가 일반 사용자가 됐다」의 원인을 운영자가 찾도록 client 이름만 남긴다
+            mine = self.cfg.get("client_id") or ""
+            for client, body in (c.get("resource_access") or {}).items():
+                if client != mine and role in ((body or {}).get("roles") or []):
+                    LOG.warning("admin_role_from_other_client_ignored client=%s", client)
         group = self.cfg.get("users_group") or ""
         return (admin or not group or group in self._groups(c)), admin
 
@@ -590,22 +720,66 @@ class Auth:
         with store.connect() as conn:
             conn.execute("UPDATE auth_sessions SET expires=?, max_until=? WHERE hash=?", (expires, max_until, h))
         _forget(h)
-        if row["rt"] and now - float(row["refreshed"] or 0) >= REFRESH_EVERY and not self._refresh(token, h, row):
-            return None
+        if row["rt"] and now - float(row["refreshed"] or 0) >= REFRESH_EVERY:
+            out: dict = {}
+            if not self._refresh(token, h, row, out):
+                return None
+            if out.get("why") == "ok" and out.get("access_token"):         # busy·no_rt·unavailable 이면 부르지 않는다
+                self._access_token_ready(row["sub"], row["email"], str(out["access_token"]))
         return {"idle_until": expires, "max_until": max_until}
 
-    def _refresh(self, token: str, h: str, row) -> bool:
-        """Keycloak 토큰을 갱신한다. 세션을 끝냈으면 False. 다른 파드·탭이 갱신 중이면 건너뛴다."""
+    def _access_token_ready(self, sub: str, email: str, access_token: str) -> None:
+        """새 액세스 토큰을 on_access_token 에 넘긴다. 받는 쪽은 곧바로 돌아가야 하고, 실패해도 로그인·갱신은 막지 않는다."""
+        if not (self.on_access_token and sub and access_token):
+            return
+        try:
+            self.on_access_token(sub, email, access_token)
+        except Exception as exc:
+            print(f"액세스 토큰 후처리 실패 ({type(exc).__name__})", flush=True)   # i18n-ignore: 서버 로그. 토큰 값은 남기지 않는다
+
+    def access_token(self, cookie_header: str | None) -> tuple[str, str]:
+        """지금 로그인한 사람의 Keycloak 액세스 토큰을 새로 받는다(MindWiki 계정으로 연결, 스펙 2026-11-14-001 2단계).
+        (토큰, "") 또는 ("", 이유). 이유: session_ended(세션 없음·갱신 거절) · no_refresh_token(offline 토큰 등)
+        · lease_busy(다른 탭이 갱신 중, 1초 뒤 한 번 더 해도) · keycloak_unavailable. 토큰은 메모리로만 돌려준다."""
+        token = _cookie(cookie_header, COOKIE)
+        row = self._row(token, fresh=True) if token else None
+        if not row or not self._alive(token, row, time.time()):
+            return "", "session_ended"
+        h = hashlib.sha256(token.encode()).hexdigest()
+        for attempt in (0, 1):
+            if not row["rt"]:
+                return "", "no_refresh_token"
+            out: dict = {}
+            if not self._refresh(token, h, row, out):
+                return "", "session_ended"
+            if out.get("access_token"):
+                return str(out["access_token"]), ""
+            if out.get("why") == "busy" and attempt == 0:
+                time.sleep(1)
+                row = self._row(token, fresh=True)
+                if not row:
+                    return "", "session_ended"
+                continue
+            return "", {"busy": "lease_busy", "no_rt": "no_refresh_token"}.get(str(out.get("why")), "keycloak_unavailable")
+        return "", "lease_busy"
+
+    def _refresh(self, token: str, h: str, row, out: dict | None = None) -> bool:
+        """Keycloak 토큰을 갱신한다. 세션을 끝냈으면 False. 다른 파드·탭이 갱신 중이면 건너뛴다.
+        out 을 주면 결과를 적는다: why=ok·busy·no_rt·unavailable, ok 이면 access_token(access_token 만 그 호출이 쓴다)."""
+        out = out if out is not None else {}
         now = time.time()
         with store.connect() as conn:
             if conn.execute("UPDATE auth_sessions SET refresh_lock=? WHERE hash=? AND refresh_lock<?",
                             (now + REFRESH_LEASE, h, now)).rowcount != 1:
+                out["why"] = "busy"
                 return True
         secret = self.cfg.get("client_secret") or ""
         ended = False
+        out["why"] = "unavailable"
         try:
             rt = unseal(row["rt"], secret, token)
             if not rt:
+                out["why"] = "no_rt"
                 return True
             d = self.discovery()
             body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": rt,
@@ -639,6 +813,9 @@ class Auth:
             _forget(h, others=admin != bool(row["admin"]))    # 관리자 여부가 바뀌면 다른 서버도 버린다(M3)
             if admin != bool(row["admin"]):
                 self._changed(row["email"])
+            out["why"] = "ok"
+            if tokens.get("access_token"):
+                out["access_token"] = str(tokens["access_token"])
             return True
         except (AuthError, OSError, ValueError):
             return True                                    # Keycloak 이 잠시 안 되면 세션은 둔다. 다음 touch 에 다시 한다

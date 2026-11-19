@@ -37,7 +37,7 @@ from ..hermes import hermes_reader as hr
 from ..hermes.hermes_api import HermesAPI, HermesError
 
 COLUMNS = ("triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done")
-SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
+SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}\Z")
 TASK_FIELDS = ("title", "body", "tenant", "priority", "parents", "triage", "idempotency_key", "max_runtime_seconds", "skills", "goal_mode",
                "goal_max_turns", "model_override", "provider_override", "reasoning_effort")
 PATCH_FIELDS = ("title", "body", "priority", "result", "summary", "metadata", "model_override", "provider_override", "reasoning_effort", "block_reason")
@@ -70,7 +70,7 @@ BLOCKED_HEAD = 300                                      # 막힘 판정에 읽�
 # 터미널 도구는 거절을 JSON 으로 낸다(tools/terminal_tool.py _error_json: {"output": "", "exit_code": -1, "error": "BLOCKED: …", "status": "blocked"}).
 # 2026-11-03 OKE 카나리아에서 앞머리만 보던 판정이 이 모양을 놓쳤다. 출력에 BLOCKED: 가 섞인 것은 막힘이 아니므로 error 값의 앞머리를 본다
 _BLOCKED_JSON = re.compile(r'^\{\s*"output":\s*"",\s*"exit_code":\s*-1,\s*"error":\s*"BLOCKED:')
-_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 MAX_RUN_SESSIONS = 50                                   # 실행 하나의 대화 수(압축으로 늘어난다). 질의 인자 수를 묶어 둔다
 ON_CARDS_CHANGED: list = []                             # 카드 표가 바뀐 뒤 부른다(서버가 토픽 office:cards·받은편지함을 다시 읽게 한다, 스펙 2026-10-17-004)
 DEFAULT_BOARD = "default"                                # 서버가 처음 한 번 만드는 보드(OMAI-1286)

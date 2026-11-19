@@ -71,7 +71,7 @@ describe('관리자에게 요청 단추(스펙 2026-10-15-011 단계 5)', () => 
     vi.stubGlobal('fetch', fn);
     mountScreen(<RequestAdminButton profile="_workspace" kind="workspace_size" pod="aas-agent-b" label="관리자에게 메모리 늘리기 요청" ariaLabel="B 메모리 요청" />, '/');
     await userEvent.click(await screen.findByRole('button', { name: 'B 메모리 요청' }));
-    expect(screen.getByText('처리되면 작업공간이 한 번 다시 시작됩니다.')).toBeInTheDocument();
+    expect(screen.getByText('처리되면 AI 에이전트 작업공간이 한 번 다시 시작됩니다.')).toBeInTheDocument();
     await userEvent.click(await screen.findByRole('button', { name: '요청 보내기' }));
     expect(fn.mock.calls.some(([u]) => String(u).includes('/api/requests?pod=aas-agent-b'))).toBe(true);
     const post = fn.mock.calls.find(([, i]) => i?.method === 'POST');

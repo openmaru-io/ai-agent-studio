@@ -46,6 +46,10 @@ export function buildHelpSkill(version = '1.0.0'): string {
       'description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."',
       `version: ${version}`,
       'author: OPENMARU, Inc.',
+      // 우리가 배포하는 스킬이라 Hermes 배경 검토가 고치지 않게 한다(OMAI-1863, Hermes 패치 skill-review-aas-auto-edit-off)
+      'metadata:',
+      '  aas:',
+      '    auto_edit: false',
       '---',
       '',
       // i18n-ignore: 생성 파일의 안내 주석(사람이 손으로 고치지 않게)

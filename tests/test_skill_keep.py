@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 TMP = tempfile.TemporaryDirectory()
@@ -119,3 +120,66 @@ class SkillKeepTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DependencyFolderTest(unittest.TestCase):
+    """스펙 2026-11-18-018 R6: 스킬 안 의존성 폴더(.deps·.python·.venv 등, 묶음과 같은 목록에서 RUNTIME_DIRS 를 뺀 것)는
+    비교·백업에서 빼고, 어느 깊이든 있으면 덮기 전에 묻는다(changed) — Hermes 가 덮을 때 폴더를 통째로 바꿔 사라지므로."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(dir=TMP.name))
+        put(self.root, {"skills/market/a/SKILL.md": "원본", "skills/market/a/scripts/run.py": "1"})
+        self.ref = sk.digest(self.root / "skills/market/a")
+
+    def test_의존성_이름은_묶음_목록에서_런타임을_뺀_것(self):
+        from aas.hermes.readers import remote
+        names = sk.dependency_names()
+        for n in (".deps", ".python", ".venv", "site-packages"):
+            self.assertIn(n, names)
+        self.assertFalse(names & sk.RUNTIME_DIRS)
+        self.assertEqual(names, frozenset(remote.DEPENDENCY_DIRS) - sk.RUNTIME_DIRS)
+
+    def test_digest_는_의존성_폴더를_빼고_읽지_않는다(self):
+        put(self.root, {"skills/market/a/.deps/pkg/x.py": "p", "skills/market/a/scripts/.python/bin/py": "b",
+                        "skills/market/a/.venv/lib/y.py": "v"})
+        real = Path.read_bytes
+        seen = []
+        with unittest.mock.patch.object(Path, "read_bytes", lambda p: seen.append(str(p)) or real(p)):
+            d = sk.digest(self.root / "skills/market/a")
+        self.assertEqual(sorted(d), ["SKILL.md", "scripts/run.py"])
+        self.assertFalse([p for p in seen if ".deps" in p or ".python" in p or ".venv" in p])
+
+    def test_어느_깊이든_의존성_폴더가_있으면_changed(self):
+        self.assertEqual(sk.modified(self.root, "skills/market/a", self.ref), "same")
+        for rel in (".deps/pkg/x.py", "scripts/.deps/x.py", "tools/inner/.venv/lib/z.py"):
+            with self.subTest(rel=rel):
+                root = Path(tempfile.mkdtemp(dir=TMP.name))
+                put(root, {"skills/market/a/SKILL.md": "원본", "skills/market/a/scripts/run.py": "1", f"skills/market/a/{rel}": "d"})
+                self.assertEqual(sk.modified(root, "skills/market/a", self.ref), "changed")
+
+    def test_installed_skills_는_의존성_폴더_안_SKILL_md_를_보지_않는다(self):
+        put(self.root, {"skills/market/a/.deps/pkg/SKILL.md": "---\nname: inner\n---\n"})
+        self.assertEqual(sk.installed_skills(self.root), {"skills/market/a": "a"})
+
+    def test_백업에_의존성_폴더가_없다(self):
+        put(self.root, {"skills/market/a/.deps/pkg/x.py": "p"})
+        name = sk.backup(self.root, "deps-test", ["skills/market/a"])
+        path = sk.backup_dir() / name
+        self.addCleanup(path.unlink, missing_ok=True)                       # 공유 AAS_DATA_DIR — 시험이 남긴 백업을 지운다
+        with tarfile.open(path) as tar:
+            names = tar.getnames()
+        self.assertIn("skills/market/a/SKILL.md", names)
+        self.assertFalse([n for n in names if ".deps" in n])
+
+    def test_올리기_모음은_의존성_폴더를_빼고_결과가_같다(self):
+        from aas.market import market_publish
+        before = [rel for rel, _ in market_publish.collect(self.root / "skills/market/a")]
+        put(self.root, {"skills/market/a/.deps/pkg/x.py": "p", "skills/market/a/venv/lib/y.py": "v"})
+        after = [rel for rel, _ in market_publish.collect(self.root / "skills/market/a")]
+        self.assertEqual(after, before)
+
+    def test_Hermes_와_같은_해시는_의존성_폴더도_센다(self):
+        from aas.assets import skill_origin
+        h1 = skill_origin.hermes_dir_hash(self.root / "skills/market/a")
+        put(self.root, {"skills/market/a/.deps/pkg/x.py": "p"})
+        self.assertNotEqual(skill_origin.hermes_dir_hash(self.root / "skills/market/a"), h1)

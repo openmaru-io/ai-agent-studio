@@ -110,6 +110,16 @@ services:
       AAS_DOCMOST_MCP_URL: ${AAS_DOCMOST_MCP_URL:-}
       # Outline MCP 카탈로그 항목의 주소 미리 채우기(선택)
       AAS_OUTLINE_MCP_URL: ${AAS_OUTLINE_MCP_URL:-}
+      AAS_MINDWIKI_URL: ${AAS_MINDWIKI_URL:-}
+      AAS_MINDWIKI_ACCOUNT_CONNECT: ${AAS_MINDWIKI_ACCOUNT_CONNECT:-false}
+      AAS_MINDWIKI_WORKSPACE: ${AAS_MINDWIKI_WORKSPACE:-}
+      AAS_MINDWIKI_AUTO_CHECK: ${AAS_MINDWIKI_AUTO_CHECK:-true}
+      AAS_MINDWIKI_AUTO_CONNECT: ${AAS_MINDWIKI_AUTO_CONNECT:-true}
+      # CogentAI SQL 진단(부동산원 판은 청약 통계까지), 차트 카탈로그 항목의 주소 미리 채우기(선택, OMAI-1863)
+      AAS_COGENTAI_DATABASE_MCP_URL: ${AAS_COGENTAI_DATABASE_MCP_URL:-}
+      # 켜면 카탈로그에 cogentai-database 대신 부동산원 청약 통계 판 cogentai-database-reb 를 보인다(기본 꺼짐)
+      AAS_COGENTAI_DATABASE_REB_ENABLED: ${AAS_COGENTAI_DATABASE_REB_ENABLED:-}
+      AAS_COGENTAI_CHART_MCP_URL: ${AAS_COGENTAI_CHART_MCP_URL:-}
       # 모델 화면·AI 보조도 Hermes 와 같은 LLM 을 쓴다. 쿠버네티스가 아니면 이 기본 주소에 /models·/chat/completions 를 붙인다
       HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL}
       HERMES_LLM_MODEL: ${HERMES_LLM_MODEL}

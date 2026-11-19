@@ -112,6 +112,57 @@ describe('WsClient 연결 단계', () => {
     client.subscribe('pod:a:health', () => {});
     expect(sock.sent.filter((m) => m.t === 'sub')).toEqual([{ v: 1, t: 'sub', topic: 'pod:a:health' }]);
   });
+
+  // hello 뒤·welcome 전 구간의 구독 변화는 welcome 때 맞춘다(스펙 2026-11-10-001)
+  it('hello 를 보낸 뒤 welcome 전에 구독한 토픽은 welcome 때 sub 를 한 번 보낸다', () => {
+    const { client } = make();
+    client.configure(true);
+    client.subscribe('agents', () => {});
+    const sock = last();
+    sock.open(); // hello(agents)
+    client.subscribe('chat:s1', () => {});
+    expect(sock.types()).toEqual(['hello']); // 아직 live 가 아니라 보내지 않는다
+    sock.msg({ t: 'welcome', server: 1 });
+    expect(sock.sent.filter((m) => m.t === 'sub')).toEqual([{ v: 1, t: 'sub', topic: 'chat:s1' }]);
+  });
+
+  it('welcome 전에 구독했다가 해지한 토픽은 welcome 때 보내지 않는다', () => {
+    const { client } = make();
+    client.configure(true);
+    client.subscribe('agents', () => {});
+    const sock = last();
+    sock.open();
+    const un = client.subscribe('chat:s1', () => {});
+    un();
+    vi.advanceTimersByTime(400);
+    sock.msg({ t: 'welcome', server: 1 });
+    expect(sock.types()).not.toContain('sub');
+  });
+
+  it('hello 에 실은 토픽을 welcome 전에 해지하면 welcome 때 unsub 를 보낸다', () => {
+    const { client } = make();
+    client.configure(true);
+    client.subscribe('agents', () => {});
+    const un = client.subscribe('chat:s1', () => {});
+    const sock = last();
+    sock.open(); // hello(agents, chat:s1)
+    un();
+    vi.advanceTimersByTime(400);
+    sock.msg({ t: 'welcome', server: 1 });
+    expect(sock.sent.filter((m) => m.t === 'unsub')).toEqual([{ v: 1, t: 'unsub', topic: 'chat:s1' }]);
+  });
+
+  it('hello 에 실었다가 welcome 전에 거절된 토픽을 다시 구독하면 welcome 때 sub 를 보낸다', () => {
+    const { client } = make();
+    client.configure(true);
+    client.subscribe('chat:s1', () => {}, () => {});
+    const sock = last();
+    sock.open();
+    sock.msg({ t: 'error', topic: 'chat:s1', code: 'busy' });
+    client.subscribe('chat:s1', () => {});
+    sock.msg({ t: 'welcome', server: 1 });
+    expect(sock.sent.filter((m) => m.t === 'sub')).toEqual([{ v: 1, t: 'sub', topic: 'chat:s1' }]);
+  });
 });
 
 describe('WsClient 재연결', () => {
@@ -326,6 +377,20 @@ describe('이벤트 토픽(W2)', () => {
     sock.msg({ t: 'delta', topic: 'pod:a:chat:s1', seq: 42, data: 'b' });
     expect(got).toEqual(['a', 'b']);
     expect(sock.types().filter((t) => t === 'unsub')).toHaveLength(0);
+  });
+
+  it('after 를 주고 구독하면 그 번호를 서버에 보내고, 그 이하로 다시 온 이벤트는 건너뛴다(OMAI-1863)', () => {
+    const { client } = make();
+    client.configure(true);
+    const got: unknown[] = [];
+    client.subscribe('pod:a:chat:s1', (d) => got.push(d), undefined, 7);
+    const sock = last();
+    sock.open();
+    expect(sock.sent[0]).toMatchObject({ t: 'hello', resume: [{ topic: 'pod:a:chat:s1', after: 7 }] });
+    sock.msg({ t: 'welcome', server: 1 });
+    sock.msg({ t: 'delta', topic: 'pod:a:chat:s1', seq: 7, data: 'old' });
+    sock.msg({ t: 'delta', topic: 'pod:a:chat:s1', seq: 8, data: 'new' });
+    expect(got).toEqual(['new']);
   });
 
   it('topicSource 는 EventSource 처럼 열림·메시지·오류를 넘긴다', async () => {

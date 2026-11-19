@@ -109,7 +109,7 @@ def ensure_redirect(api: HermesAPI, prof: str | None, server: str, callback: str
         if current < LOGIN_CONNECT_TIMEOUT:                      # 더 길게 둔 값은 그대로 둔다
             entry["connect_timeout"] = LOGIN_CONNECT_TIMEOUT
         return entry
-    return bool(mcp_servers.replace_server(api, prof, server, build, pod=pod, by=by, note="MCP OAuth 콜백 주소 맞추기")["changed"])   # i18n-ignore: 판 메모
+    return bool(mcp_servers.replace_server(api, prof, server, build, pod=pod, by=by, note="MCP OAuth 콜백 주소 맞추기", record=False)["changed"])   # i18n-ignore: 판 메모
 
 
 def _cancel_pending(api: HermesAPI, pod: str, profile: str, server: str, now: float) -> int:

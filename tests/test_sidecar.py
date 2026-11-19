@@ -105,6 +105,16 @@ class OpsTest(unittest.TestCase):
         sub = {e["path"] for e in self.ops.glob("profiles", "*")["entries"]}
         self.assertEqual(sub, {"profiles/ma"})
 
+    def test_glob_under_symlink_folder_keeps_the_asked_path(self):
+        # 2026-11-17 COP: profiles/ma/home/.local -> yjshared/home/.local 에서 결과가 yjshared/... 로 와
+        # 서버의 relative_to 가 ValueError 를 냈다(스킬 연결도가 뜨지 않음). 결과는 물은 경로 아래여야 한다.
+        for skip in (None, ["node_modules"]):
+            with self.subTest(skip=skip):
+                sub = {e["path"] for e in self.ops.glob("link-in", "*", skip)["entries"]}
+                self.assertEqual(sub, {"link-in/ma"})
+                rec = {e["path"] for e in self.ops.glob("link-in/ma", "**/*.yaml", skip)["entries"]}
+                self.assertEqual(rec, {"link-in/ma/config.yaml"})
+
     def test_glob_rejects_bad_patterns_and_caps_entries(self):
         for bad in ("../*", "/etc/*", "a/../../*"):
             with self.assertRaises(ops.OpError):
@@ -161,6 +171,52 @@ class OpsTest(unittest.TestCase):
         with self.assertRaises(ops.OpError) as cm:
             quick.sqlite("state.db", slow, [])
         self.assertEqual(cm.exception.code, 408)
+
+    def test_sqlite_request_time_limit_is_capped(self):
+        # 스펙 2026-11-19-005 U1: 요청이 max_seconds 를 주면 그 값으로, 상한(MAX_SQL_SECONDS)을 넘으면 상한으로 끊는다
+        slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT COUNT(*) FROM c"
+        quick = ops.Ops(self.root, sql_seconds=60)
+        with self.assertRaises(ops.OpError) as cm:
+            quick.sqlite("state.db", slow, [], max_seconds=0.3)
+        self.assertEqual(cm.exception.code, 408)
+        self.assertEqual(ops.clamp_seconds(999, 10.0), ops.MAX_SQL_SECONDS)
+        self.assertEqual(ops.clamp_seconds(None, 10.0), 10.0)
+        for bad in ("x", -1, 0, True):
+            with self.subTest(bad=bad), self.assertRaises(ops.OpError) as cm:
+                ops.clamp_seconds(bad, 10.0)
+            self.assertEqual(cm.exception.code, 400)
+
+    def test_sqlite_byte_limit_truncates_like_rows(self):
+        # 행 수만 막으면 큰 tool_calls 원문 행에서 메모리가 넘친다(스펙 2026-11-19-005 리뷰 H3) — 바이트 상한도 잘림으로 알린다
+        conn = sqlite3.connect(self.root / "big.db")
+        conn.execute("CREATE TABLE t (x TEXT)")
+        conn.executemany("INSERT INTO t VALUES (?)", [("가" * 1000,)] * 4)
+        conn.commit()
+        conn.close()
+        out = self.ops.sqlite("big.db", "SELECT x FROM t", [], max_bytes=7000)   # 한 행 3,000 바이트(UTF-8)
+        self.assertTrue(out["truncated"])
+        self.assertEqual(len(out["rows"]), 2)
+        whole = self.ops.sqlite("big.db", "SELECT x FROM t", [], max_bytes=20_000)
+        self.assertFalse(whole["truncated"])
+        self.assertEqual(len(whole["rows"]), 4)
+        with self.assertRaises(ops.OpError) as cm:
+            self.ops.sqlite("big.db", "SELECT x FROM t", [], max_bytes="many")
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_sqlite_default_byte_limit_applies_without_request_value(self):
+        small = ops.Ops(self.root, max_rows=100, max_sql_bytes=10)
+        out = small.sqlite("state.db", "SELECT id FROM sessions", [])
+        self.assertTrue(out["truncated"])
+        self.assertLess(len(out["rows"]), 10)
+
+    def test_sqlite_batch_passes_limits_per_query(self):
+        out = self.ops.sqlite_batch([{"path": "state.db", "sql": "SELECT id FROM sessions", "max_bytes": 3},
+                                     {"path": "state.db", "sql": "SELECT 1", "max_seconds": "x"}])["results"]
+        self.assertTrue(out[0]["truncated"])
+        self.assertEqual(out[1]["code"], 400)
+
+    def test_version_lists_sqlite_limits(self):
+        self.assertIn("sqlite_limits", self.ops.version()["ops"])
 
     def test_sqlite_reads_mode_ro_first_and_says_so(self):
         """WAL 에만 있는 최신 기록도 mode=ro 로는 보인다. immutable 은 놓친다(스펙 2026-11-03-001 R15, 2026-11-03-002 2A)."""
@@ -511,3 +567,14 @@ class HeavyOpsOneAtATimeTest(unittest.TestCase):
             finally:
                 httpd.shutdown()
                 httpd.server_close()
+
+
+class MallocArenaLimitTest(unittest.TestCase):
+    """사이드카 이미지가 glibc 메모리 풀 수를 2로 묶는다(스펙 2026-11-18-018 §10).
+    요청마다 스레드를 쓰는데 COP 노드가 72코어라 풀이 최대 576개까지 생기고, 각 풀이 쓴 메모리를 돌려주지 않아
+    사이드카가 13시간에 66MiB → 504MiB 로 늘어 OOMKilled 됐다(2026-11-18 COP 사용자 작업공간). 줄을 지우면 다시 그렇게 된다."""
+
+    def test_dockerfile_sets_malloc_arena_max(self):
+        text = (Path(__file__).resolve().parents[1] / "sidecar" / "Dockerfile").read_text(encoding="utf-8")
+        env = " ".join(line for line in text.splitlines() if line.startswith("ENV "))
+        self.assertIn("MALLOC_ARENA_MAX=2", env.split())

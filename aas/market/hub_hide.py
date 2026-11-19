@@ -85,7 +85,7 @@ def _call(ns: str, name: str, action: str) -> tuple[int, dict]:
 def _check(ns: str, name: str) -> None:
     ns_ok = ns in marketplace.settings()["namespaces"]
     if not (ns_ok and NAME.match(name or "")):
-        raise MarketError(tr("이 스킬 허브에서 다루지 않는 패키지입니다", "This skill hub does not serve that package"), 404)
+        raise MarketError(tr("이 스킬 허브에서 다루지 않는 스킬·템플릿입니다", "This skill hub does not serve that skill or template"), 404)
     if name in skill_bundle.names():
         raise MarketError(tr("AAS 기본 스킬은 AAS 서버가 관리합니다", "AAS built-in skills are managed by the AAS server"), 403)
 

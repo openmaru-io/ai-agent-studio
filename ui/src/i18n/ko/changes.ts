@@ -48,6 +48,7 @@ export default {
   'changes.byTeamManagerDept': '팀 관리자 {name} ({dept})',
   // 주인·팀 관리자·관리자가 아닌 사람이 한 줄의 배지(D15)
   'changes.otherBadge': '다른 사람',
+  'changes.memberBadge': '공유받은 사람',
   'changes.viaBadge': 'Claude Code',
   'changes.via': '한 곳',
   'changes.viaScreen': '화면',
@@ -115,8 +116,8 @@ export default {
   'changes.kind.skill_download': '스킬을 zip 으로 내려받음',
   'changes.kind.skill_agent_edit': 'Hermes 가 스킬 문서를 고침',
   'changes.kind.office_change': '오피스를 바꿈(배치·방·칸반·회의)',
-  'changes.kind.market_install': '패키지 설치를 요청함',
-  'changes.kind.market_remove': '패키지 삭제를 요청함',
+  'changes.kind.market_install': '스킬·템플릿 설치를 요청함',
+  'changes.kind.market_remove': '스킬·템플릿 삭제를 요청함',
   'changes.kind.market_grant': '허용이 필요한 네임스페이스 사용 허용을 바꿈',
   'changes.kind.market_restore': '보관한 스킬 되살리기를 요청함',
   'changes.kind.user_grant': '권한을 부여·변경·회수함',

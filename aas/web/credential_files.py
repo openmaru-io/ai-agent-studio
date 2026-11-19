@@ -32,8 +32,8 @@ from ..ops import pc_import
 from . import files, pc_import_routes as pcr, server
 
 FIXED = {"google_client_secret": "google_client_secret.json", "google_token": "google_token.json"}
-NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")          # secrets/<이름>.json 의 이름(오퍼레이터 Validate 와 같다)
-PATH = re.compile(r"^(google_client_secret\.json|google_token\.json|secrets/[a-z0-9][a-z0-9_-]{0,62}\.json)$")
+NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}\Z")          # secrets/<이름>.json 의 이름(오퍼레이터 Validate 와 같다)
+PATH = re.compile(r"^(google_client_secret\.json|google_token\.json|secrets/[a-z0-9][a-z0-9_-]{0,62}\.json)\Z")
 MAX_BYTES = 64 * 1024
 TASK_WAIT = 60.0                                          # 파일 하나 쓰기는 몇 초면 끝난다. 넘으면 「결과 모름」(R7)
 WORDS = ("WRITTEN", "REMOVED", "INVALID", "NOSOURCE", "NOPROFILE")
@@ -139,7 +139,7 @@ def who_view(rec: dict | None, mtime_ns: int | None) -> dict:
     if not rec:
         return {"changed_by": None, "outside": True}
     by = {"who": rec["by_user"], "role": rec["role"], "ts": rec["ts"]}
-    out = {"changed_by": by, "outside": False, "by_other": rec["role"] in ("admin", "team", "other")}
+    out = {"changed_by": by, "outside": False, "by_other": rec["role"] in ("admin", "team", "member", "other")}
     if mtime_ns is not None and int(rec["mtime_ns"]) != int(mtime_ns):
         out["outside_after"] = True
     return out

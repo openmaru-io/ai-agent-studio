@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { closeRestartPending, RestartPendingDialog } from '@/components/RestartPending';
 import { mountScreen } from '@/test/mountScreen';
 
 import { AddServerDialog } from './McpServers';
@@ -340,6 +341,130 @@ describe('카탈로그', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
+  it('설치한 MindWiki 항목의 쓰기 스위치는 mcp_mindwiki_write 를 보낸다(스펙 2026-11-14-001)', async () => {
+    const MINDWIKI = { ...OUTLINE, name: 'cogentai-mindwiki', installed: true, enabled: true };
+    const fn = fakeApi((b) => (b.action === 'mcp_catalog' ? [200, { entries: [MINDWIKI], hidden: { oauth: 0, install: 0, unknown: 0 } }] : [200, { ok: true }]));
+    mountScreen(<AddServerDialog open name="ma" secure onClose={vi.fn()} onAdded={vi.fn()} onChanged={vi.fn()} />, '/profiles');
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    await userEvent.click(await screen.findByRole('switch', { name: '쓰기 도구' }));
+    await waitFor(() => expect(posted(fn)).toContainEqual({ name: 'ma', action: 'mcp_mindwiki_write', write: true }));
+  });
+
+  const MW_NEW = {
+    ...DOCMOST,
+    name: 'cogentai-mindwiki',
+    required_env: [{ name: 'MCP_COGENTAI_MINDWIKI_API_KEY', prompt: '토큰', required: true, secret: true }],
+    account: { enabled: true, status: 'none', days: 90, write_days: 30 },
+  };
+  const catalogOf = (...entries: unknown[]) => [200, { entries, hidden: { oauth: 0, install: 0, unknown: 0 } }] as Reply;
+
+  it('MindWiki 계정으로 연결: 쓰기 허용을 켜면 30일 안내와 함께 mcp_mindwiki_connect 를 보내고, 붙여 넣기는 접혀 있다(스펙 2026-11-14-001 2단계)', async () => {
+    let status = 'none';
+    const fn = fakeApi((b) =>
+      b.action === 'mcp_catalog'
+        ? catalogOf({ ...MW_NEW, installed: status === 'connected', account: { ...MW_NEW.account, status, write: status === 'connected', tool_count: 30, expires_at: '2026-12-14T00:00:00+00:00' } })
+        : ((status = 'pending'), [200, { ok: true, job: 'j', status: 'pending' }])
+    );
+    const { onAdded } = dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    expect(screen.queryByLabelText(/MCP_COGENTAI_MINDWIKI_API_KEY/, { selector: 'input' })).toBeNull();     // 붙여 넣기 칸은 접혀 있다
+    expect(screen.getByRole('button', { name: '개인 토큰 직접 붙여 넣기' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('switch', { name: '쓰기 허용' }));
+    expect(screen.getByText(/30일 뒤 만료/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'MindWiki 계정으로 연결' }));
+    await waitFor(() => expect(posted(fn)).toContainEqual({ name: 'ma', action: 'mcp_mindwiki_connect', write: true }));
+    expect(await screen.findByText('MindWiki 에 연결하는 중…')).toBeInTheDocument();
+    status = 'connected';
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith('cogentai-mindwiki', { oauth: false }), { timeout: 4000 });
+  });
+
+  it('MindWiki 워크스페이스가 여럿이면 고른 뒤에야 연결하고, 이유 코드는 문구로 보인다', async () => {
+    const detail = [{ id: 'w1', name: '개발', slug: 'dev' }, { id: 'w2', name: '영업', slug: 'sales' }];
+    const fn = fakeApi((b) => (b.action === 'mcp_catalog' ? catalogOf({ ...MW_NEW, account: { ...MW_NEW.account, status: 'failed', reason: 'need_workspace', detail } }) : [200, { ok: true, status: 'pending' }]));
+    dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    expect(await screen.findByText(/워크스페이스가 여럿입니다/)).toBeInTheDocument();
+    const go = screen.getByRole('button', { name: 'MindWiki 계정으로 연결' });
+    expect(go).toBeDisabled();
+    await userEvent.click(screen.getByRole('combobox', { name: 'MindWiki 워크스페이스' }));
+    await userEvent.click(await screen.findByRole('option', { name: '영업 (sales)' }));
+    await userEvent.click(go);
+    await waitFor(() => expect(posted(fn)).toContainEqual({ name: 'ma', action: 'mcp_mindwiki_connect', write: false, workspace: 'sales' }));
+  });
+
+  // OKE 실화면(2026-11-14): 연결이 요청 응답보다 먼저 끝나 화면이 pending 을 보지 못했고, 목록·「지금 적용」이 그대로였다
+  it('MindWiki 연결이 pending 을 거치지 않고 끝나도 설치를 알린다(실패 → 연결됨)', async () => {
+    let done = false;
+    const detail = [{ id: 'w1', name: '개발', slug: 'dev' }, { id: 'w2', name: '영업', slug: 'sales' }];
+    fakeApi((b) =>
+      b.action === 'mcp_catalog'
+        ? catalogOf(
+            done
+              ? { ...MW_NEW, installed: true, account: { ...MW_NEW.account, status: 'connected', tool_count: 18, last_checked: '2026-11-14T11:12:30+00:00' } }
+              : { ...MW_NEW, account: { ...MW_NEW.account, status: 'failed', reason: 'need_workspace', detail } }
+          )
+        : ((done = true), [200, { ok: true, job: 'j', status: 'pending' }])
+    );
+    const { onAdded } = dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    await userEvent.click(await screen.findByRole('combobox', { name: 'MindWiki 워크스페이스' }));
+    await userEvent.click(await screen.findByRole('option', { name: '영업 (sales)' }));
+    await userEvent.click(screen.getByRole('button', { name: 'MindWiki 계정으로 연결' }));
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith('cogentai-mindwiki', { oauth: false }));
+  });
+
+  it('이미 연결된 MindWiki 를 다시 연결하면 pending 을 못 봐도 「지금 적용」을 켠다', async () => {
+    let checked = '2026-11-14T10:00:00+00:00';
+    fakeApi((b) =>
+      b.action === 'mcp_catalog'
+        ? catalogOf({ ...MW_NEW, installed: true, account: { ...MW_NEW.account, status: 'connected', tool_count: 18, last_checked: checked } })
+        : ((checked = '2026-11-14T11:00:00+00:00'), [200, { ok: true, job: 'j', status: 'pending' }])
+    );
+    const { onAdded, onChanged } = dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    await userEvent.click(await screen.findByRole('button', { name: '다시 연결' }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(onAdded).not.toHaveBeenCalled();
+  });
+
+  it('MindWiki 계정으로 연결이 꺼진 설치는 1단계(토큰 칸·설치 단추)만 보인다', async () => {
+    fakeApi((b) => (b.action === 'mcp_catalog' ? catalogOf({ ...MW_NEW, account: { ...MW_NEW.account, enabled: false } }) : [200, { ok: true }]));
+    dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    expect(await screen.findByLabelText(/MCP_COGENTAI_MINDWIKI_API_KEY/, { selector: 'input' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'cogentai-mindwiki 설치' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'MindWiki 계정으로 연결' })).toBeNull();
+  });
+
+  const COGENTAI = {
+    ...DOCMOST,
+    name: 'cogentai-database',
+    writable: false,
+    required_env: [
+      { name: 'COGENTAI_DATABASE_MCP_URL', prompt: '주소', required: true, secret: false, value: 'http://orch:18080/mcp' },
+      { name: 'MCP_COGENTAI_DATABASE_API_KEY', prompt: '키', required: true, secret: true },
+    ],
+  };
+
+  it('쓰기 도구가 없는 CogentAI 항목은 쓰기 체크·스위치가 없고 write 를 보내지 않는다(OMAI-1863)', async () => {
+    const fn = fakeApi((b) => (b.action === 'mcp_catalog' ? [200, { entries: [COGENTAI], hidden: { oauth: 0, install: 0, unknown: 0 } }] : [200, { ok: true }]));
+    const { onAdded } = dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    await userEvent.type(await screen.findByLabelText(/MCP_COGENTAI_DATABASE_API_KEY/, { selector: 'input' }), 'k-3');
+    expect(screen.queryByRole('checkbox', { name: /쓰기 도구도 등록/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'cogentai-database 설치' }));
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith('cogentai-database', { oauth: false }));
+    expect(posted(fn)).toContainEqual({ name: 'ma', action: 'mcp_install', server: 'cogentai-database', env: { COGENTAI_DATABASE_MCP_URL: 'http://orch:18080/mcp', MCP_COGENTAI_DATABASE_API_KEY: 'k-3' } });
+  });
+
+  it('설치한 CogentAI 항목은 스위치 없이 설치됨 태그만 보인다', async () => {
+    fakeApi((b) => (b.action === 'mcp_catalog' ? [200, { entries: [{ ...COGENTAI, installed: true, enabled: true }], hidden: { oauth: 0, install: 0, unknown: 0 } }] : [200, { ok: true }]));
+    dialog();
+    await userEvent.click(await screen.findByRole('button', { name: '카탈로그' }));
+    expect(await screen.findByText('cogentai-database')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: '쓰기 도구' })).not.toBeInTheDocument();
+  });
+
   it('목록이 비면 원격 주소로 추가하라고 알리고, 불러오기에 실패하면 다시 불러오기가 있다', async () => {
     fakeApi(() => [200, { entries: [], hidden: { oauth: 3, install: 0, unknown: 0 } }]);
     dialog();
@@ -405,19 +530,76 @@ describe('MCP · 도구 묶음 탭', () => {
     expect(await screen.findByText(/꺼진 채로 있습니다. 필요하면 도구 탭에서 켜세요/)).toBeInTheDocument();
   });
 
-  it('삭제한 뒤에는 게이트웨이를 다시 시작해야 쓴다고 알리고, 확인을 거쳐 mcp_apply 만 보낸다', async () => {
+  // 「지금 적용」 알림은 서버의 다시 시작 장부를 따른다(스펙 2026-11-18-016 4-5). 서버 더하기·지우기는 Hermes 가 60초 안에 스스로 맞추므로 기록되지 않는다(2-2)
+  const MW = { name: 'cogentai-mindwiki', transport: 'http', target: 'https://mindwiki.example/mcp', env_names: ['MCP_COGENTAI_MINDWIKI_API_KEY'], enabled: true };
+  const meWith = (items: Record<string, unknown>[]) => ({
+    '/api/me': { auth_enabled: false, admin: true, user: null, pod: { id: 'kim', owner: '*', restart_pending: { items, total: items.length, has_members: false } } },
+  });
+  const rec = (over: Record<string, unknown>) => ({ profile: 'ma', kind: 'mcp', target: 'mem', note: '', by: 'kim@x.com', by_kind: 'person', at: Date.now() / 1000 - 60, ...over });
+
+  it('서버를 지워도 다시 시작 안내를 띄우지 않는다(기록이 없다)', async () => {
     const fn = fakeApi(() => [200, { ok: true }]);
     mountScreen(<ToolsPane d={D({ mcp: [ROW] })} />, '/profiles');
-    expect(screen.queryByText(/MCP 서버 설정을 바꿨습니다/)).toBeNull();           // 바꾸기 전에는 안 보인다
     await userEvent.click(await screen.findByRole('button', { name: 'mem 삭제' }));
     await userEvent.click(within(await screen.findByRole('dialog', { name: '확인' })).getByRole('button', { name: '확인' }));
-    await userEvent.click(await screen.findByRole('button', { name: /지금 적용/ }));
-    const dlg = await screen.findByRole('dialog', { name: '확인' });
-    expect(within(dlg).getByText(/게이트웨이를 다시 시작합니다/)).toBeInTheDocument();
-    expect(posted(fn)).toEqual([{ name: 'ma', action: 'mcp_remove', target: 'mem' }]);               // 확인 전에는 재시작을 보내지 않는다
-    await userEvent.click(within(dlg).getByRole('button', { name: '확인' }));
-    await waitFor(() => expect(posted(fn).at(-1)).toEqual({ name: 'ma', action: 'mcp_apply' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: /지금 적용/ })).toBeNull());       // 요청한 뒤에는 안내가 사라진다
+    await waitFor(() => expect(posted(fn)).toEqual([{ name: 'ma', action: 'mcp_remove', target: 'mem' }]));
+    expect(screen.queryByRole('button', { name: /지금 적용/ })).toBeNull();
+  });
+
+  it('기록이 있으면 새로 고쳐도 알림이 남고, 「지금 적용」은 mcp_apply 를 보내지 않고 대화 상자를 그 프로파일에 맞춰 연다', async () => {
+    const fn = fakeApi(() => [200, { ok: true }], meWith([rec({}), rec({ profile: 'other', target: 'x' })]));
+    mountScreen(
+      <>
+        <ToolsPane d={D({ mcp: [ROW] })} />
+        <RestartPendingDialog />
+      </>,
+      '/profiles'
+    );
+    expect(await screen.findByText(/MCP 서버 설정을 바꿨습니다/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /지금 적용/ }));
+    const dlg = await screen.findByRole('dialog', { name: '게이트웨이 다시 시작 필요' });
+    expect(within(dlg).getAllByTestId(/restart-pending-group-/)[0]).toHaveAttribute('data-testid', 'restart-pending-group-ma');
+    expect(posted(fn).filter((b) => b.action === 'mcp_apply')).toEqual([]);
+    act(() => closeRestartPending());
+  });
+
+  it('기록이 없어도 주인에게 서버 추가 단추가 보인다', async () => {
+    fakeApi(() => [200, { ok: true }]);
+    mountScreen(<ToolsPane d={D({ mcp: [ROW] })} />, '/profiles');
+    expect(await screen.findByRole('button', { name: /새 MCP 서버/ })).toBeInTheDocument();
+  });
+
+  // OKE 실화면(2026-11-15): 자동 재발급 뒤 needs_apply 는 카탈로그 창 안에서만 읽어, 창을 열지 않으면 배너가 뜨지 않았다(스펙 2026-11-14-012 A9).
+  // 이제 서버 장부가 MindWiki 적용 대기를 합쳐 내놓는다(2026-11-18-016 4-2)
+  it('MindWiki 가 서버에서 새 키를 받았으면 창을 열지 않아도 「지금 적용」이 보인다', async () => {
+    fakeApi(() => [200, { ok: true }], meWith([rec({ kind: 'mindwiki', target: 'mindwiki', by_kind: 'auto' })]));
+    mountScreen(<ToolsPane d={D({ mcp: [MW] })} />, '/profiles');
+    expect(await screen.findByText('새 키를 받았습니다. 지금 적용해야 새 키를 씁니다.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /지금 적용/ })).toBeInTheDocument();
+  });
+
+  // OKE 실화면(2026-11-15): 자동 첫 연결 안내(auto_connected)도 카탈로그 창 안에서만 보여, 자동으로 연결된 사람은 알 길이 없었다(스펙 2026-11-14-012 3-4)
+  it('자동 첫 연결 안내가 도구 탭에 보이고 「그대로 두기」는 mcp_mindwiki_ack 를 보낸다', async () => {
+    const MW = { name: 'cogentai-mindwiki', transport: 'http', target: 'https://mindwiki.example/mcp', env_names: ['MCP_COGENTAI_MINDWIKI_API_KEY'], enabled: true };
+    // 다시 읽은 카탈로그도 auto_connected 를 그대로 준다 — OKE 에서 카탈로그 다시 읽기가 7초 걸려 그동안 안내와 꺼진 단추가 남았다.
+    // 「그대로 두기」가 성공하면 다시 읽기를 기다리지 않고 바로 닫는다
+    const fn = fakeApi((b) => {
+      if (b.action === 'mcp_catalog')
+        return [200, { entries: [{ name: 'cogentai-mindwiki', installed: true, enabled: true, account: { enabled: true, status: 'connected', connected: true, auto_connected: true } }], hidden: { oauth: 0, install: 0, unknown: 0 } }];
+      return [200, { ok: true }];
+    });
+    mountScreen(<ToolsPane d={D({ mcp: [MW] })} />, '/profiles');
+    expect(await screen.findByText(/관리자 설정으로 MindWiki\(쓰기 허용\)를 자동 연결했습니다/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '그대로 두기' }));
+    await waitFor(() => expect(posted(fn)).toContainEqual({ name: 'ma', action: 'mcp_mindwiki_ack' }));
+    await waitFor(() => expect(screen.queryByText(/자동 연결했습니다/)).toBeNull());
+  });
+
+  it('MindWiki 서버가 없으면 카탈로그를 읽지 않는다', async () => {
+    const fn = fakeApi(() => [200, { ok: true }]);
+    mountScreen(<ToolsPane d={D({ mcp: [ROW] })} />, '/profiles');
+    await screen.findByRole('button', { name: '새 MCP 서버' });
+    expect(fn.mock.calls.some((c) => String((c[1] as RequestInit | undefined)?.body ?? '').includes('mcp_catalog'))).toBe(false);
   });
 
   it('연결 시험이 실패하면 이유와 설정 탭 링크가 나오고, 시간 초과는 다른 문구다', async () => {

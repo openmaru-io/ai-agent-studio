@@ -31,23 +31,53 @@ def profile_root(home, profile: str):
     return home if profile in ("", "default") else home / "profiles" / profile
 
 
+def profile_rel(profile: str, path) -> list[str] | None:
+    """스킬 폴더 경로를 프로파일 기준 조각으로. 맞지 않으면 None.
+    목록·상세 API 는 데이터 폴더 기준(profiles/<이름>/skills/…)을 준다. 같은 프로파일이면 그 앞부분을 떼고 받는다 —
+    MCP skill_get 의 zip 링크와 market_publish 가 이 값을 그대로 넘겨 「스킬 폴더 경로가 올바르지 않습니다」가 났다(2026-11-06).
+    다른 프로파일 이름이 붙은 경로는 그대로 거부한다."""
+    parts = [p for p in str(path or "").split("/") if p]
+    if len(parts) > 2 and parts[0] == "profiles" and profile not in ("", "default") and parts[1] == profile:
+        parts = parts[2:]
+    if len(parts) < 2 or parts[0] != "skills" or any(p in ("..", ".") or p.startswith(".") for p in parts):
+        return None
+    return parts
+
+
 def escapes(root, folder) -> bool:
     """로컬 폴더(Path)가 링크를 따라 프로파일 밖을 가리키는가. 사이드카 경로는 사이드카가 링크를 따라가지 않아 늘 False 다.
     폴더 안 링크는 collect 가 거절하지만 폴더 자체·중간 폴더가 링크면 밖의 파일을 읽었다(CodeQL #32~35·42·43·46)."""
     return isinstance(folder, Path) and Path(root).resolve() not in Path(folder).resolve().parents
 
 
+def dependency_names() -> frozenset[str]:
+    """스킬 안 의존성 폴더 이름(.deps·.python·.venv·site-packages 등): 묶음과 같은 의존성 목록에서 RUNTIME_DIRS 를 뺀 것.
+    remote.DEPENDENCY_DIRS 의 부분 집합이 아니라 스킬 덮기 판정·훑기용이다 — 두 목록을 손으로 맞추지 않게 거기서 만든다.
+    RUNTIME_DIRS 는 Hermes 와 같게 두므로(Hermes _RUNTIME_CACHE_DIRS 에 .deps 가 없다) Hermes 와 같은 해시는 이것을 쓰지 않는다.
+    스펙 2026-11-18-018 R6. remote 는 늦게 가져온다(market → hermes.readers 순환 import 방지)."""
+    from ..hermes.readers import remote
+    return frozenset(remote.DEPENDENCY_DIRS) - frozenset(RUNTIME_DIRS)
+
+
+def walk(folder, pattern: str = "*", skipped: set | None = None) -> list:
+    """스킬 폴더를 훑되 실행 부산물·의존성 폴더 안으로 들어가지 않는다. 원격(사이드카 경로)이면 묶음에서 안을 보지 않은 .deps 를
+    사이드카에 묻지 않는다 — skip 없이 훑으면 사이드카 glob 이 항목마다 stat 해 NFS 에서 스킬 하나에 20초쯤 걸렸다(스펙 2026-11-18-018 R6).
+    skipped 를 주면 건너뛴 폴더의 상대 경로를 담는다."""
+    from ..hermes.readers import remote
+    return sorted(remote.search_rglob(folder, pattern, frozenset(RUNTIME_DIRS) | dependency_names(), skipped=skipped))
+
+
 def is_runtime(rel: Path) -> bool:
     return rel.name in RUNTIME_NAMES or rel.name.endswith(RUNTIME_SUFFIX) or any(p in RUNTIME_DIRS for p in rel.parts)
 
 
-def digest(folder) -> dict[str, str]:
+def digest(folder, skipped: set | None = None) -> dict[str, str]:
     """폴더 안 일반 파일의 {상대 경로: sha256}. 실행 부산물은 뺀다. 폴더가 없으면 빈 값.
     읽다가 OSError 가 나면(사이드카에 닿지 않음) 그대로 올린다 — 못 읽은 것을 「없다」로 읽으면 사용자 스킬을 덮게 된다."""
     out: dict[str, str] = {}
     if not folder.is_dir():
         return out
-    for f in sorted(folder.rglob("*")):
+    for f in walk(folder, "*", skipped):
         rel = Path(str(f.relative_to(folder)))
         if is_runtime(rel):
             continue
@@ -79,7 +109,7 @@ def installed_skills(root) -> dict[str, str]:
     out: dict[str, str] = {}
     if not skills.is_dir():
         return out
-    found = sorted((f for f in skills.rglob("SKILL.md") if not is_runtime(Path(str(f.relative_to(skills))))),
+    found = sorted((f for f in walk(skills, "SKILL.md") if not is_runtime(Path(str(f.relative_to(skills))))),
                    key=lambda f: (len(f.parts), str(f)))
     for md in found:
         rel = "skills/" + str(md.parent.relative_to(skills)).strip("/")
@@ -115,7 +145,12 @@ def modified(root, rel: str, reference: dict[str, str] | None) -> str:
         return "absent"
     if reference is None:
         return "unknown"
-    return "same" if same(digest(folder), reference) else "changed"
+    skipped: set = set()
+    now = digest(folder, skipped)
+    deps = dependency_names()
+    if any(Path(p).name in deps for p in skipped):
+        return "changed"          # 의존성 폴더(어느 깊이든)가 있다 — Hermes 가 덮으면 폴더를 통째로 바꿔 사라지므로 묻는다(스펙 2026-11-18-018 R6)
+    return "same" if same(now, reference) else "changed"
 
 
 # ---- 큐레이터가 보관한 스킬(R6) ---------------------------------------------------------------------
@@ -199,7 +234,7 @@ def backup(root, request_id: str, rels: list[str]) -> str:
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for rel in rels:
             base = root / rel
-            files = [base] if base.is_file() else [f for f in sorted(base.rglob("*")) if f.is_file()] if base.is_dir() else []   # 읽지 못하면 OSError — 백업 없이 덮지 않는다
+            files = [base] if base.is_file() else [f for f in walk(base) if f.is_file()] if base.is_dir() else []   # 읽지 못하면 OSError — 백업 없이 덮지 않는다. 의존성 폴더는 빼고(R6)
             for f in files:
                 name = str(f.relative_to(root)).strip("/")
                 if is_runtime(Path(name)):

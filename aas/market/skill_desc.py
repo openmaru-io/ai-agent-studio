@@ -290,13 +290,8 @@ def _ask(messages: list[dict], temperature: float) -> str:
     from . import tags
     try:
         return tags._chat(messages, model=_model(), max_tokens=200, temperature=temperature)
-    except urllib.error.HTTPError as exc:          # 가드레일 차단 판정은 스킬 AI 요약(summary.py)과 같다
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").lower()
-        except Exception:
-            pass
-        if "guardrail" in detail or "blocked" in detail:
+    except urllib.error.HTTPError as exc:          # 가드레일 차단 판정은 AI 보조가 함께 쓴다(tags.guardrail_blocked)
+        if tags.guardrail_blocked(exc):
             raise Blocked() from exc
         raise
 

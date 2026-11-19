@@ -38,6 +38,23 @@ CREATE TABLE IF NOT EXISTS pod_summary (
 CREATE TABLE IF NOT EXISTS usage_daily (
   pod TEXT NOT NULL, day TEXT NOT NULL, sessions INTEGER, messages INTEGER, input_tokens INTEGER, output_tokens INTEGER,
   PRIMARY KEY (pod, day));
+CREATE TABLE IF NOT EXISTS restart_pending (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  who TEXT NOT NULL DEFAULT '', by_kind TEXT NOT NULL DEFAULT 'person', ts REAL NOT NULL,
+  PRIMARY KEY (pod, profile, kind, target));
+CREATE TABLE IF NOT EXISTS restart_lock (pod TEXT PRIMARY KEY, expires REAL NOT NULL, token TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS skill_usage_hours (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, hour INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+  job TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL,
+  PRIMARY KEY (pod, profile, hour, kind, name, job));
+CREATE TABLE IF NOT EXISTS skill_usage_sessions (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, session_id TEXT NOT NULL, started_at REAL, last_at REAL NOT NULL,
+  job TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pod, profile, session_id));
+CREATE TABLE IF NOT EXISTS skill_usage_cursor (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, ts REAL, filled_from REAL, unknown TEXT NOT NULL DEFAULT '[]',
+  lease_until REAL NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pod, profile));
 """
 
 

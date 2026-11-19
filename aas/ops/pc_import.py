@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 
 import yaml
 
+from ..assets.skill_setup import is_aas_managed
 from ..common import config, store
 from ..common.i18n import tr
 from . import profile_copy
@@ -75,7 +76,7 @@ _CREDENTIAL_PATHS = (
 _CRED_PARTS = tuple(tuple(p.casefold().split("/")) for p in _CREDENTIAL_PATHS)
 _PC_PATH = re.compile(r"(/Users/|/home/|[A-Za-z]:\\)")
 _ENV_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]{1,80})\}")
-_ID = re.compile(r"^[a-z0-9]{12}$")
+_ID = re.compile(r"^[a-z0-9]{12}\Z")
 UPLOADED_TTL = 24 * 3600                    # 확인 단계에 남은 묶음을 닫는 때(2026-10-22-003 R18)
 REPLACE_WAIT = 20 * 60                      # 오퍼레이터 작업(대화 기록이 크면 오래 걸린다) 기다리는 최대 시간
 STALE_AFTER = 10 * 60                       # 진행 중 표시가 이만큼 갱신되지 않으면 서버가 도중에 다시 뜬 것으로 본다
@@ -173,7 +174,7 @@ MODEL_FILES = ("auth.json", ".anthropic_oauth.json", ".copilot_jwt.json")   # �
 _MCP_PREFIX = ("mcp-tokens",)
 _CHANNEL_PREFIX = ("pairing", "platforms/pairing", "slack_tokens.json", "google_chat_user", "feishu_comment_pairing.json")
 NAMES_MAX, LINK_SKILLS_MAX = 20, 50
-_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")                    # fleet.profiles.ENV_KEY 와 같다(비밀값 탭과 같은 이름 규칙)
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}\Z")                    # fleet.profiles.ENV_KEY 와 같다(비밀값 탭과 같은 이름 규칙)
 PAUSED_REASON = "PC 에서 가져옴"                                       # i18n-ignore: jobs.json 에 저장되는 값(Hermes 크론 화면이 보인다)
 SOUL_NOTE = "PC 에서 가져옴"                                           # i18n-ignore: DB 에 저장하는 SOUL 판 메모(UI 가 번역한다, OMAI-1444 R12)
 
@@ -401,7 +402,7 @@ def inspect(fileobj, content_out=None, secrets_out=None, secrets_enabled: bool =
                     nested = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
                     req = meta.get("required_env") or nested.get("required_env")
                     for k in req if isinstance(req, list) else []:
-                        if isinstance(k, str) and re.match(r"^[A-Z][A-Z0-9_]{1,80}$", k):
+                        if isinstance(k, str) and re.match(r"^[A-Z][A-Z0-9_]{1,80}$", k) and not is_aas_managed(k):   # LLM 접속값은 AAS 가 준다(스펙 2026-11-19-002)
                             env_refs.add(k)
                 elif rel == "cron/jobs.json":
                     data = _read(tar, m, 5 * 1024 * 1024)

@@ -20,6 +20,7 @@ import { Alert, Box, Button, ButtonBase, IconButton, Skeleton, Stack, Tooltip, T
 import { useSnackbar } from 'notistack';
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
+import { SaveFileToMindwiki } from '@/components/chat/MindwikiSave';
 import { useChatTokens } from '@/components/chat/useChatTokens';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { FileBadge, FileIcon } from '@/components/files/FileBadge';
@@ -37,6 +38,7 @@ import { chatMetrics } from '@/lib/chatTokens';
 import { fileSource, sharedRoom } from '@/lib/fileKinds';
 import { splitPaths, takeLegacyPathLines } from '@/lib/filePaths';
 import { buildTree, collapse, findFolder, TreeFolder, TreeNode, visibleAncestor, visibleRows, withAncestors } from '@/lib/fileTree';
+import { splitContextBlock } from '@/lib/pageContext';
 import { FOCUS_RING } from '@/lib/shellTokens';
 
 const AMBER = '#f59e0b';
@@ -149,7 +151,9 @@ export function SentFiles({ files, store }: { files: FileRef[]; store: ChatStore
 
 /** 사용자 말풍선 본문(DD2): 옛 「AI」 단추 글의 「경로:」 줄은 떼어 본문 위 뱃지 줄로, 글 안 절대 경로는 글 안 뱃지로(F7) */
 export function UserMessageBody({ text, files, store }: { text: string; files?: FileRef[]; store: ChatStore }) {
-  const legacy = useMemo(() => takeLegacyPathLines(text), [text]);
+  // 위젯이 붙인 페이지 맥락 블록(스펙 2026-11-15-002 A1)은 말풍선에서 떼어 「맥락: 제목」 한 줄로 보인다
+  const shown = useMemo(() => splitContextBlock(text), [text]);
+  const legacy = useMemo(() => takeLegacyPathLines(shown.rest), [shown.rest]);
   const all = useMemo(() => {
     const list = [...(files ?? [])];
     for (const path of legacy.paths) if (!list.some((f) => f.path === path)) list.push({ name: path.split('/').pop() || path, path });
@@ -157,6 +161,12 @@ export function UserMessageBody({ text, files, store }: { text: string; files?: 
   }, [files, legacy]);
   return (
     <>
+      {shown.ctx && (
+        <Typography component="span" data-testid="chat-page-context" sx={{ display: 'block', fontSize: 12, color: 'text.secondary', mb: 0.5 }}>
+          {t('chat.pageContext', { title: shown.ctx.title })}
+          {shown.ctx.selectionLength > 0 && ` · ${t('chat.pageContextSelection', { n: shown.ctx.selectionLength })}`}
+        </Typography>
+      )}
       {all.length > 0 && <SentFiles files={all} store={store} />}
       {splitPaths(legacy.text).map((part, i) => (typeof part === 'string' ? part : <InlineFile key={i} path={part.path} store={store} />))}
     </>
@@ -567,6 +577,7 @@ function FilesDrawerInner({ store, reveal }: { store: ChatStore; reveal?: string
       file={personalFile(store, e)}
       actions={fileActions(e, key)}
       onKeyDown={tree ? (ev) => onTreeKey(ev, { kind: 'file', entry: e, depth: 0 }, tree.parent) : undefined}
+      save={pod && store.profile && key !== 'shared' ? { pod, profile: store.profile } : undefined}
     />
   );
 
@@ -852,7 +863,7 @@ const subList = (depth: number, dark: boolean) => ({
 });
 
 /** 줄 끝 단추 칸 폭(28px 단추 둘 + 틈 4px). 열 머리도 같은 폭을 비워 크기·시각 열을 맞춘다 */
-const ACTIONS_W = 60;
+const ACTIONS_W = 90; // 묻기·MindWiki 에 저장·지우기(스펙 2026-11-15-002 A4)
 
 /** 줄 끝 작은 아이콘 단추. 터치 화면은 보이는 크기는 두고 누르는 영역만 넓힌다(DD18) */
 const rowBtn = {
@@ -887,6 +898,7 @@ function FileRow({
   selected,
   tree = false,
   onKeyDown,
+  save,
 }: {
   e: ListingEntry;
   group: GroupKey;
@@ -895,6 +907,8 @@ function FileRow({
   selected: boolean;
   tree?: boolean;
   onKeyDown?: (ev: KeyboardEvent) => void;
+  /** 「MindWiki 에 저장」을 둘 때의 작업공간·프로파일(스펙 2026-11-15-002 A4) */
+  save?: { pod: string; profile: string };
 }) {
   const tk = useChatTokens();
   const dark = useTheme().palette.mode === 'dark';
@@ -977,6 +991,7 @@ function FileRow({
             </IconButton>
           </Tooltip>
         )}
+        {save && !file.blocked && <SaveFileToMindwiki pod={save.pod} profile={save.profile} path={e.path} name={e.name} sx={{ ...rowBtn, color: tk.muted, '&:hover': { color: tk.text } }} />}
         {actions.onDelete && (
           <Tooltip title={t('chat.viewer.delete')}>
             <IconButton

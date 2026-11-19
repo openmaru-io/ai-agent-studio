@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setLang } from '@/i18n';
 
-import { api, cached, del, forget, get, patch, post } from './api';
+import { api, cached, del, forget, get, patch, post, SIDECAR_RETRY_MS } from './api';
 import { wsClient } from './ws';
 
 const json = (body: unknown, status = 200) =>
@@ -153,5 +153,54 @@ describe('api.get 과 웹소켓(OMAI-1100 W4)', () => {
     vi.mocked(fetch).mockResolvedValue(json({ ok: 2 }));
     expect(await get('/api/x')).toEqual({ ok: 2 });
     expect(req).not.toHaveBeenCalled();
+  });
+
+  describe('사이드카가 잠깐 응답하지 않으면(503 sidecar_unavailable) 다시 시도한다', () => {
+    const busy = () => json({ error: '잠시 응답하지 않습니다', code: 'sidecar_unavailable' }, 503);
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('GET 은 1초·2초 뒤 다시 읽고, 성공하면 오류 없이 값을 돌려준다', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(busy())
+        .mockResolvedValueOnce(busy())
+        .mockResolvedValueOnce(json({ ok: 3 }));
+      const p = get('/api/chat/history?profile=main');
+      await vi.advanceTimersByTimeAsync(SIDECAR_RETRY_MS[0]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(SIDECAR_RETRY_MS[1]);
+      await expect(p).resolves.toEqual({ ok: 3 });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('다 실패하면 서버 문장으로 실패한다(세 번만 보낸다)', async () => {
+      vi.mocked(fetch).mockImplementation(() => Promise.resolve(busy()));
+      const p = get('/api/chat/history?profile=main');
+      const done = expect(p).rejects.toMatchObject({ status: 503, message: '잠시 응답하지 않습니다' });
+      await vi.advanceTimersByTimeAsync(SIDECAR_RETRY_MS[0] + SIDECAR_RETRY_MS[1]);
+      await done;
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('다른 503 과 다른 오류는 다시 보내지 않는다', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(json({ error: '다시 시작하는 중' }, 503));
+      await expect(get('/api/chat/history')).rejects.toMatchObject({ status: 503 });
+      vi.mocked(fetch).mockResolvedValueOnce(json({ error: 'x', code: 'sidecar_unavailable' }, 500));
+      await expect(get('/api/chat/history')).rejects.toMatchObject({ status: 500 });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('POST 는 결과가 같은 resume 만 다시 보내고, 새 세션 만들기는 다시 보내지 않는다', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(busy())
+        .mockResolvedValueOnce(json({ session_id: 's1' }));
+      const p = post('/api/chat/resume', { profile: 'main', stored_id: 'x' });
+      await vi.advanceTimersByTimeAsync(SIDECAR_RETRY_MS[0]);
+      await expect(p).resolves.toEqual({ session_id: 's1' });
+      vi.mocked(fetch).mockClear();
+      vi.mocked(fetch).mockResolvedValueOnce(busy());
+      await expect(post('/api/chat/session', { profile: 'main' })).rejects.toMatchObject({ status: 503 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
   });
 });

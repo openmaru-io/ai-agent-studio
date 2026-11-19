@@ -111,12 +111,8 @@ def suggest(team, keywords, who: str, ask: Callable[[list[dict]], str] | None = 
     try:
         answer = ask(prompt(name, kw, lang))
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").lower()
-        except Exception:
-            pass
-        raise SuggestError("blocked" if "guardrail" in detail or "blocked" in detail else "llm_failed", 502) from exc
+        from ..market import tags
+        raise SuggestError("blocked" if tags.guardrail_blocked(exc) else "llm_failed", 502) from exc
     except Exception as exc:
         raise SuggestError("llm_failed", 502) from exc
     out = parse(answer)

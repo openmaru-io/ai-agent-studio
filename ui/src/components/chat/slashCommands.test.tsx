@@ -50,6 +50,17 @@ describe('slashItems — 두 묶음(DC1·DC6·DC13)', () => {
     expect(items[items.length - 1]).toMatchObject({ group: '스킬', note: true, label: '이 프로파일에 쓸 수 있는 스킬이 없습니다' });
   });
 
+  it('에이전트 플러그인 명령은 명령과 스킬 사이 「AI 에이전트 명령」 묶음 — 고르면 글로 보낸다(막지 않는다)', () => {
+    const data: SkillList = { ...DATA, plugin_commands: [{ command: '/작업', name: '작업', description: '작업 페이지 1장', hint: '<내용>' }] };
+    const items = slashItems(data)!;
+    expect(items.map((i) => i.group)).toEqual(['명령', '명령', '명령', '명령', '명령', 'AI 에이전트 명령', '스킬']);
+    expect(items[5]).toMatchObject({ value: '/작업', detail: '작업 페이지 1장', hint: '<내용>' });
+    expect(slashCount(items)).toBe('명령 6개 · 스킬 1개');
+    // command_names 에 없으니 명령으로 실행하지도, 「지원하지 않는 명령」으로 막지도 않는다 — 플러그인 훅이 받는다
+    expect(planSlash('/작업 yj 제목\n본문', sug(data), skillSuggestItems(data), false)).toEqual({});
+    expect(slashItems(data, true)!.map((i) => i.value)).toEqual(['/steer', '/queue']); // 답하는 중에는 스킬처럼 숨긴다
+  });
+
   it('답하는 중이면 /steer·/queue 만, 스킬은 숨긴다', () => {
     expect(slashItems(DATA, true)!.map((i) => i.value)).toEqual(['/steer', '/queue']);
   });

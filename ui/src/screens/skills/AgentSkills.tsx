@@ -9,9 +9,13 @@
 // 화면 다듬기(스펙 2026-11-06-002 §8): 1280px 미만 아바타 띠 G12, 탭 G13, 게시 단계 G14, 에이전트 요약 G15, 에이전트 이름 G16,
 // 켜고 끄기 G17, 자격증명 고칠 곳 링크 G18, 「등록됨」 중립색 G19.
 // 개요 탭(기본 탭, AI 요약은 1.5초 머문 뒤)·머리의 「AI 에이전트별 | 전체 스킬」 전환·없는 에이전트 알림(스펙 2026-11-06-003 R1~R3).
+// 목록 다듬기(스펙 2026-11-18-005): 줄마다 붙던 「안 쓰임」·「꺼짐」 알약을 상태 점 하나로, 고른 줄은 빨강 대신 단색 바탕(DESIGN 1-1.2).
+import AddIcon from '@mui/icons-material/Add';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
@@ -44,6 +48,7 @@ import { languageOf } from '@/components/codeLanguage';
 import { DisclosureButton } from '@/components/DisclosureButton';
 import { LazyCodeEditor } from '@/components/LazyCodeEditor';
 import { PageTitle } from '@/components/PageTitle';
+import { tier2 } from '@/components/tierButton';
 import { useFillHeight } from '@/components/useFillHeight';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
@@ -51,12 +56,13 @@ import { ChatGroup, ChatStatus, rowTitle } from '@/lib/chatStore';
 import { confLabel, kindLabel } from '@/lib/flowLabels';
 import { FEdge, FNode, Graph } from '@/lib/flowLayout';
 import { badgeTone, serverTerm } from '@/lib/serverTerms';
-import { FOCUS_RING } from '@/lib/shellTokens';
+import { FOCUS_RING, gridTokens } from '@/lib/shellTokens';
 import { Splitter, STRIP_W } from '@/screens/chat/layout';
 import { AgentAvatar } from '@/screens/chat/parts';
 import { Toggle } from '@/screens/profiles/Panes';
 import { useProfileAct } from '@/screens/profiles/shared';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import { isManagedEnv, RequiredEnv, SkillEnvButton, SkillEnvProvider } from '@/screens/skills/SkillEnvDialog';
 import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
 export type Readiness = 'ok' | 'setup' | 'unused' | 'off';
@@ -107,7 +113,8 @@ interface SkillOne {
   description?: string;
   modified?: string;
   files: number;
-  required_env?: { name: string; prompt?: string; help?: string; optional?: boolean; set?: boolean }[];
+  required_env?: RequiredEnv[];
+  managed_mixed?: boolean;
 }
 
 const FILTERS = ['all', 'on', 'off', 'setup', 'unused'] as const;
@@ -125,16 +132,21 @@ const LIMITS = { agents: [200, 360] as const, list: [300, 560] as const };
 
 const agentLabel = (p: string) => (p === 'default' ? t('skills.shared') : p);
 
-/** 에이전트를 채팅 화면과 같은 이름(예: 마케팅 도우미)으로 보인다(G16). 이름은 채팅과 같은 /api/chat/status?all=1 의 지금 묶음에서
- *  rowTitle 규칙으로 정한다. 읽지 못하면(옛 서버·채팅 설정 없음) 프로파일 이름 그대로 */
-export function useAgentLabel(): (p: string) => string {
+/** 지금 AI 에이전트 작업공간의 묶음(이름·주인). 채팅과 같은 /api/chat/status?all=1 을 한 번 읽어 이름 짓기·위치 줄이 함께 쓴다 */
+function useCurrentGroup(): (ChatGroup & ChatStatus) | undefined {
   const q = useQuery({
     queryKey: ['chat', 'status', 'names'],
     queryFn: () => get<{ groups?: ChatGroup[] } & ChatStatus>('/api/chat/status?all=1'),
     staleTime: 60_000,
     retry: false,
   });
-  const g = q.data ? (q.data.groups?.find((x) => x.current) ?? q.data) : undefined;
+  return q.data ? (q.data.groups?.find((x) => x.current) ?? q.data) : undefined;
+}
+
+/** 에이전트를 채팅 화면과 같은 이름(예: 마케팅 도우미)으로 보인다(G16). 이름은 채팅과 같은 /api/chat/status?all=1 의 지금 묶음에서
+ *  rowTitle 규칙으로 정한다. 읽지 못하면(옛 서버·채팅 설정 없음) 프로파일 이름 그대로 */
+export function useAgentLabel(): (p: string) => string {
+  const g = useCurrentGroup();
   return (p: string) => {
     if (p === 'default' || !g?.agents?.length) return agentLabel(p);
     const a = g.agents.find((x) => x.name === p);
@@ -142,6 +154,9 @@ export function useAgentLabel(): (p: string) => string {
   };
 }
 const readinessTone = (r?: Readiness) => (r === 'setup' ? 'warn' : r === 'ok' ? 'good' : undefined);
+/** 목록에 보일 상태: 꺼진 스킬은 사용 기록과 상관없이 「꺼짐」 */
+const stateOf = (s: Pick<AgentSkillRow, 'enabled' | 'readiness'>): Readiness =>
+  s.enabled === false ? 'off' : (s.readiness ?? 'ok');
 const shortDate = (s?: string) => (s ? s.slice(0, 10) : '');
 const usedOf = (s: AgentSkillRow) => Math.max(s.uses ?? 0, s.seen ?? 0);
 const matchFilter = (s: AgentSkillRow, f: Filter) =>
@@ -189,7 +204,16 @@ export function agentOrder(g: AgentSkillsData): string[] {
   );
 }
 
-export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile: string) => void }) {
+export function AgentSkills(props: { g: AgentSkillsData; onNew: (profile: string) => void }) {
+  // 「값 넣기」 창 상태는 줄 밖(여기)에 둔다 — 저장 뒤 목록이 다시 와 줄이 사라져도 창이 남는다(스펙 2026-11-18-004 §3-1)
+  return (
+    <SkillEnvProvider rows={props.g.skills} profiles={props.g.profiles}>
+      <AgentSkillsBody {...props} />
+    </SkillEnvProvider>
+  );
+}
+
+function AgentSkillsBody({ g, onNew }: { g: AgentSkillsData; onNew: (profile: string) => void }) {
   const [params, setParams] = useSearchParams();
   const narrow = useMediaQuery('(max-width:899.98px)');
   // 900~1279px 는 에이전트 칸을 아바타 띠로 접는다 — 채팅과 같은 규칙(G12). 세 칸이면 상세가 눌려 탭이 잘렸다
@@ -284,6 +308,7 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
     return (
       <Box data-testid="agent-skills">
         {title}
+        <WhereStrip agent={agent} primary={agent === g.primary} onNew={() => onNew(agent)} />
         {picked ? (
           detail
         ) : (
@@ -308,6 +333,7 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   return (
     <Box data-testid="agent-skills">
       {title}
+      <WhereStrip agent={agent} primary={agent === g.primary} onNew={() => onNew(agent)} />
       <Box
         ref={frame}
         sx={{
@@ -346,6 +372,77 @@ export function AgentSkills({ g, onNew }: { g: AgentSkillsData; onNew: (profile:
   );
 }
 
+// ---- 위치 줄: 누구의 어느 작업공간의 어느 프로파일인가 ----------------------------------------------------
+// 목록에 프로파일 이름(main)만 보여 무엇을 보는지 알 수 없었다(2026-11-18 사용자 지적, 스펙 2026-11-18-005 §9).
+// 칸마다 값(굵게)과 그 값이 무엇인지(작게)를 둔다. 작업공간 이름을 읽지 못하면(옛 서버) 프로파일 칸만 둔다
+
+function WhereSeg({ value, avatar, extra, caption }: { value: string; avatar: ReactNode; extra?: ReactNode; caption: ReactNode }) {
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+      {avatar}
+      <Box sx={{ minWidth: 0 }}>
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+          <Typography noWrap sx={{ fontWeight: 600, fontSize: 14, minWidth: 0 }} title={value}>
+            {value}
+          </Typography>
+          {extra}
+        </Stack>
+        <Typography variant="caption" color="text.secondary" component="div" noWrap>
+          {caption}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
+/** 지금 보는 작업공간 › AI 에이전트(프로파일) 줄. 오른쪽 끝의 「새 스킬」은 이 AI 에이전트에 만든다(제목 옆 + 와 같은 동작, 2026-11-18 사용자 지시) */
+function WhereStrip({ agent, primary, onNew }: { agent: string; primary: boolean; onNew: () => void }) {
+  const g = useCurrentGroup();
+  const label = useAgentLabel();
+  const ws = g ? g.name || g.pod || '' : '';
+  const owner = g?.owner_name ?? '';
+  const name = label(agent);
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', minWidth: 0, mb: 1.25 }}>
+      <Box
+        component="nav"
+        aria-label={t('skillsAgent.where.aria')}
+        data-testid="skills-where"
+        sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', minWidth: 0, flex: '1 1 auto' }}
+      >
+        {ws && (
+          <WhereSeg
+            value={ws}
+            avatar={<AgentAvatar name={g?.pod || ws} label={ws} tone="hue" size={28} />}
+            caption={owner ? t('chat.ownerOf', { name: owner }) : t('skillsAgent.where.workspace')}
+          />
+        )}
+        {/* 화살표는 프로파일 칸에 붙인다 — 좁아서 줄이 바뀌어도 「작업공간 아래의 프로파일」로 읽힌다 */}
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+          {ws && <ChevronRightIcon aria-hidden sx={{ color: 'text.disabled', fontSize: 20 }} />}
+          <WhereSeg
+            value={name}
+            avatar={<AgentAvatar name={agent} label={name} size={28} />}
+            extra={primary ? <PrimaryTag /> : undefined}
+            caption={t('skillsAgent.where.profile', { name: agent })}
+          />
+        </Stack>
+      </Box>
+      {/* 경로 줄 밖(nav 밖)에 둔다 — 길 안내가 아니라 동작이다. 좁으면 다음 줄로 내려가도 오른쪽 끝에 붙는다 */}
+      <Button
+        size="small"
+        variant="outlined"
+        startIcon={<AddIcon />}
+        onClick={onNew}
+        title={t('skillsAgent.where.newSkillFor', { name })}
+        sx={[tier2 as object, { ml: 'auto', flexShrink: 0 }]}
+      >
+        {t('skills.newSkill')}
+      </Button>
+    </Box>
+  );
+}
+
 // ---- 왼쪽: AI 에이전트 -------------------------------------------------------------------------------
 
 /** 「기본」 칩: 주 에이전트 표시. 무엇이 기본인지 툴팁으로 설명한다(G16 — 「주」만으로는 뜻을 알 수 없었다) */
@@ -374,9 +471,7 @@ function AgentColumn({
   const byName = new Map((g.agents ?? []).map((a) => [a.profile, a]));
   return (
     <Box component="nav" aria-label={t('skillsAgent.agents')}>
-      <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, pt: 1, display: 'block' }}>
-        {t('skillsAgent.agents')}
-      </Typography>
+      <GroupHead title={t('skillsAgent.agents')} n={order.length} />
       <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
         {order.map((p) => {
           const a = byName.get(p);
@@ -398,11 +493,10 @@ function AgentColumn({
                   gap: 1.25,
                   alignItems: 'center',
                   px: 1.5,
-                  py: 1,
+                  py: 1.125,
                   cursor: 'pointer',
-                  bgcolor: on ? 'action.selected' : undefined,
-                  '&:hover': { bgcolor: on ? 'action.selected' : 'action.hover' },
-                  '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+                  ...pickedSx(on),
+                  '&:focus-visible': { outline: `2px solid ${FOCUS_RING}`, outlineOffset: -2 },
                 }}
               >
                 <AgentAvatar name={p} label={label(p)} size={32} />
@@ -512,12 +606,17 @@ function AgentOverview({ agent, rows, onPick }: { agent: string; rows: AgentSkil
         {setup.length ? (
           <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
             {setup.map((s) => (
-              <Box component="li" key={s.id} sx={{ py: 0.5, borderBottom: 1, borderColor: 'divider' }}>
+              <Box
+                component="li"
+                key={s.id}
+                sx={{ py: 0.5, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1 }}
+              >
+                {/* 줄 이름은 스킬을 고르고, 오른쪽 「값 넣기」는 창을 연다 — 단추 안에 단추를 두지 않으려고 둘로 나눴다(스펙 2026-11-18-004 §3-1) */}
                 <Box
                   component="button"
                   type="button"
                   onClick={() => onPick(s.id)}
-                  sx={{ all: 'unset', cursor: 'pointer', display: 'block', '&:hover .name': { textDecoration: 'underline' }, '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` } }}
+                  sx={{ all: 'unset', flex: 1, minWidth: 0, cursor: 'pointer', display: 'block', '&:hover .name': { textDecoration: 'underline' }, '&:focus-visible': { outline: `2px solid ${FOCUS_RING}` } }}
                 >
                   <Stack direction="row" spacing={0.75} alignItems="center">
                     <WarningAmberIcon color="warning" sx={{ fontSize: 16 }} aria-hidden />
@@ -531,6 +630,7 @@ function AgentOverview({ agent, rows, onPick }: { agent: string; rows: AgentSkil
                     </Typography>
                   )}
                 </Box>
+                <SkillEnvButton row={s} />
               </Box>
             ))}
           </Box>
@@ -588,10 +688,12 @@ function SkillColumn({
   const label = useAgentLabel();
   return (
     <>
-      <Box sx={{ px: 1.5, pt: 1.25, pb: 1, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography sx={{ fontWeight: 600 }}>{t('skillsAgent.skillsOf', { name: label(agent) })}</Typography>
+      <Box sx={{ px: 1.5, pt: 1.5, pb: 1.25, borderBottom: 1, borderColor: 'divider' }}>
+        <Typography component="h2" sx={{ fontWeight: 600, fontSize: 15, letterSpacing: '-0.01em' }}>
+          {t('skillsAgent.skillsOf', { name: label(agent) })}
+        </Typography>
         {summary && (
-          <Typography variant="caption" color="text.secondary" component="div">
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.25 }}>
             {t('skillsAgent.summary', {
               on: summary.enabled,
               n: summary.skills,
@@ -625,21 +727,39 @@ function SkillColumn({
           spacing={0.5}
           useFlexGap
           flexWrap="wrap"
-          sx={{ mt: 1 }}
+          sx={{ mt: 1.25 }}
           role="group"
           aria-label={t('skillsAgent.filter')}
         >
-          {FILTERS.map((f) => (
-            <Chip
-              key={f}
-              size="small"
-              label={`${t(`skillsAgent.filter.${f}`)} ${count(f)}`}
-              color={filter === f ? 'primary' : 'default'}
-              variant={filter === f ? 'filled' : 'outlined'}
-              onClick={() => onFilter(f)}
-              aria-pressed={filter === f}
-            />
-          ))}
+          {/* 거르기 칩이 목록 점의 범례를 겸한다: 설정 필요·안 쓰임·꺼짐 칩에 같은 점. 고른 칩은 단색(DESIGN 1-1.2) */}
+          {FILTERS.map((f) => {
+            const sel = filter === f;
+            return (
+              <Chip
+                key={f}
+                size="small"
+                variant="outlined"
+                icon={f === 'setup' || f === 'unused' || f === 'off' ? <StatusDot state={f} quiet /> : undefined}
+                label={
+                  <>
+                    {t(`skillsAgent.filter.${f}`)}{' '}
+                    <Box component="span" sx={{ fontVariantNumeric: 'tabular-nums', opacity: sel ? 1 : 0.7 }}>
+                      {count(f)}
+                    </Box>
+                  </>
+                }
+                onClick={() => onFilter(f)}
+                aria-pressed={sel}
+                sx={{
+                  color: sel ? 'text.primary' : 'text.secondary',
+                  fontWeight: sel ? 600 : 500,
+                  borderColor: sel ? 'text.primary' : 'divider',
+                  bgcolor: sel ? 'action.selected' : 'transparent',
+                  '& .MuiChip-icon': { ml: 1, mr: -0.25 },
+                }}
+              />
+            );
+          })}
         </Stack>
       </Box>
       <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
@@ -694,9 +814,7 @@ function SkillGroup({
 }) {
   return (
     <Box component="section" aria-label={title}>
-      <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, pt: 1, display: 'block' }}>
-        {`${title} ${n}`}
-      </Typography>
+      <GroupHead title={title} n={n} />
       {rows.length ? (
         <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
           {rows.map((s) => (
@@ -704,32 +822,94 @@ function SkillGroup({
           ))}
         </Box>
       ) : (
-        <Typography variant="body2" color="text.secondary" sx={{ px: 1.5, pb: 1 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ px: 1.5, py: 1.25 }}>
           {empty}
         </Typography>
       )}
-      {more && <Box sx={{ px: 1, pb: 1 }}>{more}</Box>}
+      {more && <Box sx={{ px: 1, py: 0.75 }}>{more}</Box>}
     </Box>
   );
 }
 
+/** 상태 점(DESIGN Status Dot): 동작 중 초록 · 설정 필요 주황 · 안 쓰임 회색 · 꺼짐 빈 원.
+ *  「설정 필요」는 옆에 알약이 따로 있어 점은 읽지 않게 둔다(같은 말을 두 번 읽지 않게) */
+function StatusDot({ state, quiet }: { state: Readiness; quiet?: boolean }) {
+  const name = t(`skillsAgent.ready.${state}`);
+  const fill = { ok: 'success.main', setup: 'warning.main', unused: 'text.disabled', off: 'transparent' }[state];
+  const dot = (
+    <Box
+      component="span"
+      data-state={state}
+      {...(quiet ? { 'aria-hidden': true } : { role: 'img', 'aria-label': name })}
+      sx={{
+        flexShrink: 0,
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        bgcolor: fill,
+        border: state === 'off' ? 1.5 : 0,
+        borderColor: 'text.disabled',
+        boxSizing: 'border-box',
+      }}
+    />
+  );
+  return quiet ? dot : <Tooltip title={name}>{dot}</Tooltip>;
+}
+
+/** 칸 안의 묶음 머리: 왼쪽 이름, 오른쪽 개수. 목록이 길어 스크롤해도 어느 묶음인지 보이게 위에 붙는다 */
+function GroupHead({ title, n }: { title: string; n?: number }) {
+  return (
+    <Box
+      aria-hidden
+      sx={{
+        position: 'sticky',
+        top: 0,
+        zIndex: 1,
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        px: 1.5,
+        py: 0.75,
+        bgcolor: 'background.default',
+        borderBottom: 1,
+        borderColor: 'divider',
+        fontSize: 12,
+        fontWeight: 600,
+        color: 'text.secondary',
+      }}
+    >
+      <span>{title}</span>
+      {n !== undefined && <Box component="span" sx={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{n}</Box>}
+    </Box>
+  );
+}
+
+/** 고른 줄·고른 에이전트: 표의 선택 행과 같은 토큰(gridTokens selected·selectedAccent, DESIGN 1-1.2 Selected).
+ *  예전에는 MUI action.selected(다크 16%)와 본문색 선을 써서 다른 화면보다 바탕이 진했다(2026-11-19). 브랜드 빨강은 쓰지 않는다 */
+type ModeTheme = { palette: { mode: 'light' | 'dark' } };
+const grid = (th: ModeTheme) => gridTokens[th.palette.mode];
+const pickedSx = (on: boolean) => ({
+  bgcolor: on ? (th: ModeTheme) => grid(th).selected : undefined,
+  boxShadow: on ? (th: ModeTheme) => `inset 2px 0 0 ${grid(th).selectedAccent}` : undefined,
+  '&:hover': { bgcolor: (th: ModeTheme) => (on ? grid(th).selected : grid(th).hover) },
+});
+
 function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; on: boolean; onPick: () => void }) {
   const used = usedOf(s);
+  const state = stateOf(s);
+  const meta = [
+    ...(s.modes ?? []).map((m) => (
+      <span key={m} data-mode={m}>
+        {modeLabel(m)}
+      </span>
+    )),
+    ...(used ? [<span key="used">{t('skillsAgent.usedN', { n: used }) + (s.last_used ? ` · ${shortDate(s.last_used)}` : '')}</span>] : []),
+  ];
   return (
     <Box
       component="li"
       data-skill={s.name}
-      sx={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 1,
-        px: 1.5,
-        py: 0.75,
-        bgcolor: on ? 'action.selected' : undefined,
-        borderLeft: 3,
-        borderColor: on ? 'primary.main' : 'transparent',
-        opacity: s.enabled === false ? 0.6 : 1,
-      }}
+      sx={{ display: 'flex', alignItems: 'center', gap: 1, pl: 1.5, pr: 1, py: 0.875, ...pickedSx(on) }}
     >
       <Box
         component="button"
@@ -741,32 +921,51 @@ function SkillItem({ s, agent, on, onPick }: { s: AgentSkillRow; agent: string; 
           cursor: 'pointer',
           flex: 1,
           minWidth: 0,
-          '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' },
+          display: 'grid',
+          gridTemplateColumns: '8px minmax(0, 1fr)',
+          columnGap: 1.25,
+          alignItems: 'center',
+          borderRadius: 0.5,
+          '&:focus-visible': { outline: `2px solid ${FOCUS_RING}`, outlineOffset: 2 },
         }}
       >
+        <StatusDot state={state} quiet={state === 'setup'} />
         <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-          <Typography noWrap sx={{ fontWeight: 500, fontSize: 14 }}>
+          <Typography
+            noWrap
+            sx={{ fontWeight: on ? 600 : 500, fontSize: 14, color: state === 'off' ? 'text.secondary' : 'text.primary' }}
+          >
             {s.name}
           </Typography>
-          {s.readiness && s.readiness !== 'ok' && (
-            <Tag tone={readinessTone(s.readiness)}>{t(`skillsAgent.ready.${s.readiness}`)}</Tag>
+          {/* 줄 높이를 다른 줄과 같게: 20px 알약(DESIGN Warning Pill 11px) */}
+          {state === 'setup' && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color="warning"
+              label={t('skillsAgent.ready.setup')}
+              sx={{ height: 20, fontSize: 11, fontWeight: 500, '& .MuiChip-label': { px: 0.75 } }}
+            />
           )}
         </Stack>
-        <Stack direction="row" spacing={0.5} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mt: 0.25 }}>
-          {(s.modes ?? []).map((m) => (
-            <Box
-              key={m}
-              component="span"
-              data-mode={m}
-              sx={{ fontSize: 11, px: 0.75, borderRadius: 0.5, bgcolor: 'action.hover', color: 'text.secondary' }}
-            >
-              {modeLabel(m)}
-            </Box>
-          ))}
-          <Typography variant="caption" color="text.secondary">
-            {used ? t('skillsAgent.usedN', { n: used }) + (s.last_used ? ` · ${shortDate(s.last_used)}` : '') : ''}
-          </Typography>
-        </Stack>
+        {!!meta.length && (
+          <Box
+            sx={{
+              gridColumn: 2,
+              mt: 0.25,
+              display: 'flex',
+              flexWrap: 'wrap',
+              columnGap: 0.75,
+              fontSize: 12,
+              lineHeight: 1.4,
+              color: 'text.secondary',
+              // 항목 사이의 가는 점(꾸밈). 「예약 작업 · 3번 씀」처럼 읽힌다
+              '& > span + span::before': { content: '"·"', mr: 0.75, color: 'text.disabled' },
+            }}
+          >
+            {meta}
+          </Box>
+        )}
       </Box>
       {s.enabled !== undefined && <SkillSwitch agent={agent} name={s.name} on={s.enabled} />}
     </Box>
@@ -975,7 +1174,7 @@ function RunPane({
   );
 }
 
-/** API 키·토큰 화면에서 이 에이전트의 값을 고치러 가는 링크. 대화 화면 메뉴의 링크와 같은 주소다(G18) */
+/** API 키·토큰 화면으로 가는 링크(G18). 값 넣기는 「값 넣기」 창이 맡고, 이 링크는 바꾸기·지우기·다른 프로파일을 위한 「보기」다. 대화 화면 메뉴의 링크와 같은 주소다 */
 export function CredsFixLink({ profile }: { profile: string }) {
   return (
     <LinkChip to="credentials" params={{ tab: 'all', profile }}>
@@ -1081,7 +1280,7 @@ function NodeCard({ node, label, sub, edges, profile }: { node?: FNode; label: s
   );
 }
 
-type Need = { key: string; kind: string; name: string; state: 'ok' | 'warn' | 'bad'; note: string; action?: ReactNode };
+type Need = { key: string; kind: string; name: string; state: 'ok' | 'warn' | 'bad' | 'info'; note: string; action?: ReactNode };
 
 /** 「필요한 것」: 선언한 환경변수(그 에이전트 .env 기준) ∪ 코드가 쓰는 자격증명·MCP 서버·라이브러리. 값은 보이지 않는다 */
 function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flow?: Graph }) {
@@ -1090,6 +1289,18 @@ function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flo
   const declared = new Set<string>();
   (one?.required_env ?? []).forEach((e) => {
     declared.add(e.name);
+    if (isManagedEnv(e)) {
+      // AAS 가 주는 LLM 접속값: 할 일이 없다. AAS 값이면 info, 프로파일 값이 덮으면 good(스펙 2026-11-19-002 §4-3)
+      const own = e.managed_source === 'profile';
+      needs.push({
+        key: 'env:' + e.name,
+        kind: t('skillsAgent.need.env'),
+        name: e.name,
+        state: own ? 'ok' : 'info',
+        note: own ? t('skills.envProfileValue') : t('skills.envProvidedByAas'),
+      });
+      return;
+    }
     needs.push({
       key: 'env:' + e.name,
       kind: t('skillsAgent.need.env'),
@@ -1100,10 +1311,16 @@ function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flo
         .join(' · '),
       // 값이 없는 줄(설정 필요)에는 값을 넣는 곳과 API 키·토큰 화면 링크(G18)
       action: e.set ? undefined : (
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <LinkChip to="profiles" params={{ name: row.profile, pane: 'env', key: e.name }} page>
-            {t('skills.envFill')}
-          </LinkChip>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 1 }}>
+          <SkillEnvButton
+            row={row}
+            envKey={e.name}
+            fallback={
+              <LinkChip to="profiles" params={{ name: row.profile, pane: 'env', key: e.name }} page>
+                {t('skills.envFill')}
+              </LinkChip>
+            }
+          />
           <CredsFixLink profile={row.profile} />
         </Box>
       ),
@@ -1122,7 +1339,7 @@ function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flo
         note: [n.sub, ...(n.badges ?? []).map(serverTerm)].filter(Boolean).join(' · '),
         action:
           n.link || fixCred ? (
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 1 }}>
               {n.link && (
                 <LinkChip to={n.link.view} params={n.link.params}>
                   {t('skillsAgent.open')}
@@ -1137,17 +1354,30 @@ function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flo
   const icon = (s: Need['state']) =>
     s === 'ok' ? (
       <CheckCircleOutlineIcon color="success" fontSize="small" />
+    ) : s === 'info' ? (
+      <InfoOutlinedIcon color="info" fontSize="small" />
     ) : s === 'warn' ? (
       <WarningAmberIcon color="warning" fontSize="small" />
     ) : (
       <ErrorOutlineIcon color="error" fontSize="small" />
     );
-  const order = { bad: 0, warn: 1, ok: 2 };
+  const order = { bad: 0, warn: 1, ok: 2, info: 3 };
+  const llm = (own: boolean) =>
+    (one?.required_env ?? [])
+      .filter((e) => isManagedEnv(e) && !e.name.startsWith('HERMES_') && (e.managed_source === 'profile') === own)
+      .map((e) => e.name)
+      .join('·');
   return (
     <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         {t('skillsAgent.needsNote', { name: label(row.profile) })}
       </Typography>
+      {one?.managed_mixed && (
+        <Stack direction="row" spacing={0.75} alignItems="flex-start" sx={{ mb: 1 }} data-tone="warn">
+          <WarningAmberIcon color="warning" sx={{ fontSize: 16, mt: '2px' }} aria-hidden />
+          <Typography variant="caption">{t('skillsAgent.env.mixedSource', { profile: llm(true), aas: llm(false) })}</Typography>
+        </Stack>
+      )}
       {needs.length ? (
         <Box component="ul" sx={{ listStyle: 'none', m: 0, p: 0 }}>
           {[...needs]
@@ -1157,6 +1387,7 @@ function NeedsPane({ row, one, flow }: { row: AgentSkillRow; one?: SkillOne; flo
                 component="li"
                 key={n.key}
                 data-need={n.name}
+                data-state={n.state}
                 sx={{
                   display: 'flex',
                   gap: 1,
@@ -1276,6 +1507,7 @@ function OverviewPane({ row, one, onFiles }: { row: AgentSkillRow; one?: SkillOn
           <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
             {`${t('skillsAgent.setupNeeded')} — ${t('skillsAgent.overviewMissing', { names: missing.join(', ') })}`}
           </Typography>
+          <SkillEnvButton row={row} />
           <CredsFixLink profile={row.profile} />
         </Stack>
       )}
@@ -1372,7 +1604,8 @@ interface CheckResult {
   hub_version?: string;
   files: { path: string; size: number }[];
   excluded: string[];
-  env: { declared: string[]; reads: Record<string, string[]>; undeclared: string[] };
+  /** managed_add: 이번에 선언에 더할 LLM 접속값(서버가 게시 때 다시 구해 더한다, 스펙 2026-11-19-002). undeclared 는 일반 이름만 */
+  env: { declared: string[]; reads: Record<string, string[]>; undeclared: string[]; managed_add?: string[] };
   header: { before: string; after: string };
 }
 interface PublishList {
@@ -1432,7 +1665,7 @@ function PublishPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
   /** 게시를 요청했다 — 결과를 지우지 않고 요청 상태를 남긴다(G14) */
   const [sent, setSent] = useState('');
   // 공용에서 가져온 스킬은 원래 프로파일의 폴더를 올린다. 사용 기록은 이 에이전트 줄(id)로 본다
-  const owner = row.shared_from ?? row.profile;
+  const owner = row.shared_from || row.profile; // 서버는 전용 스킬에 shared_from: '' 를 준다 — ?? 면 profile 이 비어 점검이 400
   const label = useAgentLabel();
   const inRoot = (one?.path ?? '').replace(/^profiles\/[^/]+\//, '');
   const mine = useMemo(
@@ -1557,7 +1790,10 @@ function PublishPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
                   sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', py: 0.5 }}
                 >
                   {levelIcon(c.level)}
-                  <Typography variant="body2">{c.message}</Typography>
+                  {/* env_aas fail 은 선언 목록에 더할 줄(- LLM_API_KEY)을 줄마다 담는다 — 줄바꿈을 살려 그대로 복사하게 한다 */}
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>
+                    {c.message}
+                  </Typography>
                 </Box>
               ))}
             </Box>

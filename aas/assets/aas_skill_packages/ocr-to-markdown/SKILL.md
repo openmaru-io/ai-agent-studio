@@ -1,7 +1,7 @@
 ---
 name: ocr-to-markdown
 description: "그림(PNG·JPG·WebP)과 스캔 PDF(글자층 없음)의 한국어·영어 글자를 OCR 로 읽어 Markdown 으로 바꾼다. 손글씨·수식(LaTeX)도 읽는다. / OCR Korean and English text in images and scanned PDFs into Markdown, including handwriting and math formulas."
-version: 1.1.0
+version: 1.1.1
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [ocr, scan, image, pdf, korean, handwriting, formula, markdown, kordoc]
     category: productivity
     related_skills: [doc-to-markdown, hwp-to-markdown, pdf, business-card-ocr]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # 그림·스캔 PDF 글자 읽기(OCR) → Markdown

@@ -10,8 +10,6 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DnsOutlinedIcon from '@mui/icons-material/DnsOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
-import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import {
   Alert,
   Box,
@@ -40,12 +38,14 @@ import { Tag } from '@/components/bits';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { DisclosureButton } from '@/components/DisclosureButton';
 import { ItemList, ItemRow } from '@/components/ItemRow';
+import { SecretValueField as SecretField } from '@/components/SecretValueField';
 import { tier1, tier2 } from '@/components/tierButton';
 import { RequestAdminButton } from '@/features/requests/RequestAdminButton';
 import { t } from '@/i18n';
 import { ApiError } from '@/lib/api';
 import { MONO_FONT } from '@/lib/monoFont';
 
+import { type MindwikiAccount, MindwikiAccountPanel } from './MindwikiAccount';
 import { calmAlertSx, useProfileAct } from './shared';
 
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$/;
@@ -67,12 +67,16 @@ interface CatalogEntry {
   required_env: { name: string; prompt: string; required: boolean; secret?: boolean; value?: string }[];
   /** AAS 가 만든 항목(Docmost 2026-10-23-002 12-6, Outline 2026-10-23-004). 쓰기 도구를 고르고 켜고 끈다 */
   builtin?: boolean;
+  /** false 면 쓰기 도구가 없는 builtin 항목(CogentAI 두 항목, OMAI-1863). 쓰기 스위치·체크를 그리지 않는다 */
+  writable?: boolean;
   write?: boolean;
   /** none·api_key·oauth. OAuth 는 원격 주소 항목만 온다(스펙 2026-10-16-010 Q5) */
   auth_type?: string;
   url?: string;
   /** 주소의 가능 여부(4-7). blocked 면 설치할 수 없다 */
   network?: { verdict: string; message: string };
+  /** MindWiki 계정으로 연결 상태(스펙 2026-11-14-001 2단계). enabled 가 false 면 1단계(토큰 붙여 넣기)만 */
+  account?: MindwikiAccount;
 }
 /** AAS 항목 설치 결과(mcp_install). 도구 묶음 끄기·스킬 설치가 실패해도 설치는 성공이라 따로 알린다 */
 interface BuiltinInstall {
@@ -80,10 +84,16 @@ interface BuiltinInstall {
   connections_off?: boolean;
   skill?: string;
 }
-/** 항목별 쓰기 스위치 동작과 문구. Outline 은 삭제 도구를 등록하지 않는다(2026-10-23-004 Q3) */
-const writeAction = (n: string) => (n === 'outline' ? 'mcp_outline_write' : 'mcp_docmost_write');
-const writeLabel = (n: string) => t(n === 'outline' ? 'profiles.mcp.outlineWrite' : 'profiles.mcp.docmostWrite');
-const writeHelp = (n: string) => t(n === 'outline' ? 'profiles.mcp.outlineWriteHelp' : 'profiles.mcp.docmostWriteHelp');
+/** MindWiki MCP 서버 이름. 서버 aas/ops/mcp_servers.py 의 MINDWIKI 와 같다. 처음 이름 mindwiki 에서 바꿨다(2026-11-15, 스펙 2026-11-14-001) */
+export const MINDWIKI_SERVER = 'cogentai-mindwiki';
+/** 항목별 쓰기 스위치 동작과 문구. Outline·MindWiki 는 삭제 도구를 등록하지 않는다(2026-10-23-004 Q3, 2026-11-14-001) */
+const WRITE_KIND: Record<string, 'outline' | 'mindwiki'> = { outline: 'outline', [MINDWIKI_SERVER]: 'mindwiki' };
+const writeKind = (n: string) => WRITE_KIND[n] ?? 'docmost';
+const writeAction = (n: string) => `mcp_${writeKind(n)}_write`;
+const writeLabel = (n: string) => t(`profiles.mcp.${writeKind(n)}Write`);
+const writeHelp = (n: string) => t(`profiles.mcp.${writeKind(n)}WriteHelp`);
+/** 쓰기 도구를 고르고 켜고 끄는 builtin 항목인가(Docmost·Outline) */
+const canWrite = (e: { builtin?: boolean; writable?: boolean }) => !!e.builtin && e.writable !== false;
 /** 설치 결과에서 사용자에게 알릴 것만 문장으로 */
 export function builtinNotes(r: BuiltinInstall): string[] {
   const out: string[] = [];
@@ -98,66 +108,29 @@ interface CatalogData {
   hidden: { oauth: number; install: number; unknown: number };
 }
 
+/**
+ * 도구 탭이 MindWiki 계정 상태를 읽는다(카탈로그 창과 같은 캐시). 서버 뒤 작업이 키를 바꾸면(needs_apply) 창을 열지 않아도
+ * 「지금 적용」을 띄워야 한다(스펙 2026-11-14-012 A9, OKE 실화면 2026-11-15). 창에 다시 초점이 오면 다시 읽는다
+ */
+export function useMindwikiAccount(name: string, enabled: boolean): { account?: MindwikiAccount; updatedAt: number } {
+  const { act } = useProfileAct(name);
+  const q = useQuery<CatalogData>({
+    queryKey: ['mcp-catalog', name],
+    queryFn: () => act<CatalogData>('mcp_catalog'),
+    staleTime: 60_000,
+    enabled,
+    refetchOnWindowFocus: true,
+  });
+  return { account: enabled ? q.data?.entries.find((e) => e.name === MINDWIKI_SERVER)?.account : undefined, updatedAt: q.dataUpdatedAt };
+}
+
 /** 비밀 값 칸 아래 안내. 참조 꼴(${이름})은 자리표시자와 헷갈리지 않게 값으로 넘긴다 */
 const secretNote = () => t('profiles.mcp.secretNote', { ref: '${' + t('profiles.mcp.refName') + '}' });
 
 const useNarrow = () => useMediaQuery(useTheme().breakpoints.down('sm'));
 
-/** 점으로 가린 비밀 값 칸. 오른쪽 아이콘으로 세션 안에서만 잠깐 확인한다(스펙 §11 결정 8A) */
-function SecretField({
-  label,
-  value,
-  onChange,
-  error,
-  helper,
-  inputRef,
-  required,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  error?: string;
-  helper?: string;
-  inputRef?: (el: HTMLInputElement | null) => void;
-  required?: boolean;
-}) {
-  const [shown, setShown] = useState(false);
-  const helpId = useId();
-  return (
-    <TextField
-      size="small"
-      fullWidth
-      required={required}
-      label={label}
-      type={shown ? 'text' : 'password'}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      error={!!error}
-      helperText={error || helper}
-      inputRef={inputRef}
-      slotProps={{
-        htmlInput: { autoComplete: 'off', 'aria-describedby': helper || error ? helpId : undefined, style: { fontFamily: MONO_FONT } },
-        formHelperText: { id: helpId },
-        input: {
-          endAdornment: (
-            <InputAdornment position="end">
-              <IconButton
-                size="small"
-                edge="end"
-                sx={TOUCH}
-                aria-pressed={shown}
-                aria-label={t(shown ? 'profiles.mcp.hide' : 'profiles.mcp.show', { label })}
-                onClick={() => setShown((v) => !v)}
-              >
-                {shown ? <VisibilityOffOutlinedIcon fontSize="small" /> : <VisibilityOutlinedIcon fontSize="small" />}
-              </IconButton>
-            </InputAdornment>
-          ),
-        },
-      }}
-    />
-  );
-}
+/** 비밀 값 칸은 components/SecretValueField 로 옮겼다(스펙 2026-11-18-004). 템플릿 설치·갱신 화면이 이 이름으로 가져다 쓴다 */
+export { SecretField };
 
 function CatalogList({
   name,
@@ -181,6 +154,36 @@ function CatalogList({
   const [busy, setBusy] = useState('');
   const [search, setSearch] = useState('');
   const searchFocused = useRef(false);
+  // MindWiki 계정으로 연결은 서버 뒤 작업이다. 연결하는 동안 2초마다 다시 읽고, 끝나면 설치·변경을 부모에게 알린다(「지금 적용」).
+  // 끝남은 pending → connected 가 아니라 「요청 뒤 connected 가 됐거나 last_checked 가 바뀐 connected」로 본다: 뒤 작업이 요청 응답보다 먼저 끝나면
+  // 화면은 pending 을 보지 못한다(OKE 실화면 2026-11-14, 실패 → 연결됨·연결됨 → 연결됨)
+  const mw = q.data?.entries.find((e) => e.name === MINDWIKI_SERVER);
+  const mwStatus = mw?.account?.status;
+  const mwChecked = mw?.account?.last_checked ?? '';
+  const mwAsked = useRef<{ installed: boolean; checked: string; status?: string } | null>(null);
+  const { refetch } = q;
+  // 3단계: 서버 뒤 작업이 키를 바꿨으면(needs_apply) 부모의 「지금 적용」 배너를 켠다(화면 안 상태 OR 서버, 스펙 2026-11-14-012 A9).
+  // 브라우저 창에 다시 초점이 오면 다시 읽는다 — 재발급은 사용자가 화면을 보는 동안 일어난다
+  const mwNeedsApply = !!mw?.account?.needs_apply;
+  useEffect(() => {
+    if (mwNeedsApply) onChanged?.();
+  }, [mwNeedsApply, onChanged]);
+  useEffect(() => {
+    const onFocus = () => void refetch();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refetch]);
+  useEffect(() => {
+    const asked = mwAsked.current;
+    if (asked && mwStatus === 'connected' && (mwChecked !== asked.checked || asked.status !== 'connected')) {
+      mwAsked.current = null;
+      if (asked.installed) onChanged?.();
+      else onInstalled(MINDWIKI_SERVER, { oauth: false });
+    }
+    if (mwStatus !== 'pending') return;
+    const id = window.setInterval(() => void refetch(), 2000);
+    return () => window.clearInterval(id);
+  }, [mwStatus, mwChecked, refetch, onChanged, onInstalled]);
   if (q.isLoading) return <Typography color="text.secondary">{t('profiles.mcp.catalogLoading')}</Typography>;
   if (q.isError || !q.data)
     return (
@@ -199,9 +202,31 @@ function CatalogList({
     setBusy(e.name);
     setError('');
     try {
-      const r = await act<BuiltinInstall>('mcp_install', { server: e.name, env: envOf(e), ...(e.builtin ? { write: !!writes[e.name] } : {}) });
+      const r = await act<BuiltinInstall>('mcp_install', { server: e.name, env: envOf(e), ...(canWrite(e) ? { write: !!writes[e.name] } : {}) });
       const notes = e.builtin && r ? builtinNotes(r) : [];
       onInstalled(e.name, notes.length ? { oauth: e.auth_type === 'oauth', notes } : { oauth: e.auth_type === 'oauth' });
+    } catch (er) {
+      setError((er as Error).message);
+    }
+    setBusy('');
+  };
+  const connectAccount = async (write: boolean, workspace: string) => {
+    setBusy(MINDWIKI_SERVER);
+    setError('');
+    mwAsked.current = { installed: !!mw?.installed, checked: mwChecked, status: mwStatus };
+    try {
+      await act('mcp_mindwiki_connect', { write, ...(workspace ? { workspace } : {}) });
+      await q.refetch();
+    } catch (er) {
+      setError((er as Error).message);
+    }
+    setBusy('');
+  };
+  const ackAccount = async () => {
+    setBusy(MINDWIKI_SERVER);
+    try {
+      await act('mcp_mindwiki_ack');
+      await q.refetch();
     } catch (er) {
       setError((er as Error).message);
     }
@@ -256,6 +281,45 @@ function CatalogList({
           {shown.map((e) => {
             const need = e.required_env.filter((v) => v.required);
             const filled = need.every((v) => valueOf(e, v).trim());
+            const account = e.account?.enabled ? e.account : undefined;
+            const installButton = (
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                sx={[tier1 as object, { minHeight: 32 }]}
+                aria-label={t('profiles.mcp.installOf', { name: e.name })}
+                disabled={!!busy || !filled || (!secure && need.length > 0) || e.network?.verdict === 'blocked'}
+                onClick={() => install(e)}
+              >
+                {t('profiles.mcp.install')}
+              </Button>
+            );
+            const fields =
+              !e.installed && e.required_env.length ? (
+                <Stack spacing={1} sx={{ mt: 1 }}>
+                  {e.required_env.map((v) => {
+                    const change = (val: string) => setEnv((s) => ({ ...s, [e.name]: { ...s[e.name], [v.name]: val } }));
+                    return v.secret === false ? (
+                      <TextField key={v.name} size="small" fullWidth label={v.name} required={v.required} helperText={v.prompt} value={valueOf(e, v)} onChange={(ev) => change(ev.target.value)} />
+                    ) : (
+                      <SecretField key={v.name} label={v.name} required={v.required} helper={v.prompt} value={valueOf(e, v)} onChange={change} />
+                    );
+                  })}
+                  {canWrite(e) && (
+                    <FormControlLabel
+                      control={<Checkbox size="small" checked={!!writes[e.name]} onChange={(_, on) => setWrites((s) => ({ ...s, [e.name]: on }))} />}
+                      label={writeLabel(e.name)}
+                    />
+                  )}
+                  {canWrite(e) && writes[e.name] && (
+                    <Typography variant="caption" color="text.secondary">
+                      {writeHelp(e.name)}
+                    </Typography>
+                  )}
+                  {account && <Box>{installButton}</Box>}
+                </Stack>
+              ) : undefined;
             return (
               <ItemRow
                 key={e.name}
@@ -275,7 +339,7 @@ function CatalogList({
                     : e.description
                 }
                 control={
-                  e.installed && e.builtin ? (
+                  e.installed && canWrite(e) ? (
                     <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                       <Tag tone="good">{t('profiles.mcp.installed')}</Tag>
                       <FormControlLabel
@@ -286,48 +350,27 @@ function CatalogList({
                     </Stack>
                   ) : e.installed ? (
                     <Tag tone="good">{t('profiles.mcp.installed')}</Tag>
-                  ) : (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="inherit"
-                      sx={[tier1 as object, { minHeight: 32 }]}
-                      aria-label={t('profiles.mcp.installOf', { name: e.name })}
-                      disabled={!!busy || !filled || (!secure && need.length > 0) || e.network?.verdict === 'blocked'}
-                      onClick={() => install(e)}
-                    >
-                      {t('profiles.mcp.install')}
-                    </Button>
+                  ) : account ? undefined : (
+                    installButton
                   )
                 }
                 below={
-                  e.installed && e.builtin && switched[e.name] ? (
+                  account ? (
+                    <>
+                      {e.installed && canWrite(e) && switched[e.name] && (
+                        <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
+                          {t('profiles.mcp.docmostWriteApply')}
+                        </Typography>
+                      )}
+                      <MindwikiAccountPanel account={account} installed={e.installed} busy={!!busy} onConnect={connectAccount} onAck={ackAccount} paste={fields} />
+                    </>
+                  ) : e.installed && canWrite(e) && switched[e.name] ? (
                     <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
                       {t('profiles.mcp.docmostWriteApply')}
                     </Typography>
-                  ) : !e.installed && e.required_env.length ? (
-                    <Stack spacing={1} sx={{ mt: 1 }}>
-                      {e.required_env.map((v) => {
-                        const change = (val: string) => setEnv((s) => ({ ...s, [e.name]: { ...s[e.name], [v.name]: val } }));
-                        return v.secret === false ? (
-                          <TextField key={v.name} size="small" fullWidth label={v.name} required={v.required} helperText={v.prompt} value={valueOf(e, v)} onChange={(ev) => change(ev.target.value)} />
-                        ) : (
-                          <SecretField key={v.name} label={v.name} required={v.required} helper={v.prompt} value={valueOf(e, v)} onChange={change} />
-                        );
-                      })}
-                      {e.builtin && (
-                        <FormControlLabel
-                          control={<Checkbox size="small" checked={!!writes[e.name]} onChange={(_, on) => setWrites((s) => ({ ...s, [e.name]: on }))} />}
-                          label={writeLabel(e.name)}
-                        />
-                      )}
-                      {e.builtin && writes[e.name] && (
-                        <Typography variant="caption" color="text.secondary">
-                          {writeHelp(e.name)}
-                        </Typography>
-                      )}
-                    </Stack>
-                  ) : undefined
+                  ) : (
+                    fields
+                  )
                 }
               />
             );

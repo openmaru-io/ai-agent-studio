@@ -38,6 +38,7 @@ def make_home(root: Path) -> Path:
     home = root / "hermes"
     p = home / "profiles" / "main"
     (p / "cron").mkdir(parents=True)
+    (p / "config.yaml").write_text("model: x\n")                # 표시 파일이 있어야 프로파일이다
     (home / "cron").mkdir(parents=True)
     (home / "config.yaml").write_text("model:\n  default: m\n")
     (p / "cron" / "jobs.json").write_text(json.dumps({"jobs": JOBS}))

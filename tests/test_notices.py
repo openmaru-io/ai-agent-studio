@@ -126,10 +126,11 @@ class StoreTest(unittest.TestCase):
             make(starts_at=iso(T0 - timedelta(hours=3)), ends_at=iso(T0 - timedelta(hours=2)))
         self.assertEqual(e.exception.field, "ends_at")
 
-    def test_body_newlines_are_folded_and_times_are_stored_in_utc(self):
-        row = make(body="첫 줄\n둘째 줄", starts_at="2026-10-25T20:00:00+09:00", ends_at="2026-10-25T22:00:00+09:00",
-                   at=datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc))
-        self.assertEqual(row["body"], "첫 줄 둘째 줄")
+    def test_body_keeps_line_breaks_and_times_are_stored_in_utc(self):
+        # 내용은 여러 줄로 쓴다(2026-11-17). 줄 안의 겹친 공백·줄 끝 공백·앞뒤 빈 줄은 정리하고, 빈 줄은 하나까지만 둔다
+        row = make(body="\r\n- 일시:  11월 17일 \r\n- 영향:\n\n\n  - 다시 시작\n\n", starts_at="2026-10-25T20:00:00+09:00",
+                   ends_at="2026-10-25T22:00:00+09:00", at=datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc))
+        self.assertEqual(row["body"], "- 일시: 11월 17일\n- 영향:\n\n  - 다시 시작")
         self.assertEqual((row["starts_at"], row["ends_at"]), ("2026-10-25T11:00:00+00:00", "2026-10-25T13:00:00+00:00"))
 
     def test_reshow_ts_changes_only_when_asked(self):
@@ -276,11 +277,12 @@ class ApiTest(unittest.TestCase):
 
     def login(self, email, sub, admin=False):
         r, _ = self.req_raw("/auth/oidc")
+        sc = TA.state_cookie(r)                                     # 콜백은 로그인을 시작한 브라우저의 state 쿠키를 본다(스펙 2026-11-14-002 F2)
         q = parse_qs(urlsplit(r.getheader("Location")).query)
         TA.FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0], "sub": sub,
                              "email": email, "email_verified": True, "name": "N",
                              **({"realm_access": {"roles": ["aas-admin"]}} if admin else {})}
-        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}")
+        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}", sc)
         return r.getheader("Set-Cookie").split(";")[0]
 
     def req_raw(self, path, cookie=""):
@@ -343,13 +345,15 @@ class ApiTest(unittest.TestCase):
         self.assertNotIn("audience", me["notices"][0])
 
     def test_server_page_without_a_workspace_draws_an_escaped_band(self):
-        self.save(title="<b>점검</b>", body="곧 끝납니다", link="#/agents")
+        self.save(title="<b>점검</b>", body="곧 끝납니다\n다시 여세요", link="#/agents")
         self.save(kind="info", title="안내", link="https://intra.example/x")
         r, page = self.req_raw("/", self.lee)                                               # lee 는 작업공간이 없다 — 서버가 그리는 안내 페이지
         text = page.decode()
         self.assertIn("aas-nbar", text)
         self.assertIn("&lt;b&gt;점검&lt;/b&gt;", text)
         self.assertNotIn("<b>점검</b>", text)
+        self.assertIn("<span class=aas-nbar-body>곧 끝납니다\n다시 여세요</span>", text)              # 줄바꿈은 CSS(pre-line)로 보인다
+        self.assertIn(".aas-nbar-body{white-space:pre-line", text)
         self.assertNotIn("#/agents", text)                                                  # 작업공간이 없으면 갈 수 없는 경로는 뺀다
         self.assertIn("https://intra.example/x", text)
         self.assertIn("<time datetime=", text)

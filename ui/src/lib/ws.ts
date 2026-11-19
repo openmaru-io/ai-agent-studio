@@ -17,7 +17,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { getLang } from '@/i18n';
 
-import { api } from './api';
+import { api, apiConfig, withQuery } from './api';
 import { backoffDelay } from './backoff';
 
 export type WsState = 'off' | 'connecting' | 'live' | 'retrying-fast' | 'retrying-slow' | 'auth-failed' | 'fallback-http' | 'replaced';
@@ -45,6 +45,14 @@ export interface WsDeps {
   fetchImpl: typeof fetch;
   url: () => string | null;
   toLogin: () => void;
+  /** 연결 직후 hello 보다 먼저 보낼 인증 값(다른 사이트에 붙은 위젯, OMAI-1873). 없으면 보내지 않는다(쿠키 인증) */
+  auth?: () => { token: string; pod?: string } | null;
+  /** 웹소켓으로만 받는다 — HTTP 대체로 내리지 않고 다시 시도한다 */
+  wsOnly?: () => boolean;
+  /** 닫힌 이유를 바깥(위젯)에 알린다 */
+  onClose?: (code: number, reason: string, welcomed: boolean) => void;
+  /** 구독·올리기를 허락하는 토픽. 없으면 모두(위젯은 대화 토픽 pod:<id>:chat:<세션> 만, OMAI-1873) */
+  topicAllowed?: (topic: string) => boolean;
 }
 
 const CONNECT_TIMEOUT = 10000;
@@ -61,6 +69,9 @@ export const CONN_WAIT_MS = 2000;
 const WAIT_STATES: WsState[] = ['connecting', 'retrying-fast', 'retrying-slow'];
 
 function defaultUrl(): string | null {
+  const base = apiConfig().baseUrl;
+  // 다른 사이트에 붙은 위젯: AAS 주소로 붙고 서버 고정 쿼리(aasu)를 싣는다. 토큰은 주소에 넣지 않는다(접속 기록에 남는다)
+  if (base) return withQuery(base.replace(/^http/, 'ws') + '/ws');
   if (typeof location === 'undefined' || !location.host) return null;
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
 }
@@ -74,6 +85,9 @@ export class WsClient {
   private sock: WebSocket | null = null;
   private gen = 0;
   private listeners = new Map<string, Set<Listener>>();
+  /** 이번 연결의 hello 에 실은 토픽과, live 가 아니어서 보내지 못한 구독. welcome 때 맞춘다(스펙 2026-11-10-001) */
+  private helloTopics = new Set<string>();
+  private pendingSubs = new Set<string>();
   private lastSeq = new Map<string, number>();
   /** 토픽마다 마지막 snap(그 뒤 delta 가 오지 않았을 때만). 같은 토픽을 나중에 구독한 리스너에게 곧바로 넘긴다(스펙 2026-10-17-004 L2). */
   private lastSnap = new Map<string, { data: unknown; meta: { seq: number; stale?: boolean; error?: string } }>();
@@ -123,6 +137,15 @@ export class WsClient {
     if (this.enabled) this.connect();
   }
 
+  /** 같은 연결에 인증 메시지를 다시 보낸다(임베드 토큰을 다시 받았을 때). 연결이 열려 있지 않으면 거짓 — 다음 연결이 보낸다 */
+  reauth(): boolean {
+    const a = this.deps.auth?.();
+    const sock = this.sock;
+    if (!a || !sock || sock.readyState !== 1) return false;
+    this.send(authMessage(a));
+    return true;
+  }
+
   /** 화면 언어를 바꿨다. 연결 읽기(req)와 언어별 토픽은 hello 의 언어로 번역되므로 연결을 새로 연다. 옛 언어로 받은 seq 를
    *  이어 받으면 새 언어 스냅샷을 건너뛰므로 비운다(스펙 2026-10-21-007, 새로 고침해야 영어로 바뀌던 문제) */
   changeLang(): void {
@@ -151,7 +174,15 @@ export class WsClient {
     return this.enabled && WAIT_STATES.includes(this.state) && this.leftLiveAt > 0 ? this.leftLiveAt + CONN_WAIT_MS : 0;
   }
 
-  subscribe(topic: string, fn: Listener, onError?: (code: string) => void): () => void {
+  /** after: 이 번호까지는 이미 받았다 — 구독을 해제했다가 다시 구독하는 대화가 그 다음부터 받는다(OMAI-1863).
+   *  해제하면 받던 번호를 버리므로 넘기지 않으면 지난 이벤트를 처음부터 다시 받는다 */
+  subscribe(topic: string, fn: Listener, onError?: (code: string) => void, after?: number): () => void {
+    if (this.deps.topicAllowed && !this.deps.topicAllowed(topic)) {
+      // 서버가 거절할 토픽은 보내지 않는다 — 화면은 거절된 구독처럼 HTTP 로 읽는다
+      if (onError) queueMicrotask(() => onError('forbidden'));
+      return () => undefined;
+    }
+    if (after !== undefined && after > 0 && !this.lastSeq.has(topic)) this.lastSeq.set(topic, after);
     if (onError) {
       let es = this.errorListeners.get(topic);
       if (!es) this.errorListeners.set(topic, (es = new Set()));
@@ -177,10 +208,11 @@ export class WsClient {
       });
     }
     if (fresh || this.refused.has(topic)) {
-      if (this.state === 'live') {
-        this.refused.delete(topic);
-        this.send({ v: 1, t: 'sub', topic, after: this.lastSeq.get(topic) });
-      } else if (this.enabled && this.state === 'off') this.connect(); // 다시 시도를 기다리는 중이면 백오프를 지킨다
+      if (this.state === 'live') this.sendSub(topic);
+      else {
+        this.pendingSubs.add(topic);
+        if (this.enabled && this.state === 'off') this.connect(); // 다시 시도를 기다리는 중이면 백오프를 지킨다
+      }
     }
     return () => {
       if (onError) this.errorListeners.get(topic)?.delete(onError);
@@ -226,7 +258,7 @@ export class WsClient {
 
   /** 서버에 값을 올린다(지금은 토픽 office:presence 의 내 아바타 위치만, 계획 007 P6b). 연결이 없으면 보내지 않고 거짓. */
   publish(topic: string, data: Record<string, unknown>): boolean {
-    if (this.state !== 'live') return false;
+    if (this.state !== 'live' || (this.deps.topicAllowed && !this.deps.topicAllowed(topic))) return false;
     this.send({ v: 1, t: 'pub', topic, data });
     return true;
   }
@@ -274,7 +306,10 @@ export class WsClient {
     this.timers.push(connectTimer);
     sock.onopen = () => {
       if (gen !== this.gen) return;
-      const resume = [...this.listeners.keys()].map((topic) => ({ topic, after: this.lastSeq.get(topic) }));
+      const a = this.deps.auth?.();
+      if (a) this.send(authMessage(a)); // 브라우저 WebSocket 은 헤더를 실을 수 없어 첫 메시지로 인증한다(OMAI-1873)
+      this.helloTopics = new Set(this.listeners.keys());
+      const resume = [...this.helloTopics].map((topic) => ({ topic, after: this.lastSeq.get(topic) }));
       this.send({ v: 1, t: 'hello', lang: getLang(), client: 'aas-ui', resume });
     };
     sock.onmessage = (ev: MessageEvent) => {
@@ -295,11 +330,29 @@ export class WsClient {
     sock.onclose = (ev: CloseEvent) => {
       if (gen !== this.gen) return;
       clearTimeout(connectTimer);
-      this.onClose(gen, ev.code, welcomed);
+      this.onClose(gen, ev.code, welcomed, ev.reason);
     };
     sock.onerror = () => {
       /* onclose 가 이어서 온다 */
     };
+  }
+
+  private sendSub(topic: string): void {
+    this.refused.delete(topic);
+    this.send({ v: 1, t: 'sub', topic, after: this.lastSeq.get(topic) });
+  }
+
+  /** hello 뒤·welcome 전에 바뀐 구독을 맞춘다. hello 에 없었거나 거절된 뒤 다시 구독한 토픽은 sub, 해지한 토픽은 unsub */
+  private syncSubsAfterHello(): void {
+    for (const topic of this.pendingSubs) {
+      const live = !!this.listeners.get(topic)?.size;
+      if (live && (!this.helloTopics.has(topic) || this.refused.has(topic))) this.sendSub(topic);
+    }
+    for (const topic of this.helloTopics) {
+      if (!this.listeners.has(topic)) this.send({ v: 1, t: 'unsub', topic });
+    }
+    this.pendingSubs.clear();
+    this.helloTopics.clear();
   }
 
   private onWelcome(msg: Msg): void {
@@ -313,6 +366,7 @@ export class WsClient {
     this.liveSince = Date.now();
     this.downSince = 0;
     this.setState('live');
+    this.syncSubsAfterHello();
     if (!this.watch) {
       this.watch = setInterval(() => this.tick(), 5000);
     }
@@ -369,6 +423,8 @@ export class WsClient {
       this.pending.delete(msg.id);
       if (msg.ok) p.resolve(msg.data);
       else p.reject(new Error(((msg.error as { code?: string }) ?? {}).code ?? 'ws_error'));
+    } else if (msg.t === 'authed') {
+      // 위젯 인증 응답(user·expires·pod). 위젯은 교환 응답으로 만료를 알고 있어 따로 쓰지 않는다 — 이어서 welcome 이 온다
     } else if (msg.t === 'bye') {
       this.lastBye = msg;
     } else if (msg.t === 'error' && msg.topic) {
@@ -382,13 +438,14 @@ export class WsClient {
 
   private lastBye: Msg | null = null;
 
-  private onClose(gen: number, code: number, welcomed: boolean): void {
+  private onClose(gen: number, code: number, welcomed: boolean, closeReason = ''): void {
     const bye = this.lastBye;
     this.lastBye = null;
-    const reason = bye?.reason ?? '';
+    const reason = bye?.reason ?? closeReason ?? '';
     this.sock = null;
     this.failPending();
     if (!this.enabled) return;
+    this.deps.onClose?.(code, reason, welcomed);
     if (code === 4401) {
       this.setState('auth-failed');
       this.deps.toLogin();
@@ -424,7 +481,7 @@ export class WsClient {
   private async probe(gen: number): Promise<void> {
     let httpOk = false;
     try {
-      const r = await this.deps.fetchImpl('/healthz', { cache: 'no-store' });
+      const r = await this.deps.fetchImpl(apiConfig().baseUrl + '/healthz', { cache: 'no-store' });
       httpOk = r.ok;
     } catch {
       httpOk = false;
@@ -435,6 +492,10 @@ export class WsClient {
   }
 
   private goFallback(): void {
+    if (this.deps.wsOnly?.()) {
+      this.scheduleRetry(this.gen, true); // 위젯은 HTTP 대체 경로가 없다 — 백오프로 다시 붙는다
+      return;
+    }
     this.setState('fallback-http');
     this.clearRetry();
     this.retryTimer = setTimeout(() => {
@@ -549,11 +610,25 @@ export class WsClient {
   }
 }
 
+/** 인증 메시지. 봉투(v·t)는 다른 메시지와 같고, type 은 t 와 같은 값을 한 번 더 싣는다(OMAI-1873) */
+export function authMessage(a: { token: string; pod?: string }): Record<string, unknown> {
+  return { v: 1, t: 'auth', type: 'auth', token: a.token, ...(a.pod ? { pod: a.pod } : {}) };
+}
+
 export const wsClient = new WsClient({
   WebSocketImpl: typeof WebSocket === 'undefined' ? (undefined as unknown as typeof WebSocket) : WebSocket,
   fetchImpl: (...a) => fetch(...a),
   url: defaultUrl,
-  toLogin: () => api.toLogin('/auth/login?next=' + encodeURIComponent(window.location.pathname + window.location.hash)),
+  toLogin: () => {
+    const un = apiConfig().onUnauthorized;
+    if (un) un();
+    else api.toLogin('/auth/login?next=' + encodeURIComponent(window.location.pathname + window.location.hash));
+  },
+  auth: () => apiConfig().wsAuth?.() ?? null,
+  wsOnly: () => apiConfig().wsOnly,
+  // 위젯 연결은 대화 토픽만 구독할 수 있다(서버가 agents·오피스 토픽과 pub 을 거절한다)
+  topicAllowed: (topic) => !apiConfig().wsOnly || /^pod:.+:chat:/.test(topic),
+  onClose: (code, reason, welcomed) => apiConfig().onWsClose?.(code, reason, welcomed),
 });
 
 export function useWsState(client: WsClient = wsClient): WsState {

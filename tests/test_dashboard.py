@@ -288,8 +288,11 @@ class DashboardApiTest(unittest.TestCase):
         store.save_pod_summary("a", "2026-10-13T09:00:00+09:00", {"gateways_up": 1, "failed_jobs": 1, "creds_expiring": 2, "profiles_bad": 1})
         store.save_pod_summary("b", "2026-10-13T09:00:00+09:00", {"gateways_up": 2, "failed_jobs": 2, "stalled_jobs": 1})
         store.save_pod_summary("b", "2026-10-13T09:30:00+09:00", None, "시간 초과")
-        store.save_usage_days("a", {"2026-10-13": {"sessions": 1, "input_tokens": 10}})
-        store.save_usage_days("b", {"2026-10-13": {"sessions": 4, "input_tokens": 40}})
+        # 대시보드는 오늘부터 TREND_DAYS 안의 사용량만 더한다. 고정 날짜(2026-10-13)로 두었더니 2026-11-14 부터 범위 밖이 되어
+        # 합계가 0 이 됐다(Jenkins #592). 오늘 기준 이틀 전으로 둔다.
+        used = (datetime.now() - timedelta(days=2)).date().isoformat()
+        store.save_usage_days("a", {used: {"sessions": 1, "input_tokens": 10}})
+        store.save_usage_days("b", {used: {"sessions": 4, "input_tokens": 40}})
         cls.cookies = {who: cls.login(f"{who}@corp.example") for who in ("boss", "alice", "carol")}
 
     @classmethod
@@ -308,10 +311,11 @@ class DashboardApiTest(unittest.TestCase):
     @classmethod
     def login(cls, email):
         r, _ = cls.req("/auth/oidc")
+        sc = next(c.split(";")[0] for c in r.msg.get_all("Set-Cookie") if c.startswith("aas_oidc_"))   # state 쿠키(스펙 2026-11-14-002 F2)
         q = parse_qs(urlsplit(r.getheader("Location")).query)
         FakeIdP.claims = {"iss": cls.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
                           "sub": "sub-" + email, "email": email, "email_verified": True, "name": "N"}
-        r, _ = cls.req(f"/auth/callback?code=abc&state={q['state'][0]}")
+        r, _ = cls.req(f"/auth/callback?code=abc&state={q['state'][0]}", sc)
         return r.getheader("Set-Cookie").split(";")[0]
 
     def get(self, who, path):

@@ -170,6 +170,7 @@ class PrimaryWiringTest(unittest.TestCase):
         from aas.hermes import hermes_reader
         d = Path(tempfile.mkdtemp(dir=TMP.name))
         (d / "profiles" / "main").mkdir(parents=True)
+        (d / "profiles" / "main" / "config.yaml").write_text("model: x\n")       # 표시 파일이 있어야 프로파일로 친다
 
         class Home(type(d)):
             pass
@@ -253,6 +254,16 @@ class CuratorSettingTest(unittest.TestCase):
         self.assertIsNone(primary.curator_patch("curator: {enabled: true}\n"))            # 줄 안에 적은 모양은 안전하게 못 고친다
         self.assertIsNone(primary.curator_patch("a: [1,\n"))                              # 읽을 수 없는 글은 고치지 않는다
 
+    def test_max_live_patch_는_값이_없을_때만_최상위에_더한다(self):
+        """Hermes 는 max_live_sessions 가 없으면 세션 수 상한이 없다. 사람이 정한 값(최상위·gateway 절)은 둔다(OMAI-1884)."""
+        out = primary.max_live_patch("model: m\nnous:\n  guest: false", 32)
+        self.assertEqual(out, "model: m\nnous:\n  guest: false\nmax_live_sessions: 32\n")
+        self.assertEqual(primary.max_live_patch("", 8), "max_live_sessions: 8\n")
+        self.assertIsNone(primary.max_live_patch("max_live_sessions: 0\n", 32))
+        self.assertIsNone(primary.max_live_patch("gateway:\n  max_live_sessions: 5\n", 32))
+        self.assertIsNone(primary.max_live_patch("a: [1,\n", 32))
+        self.assertIsNone(primary.max_live_patch("- a\n", 32))
+
     def test_nous_guest_는_값이_없을_때만_false_를_더한다(self):
         """Hermes 는 nous.guest 가 없으면(기본 true) 외부 포털에 익명 계정을 만든다(스펙 2026-10-28-006 §4-4). 사람이 정한 값은 둔다."""
         import yaml
@@ -296,6 +307,36 @@ class CuratorSettingTest(unittest.TestCase):
         self.assertEqual([k for p, k, _ in saved if p == "pod1"], ["config:q"])
         with store.connect() as conn:
             conn.execute("DELETE FROM meta WHERE key LIKE 'nousguest:%'")
+
+    def test_max_live_one_은_실행_루트에만_한_번_넣는다(self):
+        """Hermes 의 세션 정리 스레드는 실행 루트의 config.yaml 만 읽는다. 다른 프로파일에 넣어도 효과가 없다(OMAI-1884)."""
+        from aas.common import store
+        from aas.web import server
+        with store.connect() as conn:
+            conn.execute("DELETE FROM meta WHERE key LIKE 'maxlive:%'")
+        texts = {"root": "model: m\n", "main": "model: m\n"}
+        calls: list = []
+
+        class API:
+            def call(self, method, path, body=None, query=None):
+                name = (query or {}).get("profile", "root")
+                calls.append((method, name))
+                if method == "GET":
+                    return {"yaml": texts[name]}
+                texts[name] = body["yaml_text"]
+                return {"ok": True}
+        saved: list = []
+        pod = SimpleNamespace(id="pod-ml")
+        with mock.patch("aas.assets.files.save_text", side_effect=saver(saved)):
+            self.assertEqual(server._max_live_one(pod, API(), {"name": "main"}, 32), "")
+            self.assertEqual(calls, [])                                          # 루트가 아니면 부르지도 않는다
+            self.assertEqual(server._max_live_one(pod, API(), {"name": "default", "is_default": True}, 32), "pod-ml/default")
+            self.assertEqual(server._max_live_one(pod, API(), {"name": "default", "is_default": True}, 32), "")   # 한 번만
+        self.assertEqual(texts, {"root": "model: m\nmax_live_sessions: 32\n", "main": "model: m\n"})
+        with mock.patch.dict(os.environ, {"AAS_HERMES_MAX_LIVE_SESSIONS": "0"}):
+            self.assertEqual(server.max_live_sync_once(SimpleNamespace(pods=[pod])), [])   # 0 이면 아무것도 안 한다
+        with store.connect() as conn:
+            conn.execute("DELETE FROM meta WHERE key LIKE 'maxlive:%'")
 
     def test_멈춘_작업공간_하나가_다른_작업공간의_설정_맞추기를_늘리지_않는다(self):
         """작업공간 × 프로파일을 차례로 부르고 한 번에 30초씩 기다려, 멈춘 Hermes 하나가 한 주기를 길게 늘렸다(스펙 2026-10-24-002 R16)."""

@@ -22,7 +22,7 @@ os.environ.setdefault("AAS_DATA_DIR", str(Path(TMP.name) / "data"))
 from aas.common import store  # noqa: E402
 from aas.market import bundle_local, skill_bundle  # noqa: E402
 
-NAMES = skill_bundle.names()
+NAMES = skill_bundle.enabled_names()
 POD = SimpleNamespace(id="pod-c")
 
 

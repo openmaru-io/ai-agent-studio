@@ -75,10 +75,10 @@ describe('받은편지함(계획 007 P4)', () => {
     ];
     stubApi({ '/api/office/inbox/answer': { ok: true }, '/api/office/inbox': { items } });
     mountScreen(<InboxPanel />, '/office');
-    const open = await screen.findByRole('link', { name: '작업공간 크기 열기' });
+    const open = await screen.findByRole('link', { name: 'AI 에이전트 작업공간 크기 열기' });
     expect(open.getAttribute('href')).toContain('open=hag-1');
     expect(open.getAttribute('href')).toContain('focus=size');
-    const first = screen.getAllByRole('listitem').find((li) => within(li).queryByRole('link', { name: '작업공간 크기 열기' }))!;
+    const first = screen.getAllByRole('listitem').find((li) => within(li).queryByRole('link', { name: 'AI 에이전트 작업공간 크기 열기' }))!;
     expect(within(first).queryByRole('button', { name: '처리했습니다' })).toBeNull();
     expect(within(first).queryByText('_workspace')).toBeNull();
     expect(screen.getByText(/메모리를 4Gi에서 8Gi로 늘렸습니다/)).toBeInTheDocument();

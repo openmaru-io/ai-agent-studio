@@ -9,7 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { watchChatPopup } from '@/test/chatPopup';
-import { mountScreen, postedTo, rowByName, stubApi } from '@/test/mountScreen';
+import { ME_ADMIN, ME_USER, mountScreen, postedTo, rowByName, stubApi } from '@/test/mountScreen';
 
 import { Skills } from './Skills';
 
@@ -129,14 +129,37 @@ describe('Skills', () => {
     expect(await screen.findByText(`스킬 report 을 관리자 검토 없이 게시합니다 · ${shown}(구성원만 보임)`)).toBeInTheDocument();
   });
 
-  it('스킬이 선언한 필요한 비밀값을 서랍에 보이고, 없는 값은 비밀값 탭으로 가는 링크를 준다(스펙 2026-10-16-010 2단계)', async () => {
+  const NEEDS = { ...ONE, required_env: [
+    { name: 'GOOGLE_CLIENT_ID', prompt: '클라이언트 ID', set: true },
+    { name: 'GOOGLE_CLIENT_SECRET', prompt: '클라이언트 비밀', required_for: '메일 보내기', set: false },
+    { name: 'GWS_DOMAIN', optional: true, set: false },
+  ] };
+
+  // 값을 넣을 수 있는 사람(관리자·주인·팀 관리자, 암호화된 연결)에게는 스킬 화면과 같은 「값 넣기」 창(스펙 2026-11-18-004 §8)
+  it('필요한 비밀값의 「값 넣기」는 스킬 화면과 같은 창을 연다', async () => {
     const user = userEvent.setup();
     stubApi({
-      '/api/skill?': { ...ONE, required_env: [
-        { name: 'GOOGLE_CLIENT_ID', prompt: '클라이언트 ID', set: true },
-        { name: 'GOOGLE_CLIENT_SECRET', prompt: '클라이언트 비밀', required_for: '메일 보내기', set: false },
-        { name: 'GWS_DOMAIN', optional: true, set: false },
-      ] },
+      '/api/me': { ...ME_ADMIN, secure: true },
+      '/api/skill?': NEEDS,
+      '/api/market/publish': PUBLISH,
+      '/api/skills': LIST,
+    });
+    mountScreen(<Skills />, '/skills');
+    await user.click(await rowByName(/^report/));
+    const drawer = await screen.findByRole('dialog', { name: 'report' });
+    await within(drawer).findByText('필요한 비밀값');
+    expect(within(drawer).queryByRole('link', { name: '비밀값 탭에서 넣기' })).toBeNull();
+    await user.click(await within(drawer).findByRole('button', { name: 'GOOGLE_CLIENT_SECRET 값 넣기' }));
+    const env = await screen.findByTestId('skill-env-dialog');
+    expect(within(env).getByText('report 스킬에 필요한 값')).toBeInTheDocument();
+    expect(within(env).getByLabelText('GOOGLE_CLIENT_SECRET')).toBeInTheDocument();
+  });
+
+  it('스킬이 선언한 필요한 비밀값을 서랍에 보이고, 넣을 수 없는 사람에게는 비밀값 탭으로 가는 링크를 준다(스펙 2026-10-16-010 2단계)', async () => {
+    const user = userEvent.setup();
+    stubApi({
+      '/api/me': ME_USER,
+      '/api/skill?': NEEDS,
       '/api/market/publish': PUBLISH,
       '/api/skills': LIST,
     });
@@ -152,6 +175,47 @@ describe('Skills', () => {
     expect(links).toHaveLength(2);
     expect(links[0]).toHaveAttribute('href', '/profiles?name=default&pane=env&key=GOOGLE_CLIENT_SECRET');
     expect(within(dlg).getByText(/주소창의 주소 전체를 채팅에 붙여넣으세요/)).toBeInTheDocument();
+  });
+
+  // AAS 가 주는 LLM 접속값(스펙 2026-11-19-002 §4-3): 칩은 aas=info·profile=good, 칸 개수에서 빠지고, 관리 이름만이면 한 줄만
+  const llm = (name: string, src: 'aas' | 'profile' = 'aas') => ({ name, set: true, managed: 'aas', managed_source: src });
+  const SUMMARY = {
+    enabled: true, lang: 'ko', at: '2026-11-19T10:00:00+0900', model: 'cogentai-aas', stale: false, src: '0.0.1', other: null,
+    summary: { one_line: '고객 관리', use_when: [], what_it_does: [], strengths: [], requires: ['LLM'], cautions: [] },
+  };
+  const mountLlm = (required_env: unknown[]) => {
+    stubApi({ '/api/me': ME_USER, '/api/skill?': { ...ONE, required_env }, '/api/skill/summary': SUMMARY, '/api/market/publish': PUBLISH, '/api/skills': LIST });
+    mountScreen(<Skills />, '/skills');
+  };
+
+  it('LLM 접속값: 사실 칩은 「AAS 제공」(info)·「프로파일 값」(good), 필요한 값 칸 개수에서 빠진다', async () => {
+    const user = userEvent.setup();
+    mountLlm([llm('LLM_BASE_URL'), llm('LLM_API_KEY', 'profile'), llm('LLM_MODEL'), { name: 'CRM_TOKEN', set: false }]);
+    await user.click(await rowByName(/^report/));
+    const dlg = await screen.findByRole('dialog', { name: 'report' });
+    const title = await within(dlg).findByText('필요한 비밀값');
+    const section = title.closest('section') ?? (title.parentElement?.parentElement as HTMLElement);
+    expect(section).toHaveTextContent(/필요한 비밀값\s*1/); // CRM_TOKEN 만 센다
+    expect(within(dlg).getByText('이 스킬이 쓰는 환경변수입니다. 채팅 채널에서는 AI 에이전트가 비밀값을 물을 수 없으니 여기서 넣으세요.')).toBeInTheDocument();
+    expect(within(dlg).getByText('LLM_BASE_URL·LLM_MODEL — AAS 의 LLM 접속값을 씁니다. 넣지 않아도 됩니다')).toBeInTheDocument();
+    expect(within(dlg).getByText('프로파일 값을 씀(AAS 값 대신)')).toBeInTheDocument();
+    await user.click(await within(dlg).findByRole('button', { name: '더 보기' }));
+    const aasChip = within(dlg).getByText('LLM_BASE_URL · AAS 제공').closest('.MuiChip-root') as HTMLElement;
+    const ownChip = within(dlg).getByText('LLM_API_KEY · 프로파일 값').closest('.MuiChip-root') as HTMLElement;
+    expect(aasChip).toHaveClass('MuiChip-colorInfo');
+    expect(aasChip).not.toHaveClass('MuiChip-colorSuccess');
+    expect(ownChip).toHaveClass('MuiChip-colorSuccess');
+  });
+
+  it('LLM 접속값만 선언한 스킬: 필요한 값 칸은 한 줄만, 「여기서 넣으세요」는 없다', async () => {
+    const user = userEvent.setup();
+    mountLlm([llm('LLM_BASE_URL'), llm('LLM_API_KEY'), llm('LLM_MODEL')]);
+    await user.click(await rowByName(/^report/));
+    const dlg = await screen.findByRole('dialog', { name: 'report' });
+    expect(await within(dlg).findByText('LLM_BASE_URL·LLM_API_KEY·LLM_MODEL — AAS 의 LLM 접속값을 씁니다. 넣지 않아도 됩니다')).toBeInTheDocument();
+    expect(within(dlg).queryByText(/여기서 넣으세요/)).toBeNull();
+    expect(within(dlg).queryByRole('link', { name: '비밀값 탭에서 넣기' })).toBeNull();
+    expect(within(dlg).queryByText('필요')).toBeNull();
   });
 
   it('올리기 권한이 없으면 서랍에 「스킬 허브에 올리기」가 없다', async () => {
@@ -818,6 +882,22 @@ describe('Skills', () => {
       expect(screen.getByRole('group', { name: '태그로 거르기' })).toBeInTheDocument();
       expect(screen.getByText('report')).toBeInTheDocument();        // MCP 를 부르고 개발 절차 태그가 있는 것
       expect(screen.queryByText('alert')).not.toBeInTheDocument();    // MCP 는 부르지만 태그가 다르다
+    });
+
+    it('업무 칩으로 거르고, 다른 업무를 누르면 앞의 것이 꺼진다(스펙 2026-11-17-003)', async () => {
+      const user = userEvent.setup();
+      const WORKED = { ...LIST, skills: LIST.skills.map((x, i) => ({ ...x, tags: [['sales', 'docs'], ['common', 'automation'], ['sales']][i] })) };
+      stubApi({ '/api/me': ADMIN, '/api/skills': WORKED, '/api/skill?': ONE, '/api/market/publish': PUBLISH });
+      mountScreen(<Skills />, '/skills');
+      await screen.findByText('report');
+      const work = () => within(screen.getByRole('group', { name: '업무별' }));
+      await user.click(work().getByRole('button', { name: /^공통 업무/ }));
+      expect(screen.getByText('alert')).toBeInTheDocument();
+      expect(screen.queryByText('report')).not.toBeInTheDocument();
+      await user.click(work().getByRole('button', { name: /^세일즈/ }));
+      expect(screen.getByText('report')).toBeInTheDocument();
+      expect(screen.queryByText('alert')).not.toBeInTheDocument();
+      expect(work().getByRole('button', { name: /^공통 업무/ })).toHaveAttribute('aria-pressed', 'false');
     });
 
     it('검색은 태그 이름도 훑는다', async () => {

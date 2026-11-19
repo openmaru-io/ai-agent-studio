@@ -45,6 +45,22 @@ class Profile:
     path: Path
 
 
+# Hermes 가 프로파일로 치는 표시 파일(hermes_constants._PROFILE_IDENTITY_MARKERS, v0.22.2). 하나도 없는 폴더는 프로파일이 아니다.
+# 이름을 바꾼 뒤 Hermes 가 옛 경로의 세션 DB 를 늦게 닫으며 오류 로그를 쓰느라 profiles/<옛 이름>/logs 만 든 폴더가 1분쯤 뒤 다시 생긴다.
+# 그 폴더를 프로파일로 읽어 스킬 화면 선택 목록에 옛 이름이 「중지」로 남았다(compose 재현 2026-11-06)
+IDENTITY_MARKERS = frozenset(("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"))
+
+
+def _identified(pdir) -> set[str] | None:
+    """표시 파일이 있는 프로파일 폴더 이름들. profiles/*/* 목록 한 번으로 본다 — 사이드카 묶음이 있으면 묻지 않고, 없어도 요청 하나다
+    (프로파일마다 묻지 않는다, OMAI-1459 R5). 목록을 읽지 못하면 None — 예전처럼 모든 폴더를 프로파일로 친다(사이드카가 잠깐 흔들려
+    멀쩡한 프로파일이 목록에서 사라지지 않게)."""
+    try:
+        return {c.parent.name for c in pdir.glob("*/*") if c.name in IDENTITY_MARKERS}
+    except OSError:
+        return None
+
+
 def profiles(home: Path | None = None) -> list[Profile]:
     """루트("default")와 profiles/* 를 자동 발견한다. 고정 목록을 쓰지 않는다."""
     home = home or hermes_home()
@@ -59,8 +75,9 @@ def profiles(home: Path | None = None) -> list[Profile]:
         entries = sorted(pdir.iterdir())
         # Hermes 는 지운 프로파일에 profiles/.deleted/<이름> 표시를 남기고, 같은 이름의 빈 폴더가 다시 생겨도 프로파일로 치지 않는다(스펙 2026-10-26-008 §10)
         gone = {t.name for t in (pdir / ".deleted").iterdir()} if any(p.name == ".deleted" for p in entries) else set()
+        marked = _identified(pdir)
         for p in entries:
-            if p.is_dir() and not p.name.startswith(".") and p.name not in gone:
+            if p.is_dir() and not p.name.startswith(".") and p.name not in gone and (marked is None or p.name in marked):
                 found.append(Profile(p.name, p))
     return found
 

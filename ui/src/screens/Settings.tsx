@@ -17,6 +17,8 @@ import { get, post } from '@/lib/api';
 import { useIsAdmin } from '@/lib/data';
 
 import { DepartmentGoal, DepartmentGoals } from './settings/DepartmentGoals';
+import { LoginAlias } from './settings/LoginAlias';
+import { SharingSettings } from './settings/Sharing';
 
 interface SettingsData {
   company_name: string;
@@ -133,6 +135,10 @@ export function Settings() {
       <Section title={t('settings.goalTitle')} guide="settings.goal" indent>
         <DepartmentGoals rows={d.department_goals ?? []} max={d.goal_max ?? 60} canEdit={d.can_edit_goal ?? d.can_edit} own={d.goal_scope === 'own'} />
       </Section>
+
+      {admin && <LoginAlias />}
+
+      {admin && <SharingSettings />}
 
       <Section title={t('settings.teamTitle')} indent>
         <Typography variant="body2" color="text.secondary">

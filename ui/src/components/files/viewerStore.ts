@@ -6,6 +6,7 @@
 // 파일 뷰어 하나를 화면 전체가 함께 쓴다(스펙 2026-10-20-002 §3-1). 뱃지·서랍 줄이 open 을 부르고, AppShell 의 LazyFileViewer 가 그린다.
 import { useSyncExternalStore } from 'react';
 
+import { aasUrl, apiConfig } from '@/lib/api';
 import type { FileSource } from '@/lib/fileKinds';
 
 /** 뷰어가 여는 파일. url 은 GET 으로 바이트를 주는 주소(개인·오피스 대화창·회의·칸반이 다르다) */
@@ -50,6 +51,11 @@ const subs = new Set<() => void>();
 const emit = () => subs.forEach((f) => f());
 
 export function openViewer(file: ViewerFile, actions: ViewerActions = {}, back?: HTMLElement | null) {
+  // 다른 사이트에 붙은 위젯에는 뷰어가 없다 — 파일 주소를 AAS 새 탭으로 연다(그 탭은 AAS 로그인 쿠키를 쓴다, OMAI-1873)
+  if (apiConfig().embed) {
+    if (file.url && !file.blocked) window.open(aasUrl(file.url), '_blank', 'noopener');
+    return;
+  }
   const active = back ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
   state = { file, actions, back: active, seq: state.seq + 1 };
   emit();

@@ -17,7 +17,7 @@ MARK = "i18n-ignore:"
 # attach_notice.py: 에이전트에게 보내고 화면이 다시 읽는 고정 형식(언어와 무관, OMAI-1153 R12·D14)이라 번역하지 않는다
 SKIP = {"i18n.py", "attach_notice.py"}
 # aas_skill_packages: 서버가 돌리지 않고 Hermes 에이전트가 돌리는 스킬 스크립트(스펙 2026-10-29-001 R8). 명함 목록 칸 이름 등은 사용자 자료라 번역하지 않는다
-SKIP_DIRS = {"aas_skill_packages"}
+SKIP_DIRS = {"aas_skill_packages", "hermes_plugins"}   # Hermes 로 그대로 넘어가는 파일(스킬·플러그인)은 화면 문구가 아니다
 
 
 def _is_tr(node: ast.AST) -> bool:

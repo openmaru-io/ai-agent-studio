@@ -297,6 +297,19 @@ describe('Profiles 목록', () => {
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('/profiles?name=research'));
   });
 
+  it('스킬 허브에서 온 ?template= 는 「새 프로파일」을 템플릿 탭으로 열고 그 템플릿을 고른 뒤 주소에서 지운다(2026-11-18-014)', async () => {
+    const card = { id: 'paid/sales', namespace: 'paid', name: 'sales', version: '1.0.0', public: false, description: '영업 도우미', author: '영업팀',
+      env_requires: [], mcp: [], skills: 0, hub_skills: [], cron: 0, files: 0, model_hint: '', examples: [], installs: 0 };
+    mount('/profiles?template=paid%2Fsales', DETAIL(), LIST(), {
+      '/api/market/templates': { items: [card], failed: 0, error: '', limit: 3, used: 1, profiles: ['main'] },
+      '/api/market/template': { ...card, cron: [], files: [], soul: '나는 영업 도우미', agents: '', readme: '' },
+    });
+    const dlg = await screen.findByRole('dialog', { name: '새 프로파일' });
+    expect(await within(dlg).findByRole('tab', { name: /템플릿/, selected: true })).toBeInTheDocument();
+    expect(await within(dlg).findByText('나는 영업 도우미')).toBeInTheDocument();          // 고른 템플릿의 확인 단계
+    await waitFor(() => expect(screen.getByTestId('loc')).not.toHaveTextContent('template='));
+  });
+
   it('주인: 「새 프로파일」은 주 에이전트 복제로만, 원본 고르기·스킬 빼기가 없다(스펙 2026-10-15-011 단계 2)', async () => {
     const user = userEvent.setup();
     const fn = mount('/profiles', DETAIL(), { ...LIST(false), can_create: true, primary: 'ma', profile_limit: { used: 2, max: 3 } });
@@ -321,7 +334,7 @@ describe('Profiles 목록', () => {
     await user.click((await screen.findAllByRole('button', { name: '새 프로파일' }))[0]);
     const dlg = await screen.findByRole('dialog', { name: '새 프로파일' });
     await user.type(within(dlg).getByRole('textbox', { name: /이름/ }), 'imp');
-    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 함께 쓰기/ }));
+    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 연결해 쓰기/ }));
     // 에이전트는 id(kim-2) 대신 「주인 이름 · 에이전트 이름」으로 보인다(스펙 2026-10-19-003)
     await pickAgent(user, await within(dlg).findByRole('combobox', { name: '다른 AI 에이전트 작업공간에서 가져오기' }), /^김철수 · 영업 도우미 › ops 의 성격·설정 가져오기$/);
     expect(within(dlg).queryByText(/kim-2/)).toBeNull();
@@ -340,8 +353,9 @@ describe('Profiles 목록', () => {
     await user.click((await screen.findAllByRole('button', { name: '새 프로파일' }))[0]);
     const dlg = await screen.findByRole('dialog', { name: '새 프로파일' });
     await user.type(within(dlg).getByRole('textbox', { name: /이름/ }), 'side');
-    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 함께 쓰기/ }));
-    expect(within(dlg).getByText(/이 프로파일에서는 그 스킬을 고칠 수 없고/)).toBeInTheDocument();
+    // 설명은 체크 전에도 보이고 체크박스에 aria-describedby 로 이어진다(스펙 2026-11-18-003)
+    expect(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 연결해 쓰기/ })).toHaveAccessibleDescription(/ma에서 스킬을 더하거나 고치면 이 프로파일에도 바로 반영됩니다/);
+    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 연결해 쓰기/ }));
     await user.click(within(dlg).getByRole('button', { name: '만들기' }));
     await waitFor(() =>
       expect(postedTo(fn, '/api/profile/action')).toEqual([{ name: 'side', action: 'create', clone_from: 'ma', no_skills: false, share_skills: true, description: '' }])
@@ -353,15 +367,34 @@ describe('Profiles 목록', () => {
     const fn = mount('/profiles');
     await user.click((await screen.findAllByRole('button', { name: '새 프로파일' }))[0]);
     const dlg = await screen.findByRole('dialog', { name: '새 프로파일' });
-    expect(within(dlg).queryByRole('checkbox', { name: /함께 쓰기/ })).not.toBeInTheDocument();       // 원본 없이 시작하면 쓸 곳이 없다
+    expect(within(dlg).queryByRole('checkbox', { name: /연결해 쓰기/ })).not.toBeInTheDocument();       // 원본 없이 시작하면 쓸 곳이 없다
+    expect(within(dlg).queryByRole('checkbox', { name: '스킬은 가져오지 않기' })).not.toBeInTheDocument(); // 빈 프로파일은 서버가 no_skills 를 쓰지 않는다(스펙 2026-11-18-003)
     await user.type(within(dlg).getByRole('textbox', { name: /이름/ }), 'research');
     await pickAgent(user, within(dlg).getByRole('combobox', { name: '어디서 시작할까요' }), 'ma 을(를) 복제');
+    // 원본을 고르면 「스킬은 가져오지 않기」 아래에도 무엇이 빠지고 무엇이 복사되는지 설명이 붙는다(스펙 2026-11-18-003)
+    expect(within(dlg).getByRole('checkbox', { name: '스킬은 가져오지 않기' })).toHaveAccessibleDescription(/ma의 스킬을 가져오지 않고 스킬 없이 시작합니다/);
     await user.click(within(dlg).getByRole('checkbox', { name: '스킬은 가져오지 않기' }));
-    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 함께 쓰기/ }));
+    await user.click(within(dlg).getByRole('checkbox', { name: /ma의 스킬을 복사하지 않고 연결해 쓰기/ }));
     expect(within(dlg).getByRole('checkbox', { name: '스킬은 가져오지 않기' })).toBeDisabled();
     await user.click(within(dlg).getByRole('button', { name: '만들기' }));
     await waitFor(() =>
       expect(postedTo(fn, '/api/profile/action')).toEqual([{ name: 'research', action: 'create', clone_from: 'ma', no_skills: false, share_skills: true, description: '' }])
+    );
+  });
+
+  it('「스킬은 가져오지 않기」를 켠 뒤 빈 프로파일로 바꾸면 체크박스가 사라지고 no_skills 를 보내지 않는다(스펙 2026-11-18-003)', async () => {
+    const user = userEvent.setup();
+    const fn = mount('/profiles');
+    await user.click((await screen.findAllByRole('button', { name: '새 프로파일' }))[0]);
+    const dlg = await screen.findByRole('dialog', { name: '새 프로파일' });
+    await user.type(within(dlg).getByRole('textbox', { name: /이름/ }), 'blank');
+    await pickAgent(user, within(dlg).getByRole('combobox', { name: '어디서 시작할까요' }), 'ma 을(를) 복제');
+    await user.click(within(dlg).getByRole('checkbox', { name: '스킬은 가져오지 않기' }));
+    await user.clear(within(dlg).getByRole('combobox', { name: '어디서 시작할까요' }));      // 입력을 지우면 빈 프로파일로 시작(AgentPicker emptyLabel)
+    expect(within(dlg).queryByRole('checkbox', { name: '스킬은 가져오지 않기' })).not.toBeInTheDocument();
+    await user.click(within(dlg).getByRole('button', { name: '만들기' }));
+    await waitFor(() =>
+      expect(postedTo(fn, '/api/profile/action')).toEqual([{ name: 'blank', action: 'create', clone_from: '', no_skills: false, share_skills: false, description: '' }])
     );
   });
 
@@ -1591,7 +1624,7 @@ describe('Profiles 상세: 머리 동작 단추(COP Drawer 처럼)', () => {
     await within(head).findByRole('button', { name: '내 PC 로 내보내기' });
     // 관리자가 보는 main 이 아닌 프로파일(OMAI-1444 DD1). 작업 폴더 내보내기는 뺐다(2026-10-23, R7 바꿈)
     expect(within(head).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
-      '내 PC 로 내보내기', 'PC 에서 가져오기', '이름 바꾸기', '삭제', '닫기',
+      '내 PC 로 내보내기', 'PC 에서 가져오기', 'AI 에이전트 템플릿으로 올리기', '이름 바꾸기', '삭제', '닫기',
     ]);
     expect(within(head).queryByRole('button', { name: '내보내기' })).toBeNull();
     expect(screen.queryByRole('button', { name: /더 보기/ })).toBeNull();
@@ -1867,7 +1900,7 @@ describe('Profiles 상세: 작업 지침(AGENTS.md)', () => {
     expect(screen.getByText('profiles/ma/AGENTS.md')).toBeInTheDocument();
     expect(screen.getByText(/새 대화와, AI 에이전트가 하위 AI 에이전트에게 맡긴 작업부터 적용됩니다\. 예약 작업에는 적용되지 않습니다/)).toHaveAttribute('data-editor-hint');
     expect(screen.queryByText(/에서 쓰입니다/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /템플릿/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /템플릿(?!으로 올리기)/ })).not.toBeInTheDocument(); // 서랍 머리의 「템플릿으로 올리기」(2026-11-18-002)는 SOUL 템플릿과 다른 기능
   });
 
   it('빈 상태: 두 줄 안내와 「예시로 시작」. 누르면 편집기에만 예시를 채우고 저장하지 않으며, 저장 메모 기본값은 「예시로 시작」', async () => {

@@ -98,6 +98,24 @@ describe('서랍 머리 동작 단추(COP Drawer 처럼)', () => {
     expect(screen.getByRole('dialog', { name: 'ma' })).toBeInTheDocument(); // 서랍은 그대로
   });
 
+  it('짧은 글자(short)는 테두리 없는 글자 단추로 보이고 읽는 이름은 label 그대로, divider 는 그 앞에 세로선(2026-11-18)', async () => {
+    const user = userEvent.setup();
+    mount([
+      { id: 'export', label: '내 PC 로 내보내기', short: '내보내기', text: true, icon: DownloadOutlinedIcon, onClick: vi.fn() },
+      { id: 'delete', label: '삭제', icon: DeleteOutlineIcon, danger: true, divider: true, onClick: vi.fn() },
+    ]);
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    const head = screen.getByRole('dialog', { name: 'ma' }).querySelector('[data-drawer-head]') as HTMLElement;
+    const exp = within(head).getByRole('button', { name: '내 PC 로 내보내기' });
+    expect(exp).toHaveTextContent(/^내보내기$/);
+    expect(exp).toHaveClass('MuiButton-text');
+    const del = within(head).getByRole('button', { name: '삭제' });
+    expect(del).toHaveTextContent(''); // 아이콘만
+    const sep = within(head).getByRole('separator');
+    expect(exp.compareDocumentPosition(sep) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sep.compareDocumentPosition(del) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('서랍 밖에서는 본문 자리에 단추를 그린다', () => {
     render(<DrawerActions actions={[{ id: 'x', label: '내보내기', icon: DownloadOutlinedIcon, confirm: { message: 'm', okLabel: 'ok', onConfirm: vi.fn() } }]} />);
     expect(screen.getByRole('button', { name: '내보내기' })).toBeInTheDocument();

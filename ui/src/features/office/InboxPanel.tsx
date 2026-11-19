@@ -19,6 +19,7 @@ import MarkEmailReadOutlinedIcon from '@mui/icons-material/MarkEmailReadOutlined
 import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
 import RateReviewOutlinedIcon from '@mui/icons-material/RateReviewOutlined';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import SupportAgentOutlinedIcon from '@mui/icons-material/SupportAgentOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
@@ -54,6 +55,8 @@ const KIND: Record<InboxItem['kind'], string> = {
   workspace_oom: 'office.inboxOom',
   size_failed: 'office.inboxSizeFailed',
   blocked_route: 'office.inboxBlockedRoute',
+  workspace_shared: 'office.inboxShared',
+  messenger_linked: 'messenger.inboxLinked',
 };
 
 /** 줄 왼쪽의 종류 아이콘. 색은 실패한 예약 작업만 오류색이고 나머지는 무채색(DESIGN §1-1) */
@@ -73,10 +76,12 @@ const KIND_ICON: Record<InboxItem['kind'], SvgIconComponent> = {
   workspace_oom: MemoryOutlinedIcon,
   size_failed: MemoryOutlinedIcon,
   blocked_route: BlockOutlinedIcon,
+  workspace_shared: ShareOutlinedIcon,
+  messenger_linked: ShareOutlinedIcon,
 };
 
 /** 확인만 하면 사라지는 알림. 서버는 답 없이({}) 보내면 지운다. 나머지는 답(승인·질문·요청 처리)을 해야 사라진다 */
-const NOTICE: ReadonlySet<InboxItem['kind']> = new Set(['cron_done', 'pc_import', 'connection', 'admin_request_result', 'workspace_oom', 'size_failed', 'blocked_route']);
+const NOTICE: ReadonlySet<InboxItem['kind']> = new Set(['cron_done', 'pc_import', 'connection', 'admin_request_result', 'workspace_oom', 'size_failed', 'blocked_route', 'workspace_shared', 'messenger_linked']);
 const GIB = 2 ** 30;
 const gib = (n?: number) => (n ? `${Math.round((n / GIB) * 10) / 10}Gi` : '?');
 export const isNotice = (i: InboxItem) => NOTICE.has(i.kind);
@@ -171,10 +176,17 @@ function AdminRequestActions({
             </LinkChip>
           ) : (
             <>
-              {item.profile && (
-                <LinkChip to="profiles" params={{ name: item.profile }} page>
-                  {t('office.inboxAdminOpen')}
+              {item.req_kind === 'namespace_grant' ? (
+                // 제한 스킬·템플릿 설치 허용 요청(스펙 2026-11-18-015 X2): 「제한 스킬·템플릿 설치 허용」 표로. 허용하면 요청이 자동으로 닫힌다
+                <LinkChip to="market" params={{ tab: 'grants' }}>
+                  {t('office.inboxGrantOpen')}
                 </LinkChip>
+              ) : (
+                item.profile && (
+                  <LinkChip to="profiles" params={{ name: item.profile }} page>
+                    {t('office.inboxAdminOpen')}
+                  </LinkChip>
+                )
               )}
               <Button size="small" variant="outlined" disabled={busy} onClick={() => run({ choice: 'handled' })}>
                 {t('office.inboxAdminDone')}
@@ -366,6 +378,24 @@ function Row({
               </LinkChip>
             </Links>
           </>
+        )}
+        {item.messenger && (
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.25 }}>
+            {t('messenger.sentToo')}
+          </Typography>
+        )}
+        {item.kind === 'workspace_shared' && (
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {t('office.inboxSharedText', {
+              name: item.owner_name || '',
+              role: t(item.role === 'edit' ? 'agents.share.roleEdit' : 'agents.share.roleUse'),
+            })}
+          </Typography>
+        )}
+        {item.kind === 'messenger_linked' && (
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {t('messenger.inboxLinkedText', { member: item.member_name || '', platform: item.platform || '', user: item.user_name || '', profile: item.profile || '' })}
+          </Typography>
         )}
         {item.kind === 'pc_import' && (
           <Links>

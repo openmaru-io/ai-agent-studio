@@ -192,6 +192,30 @@ def set_company_name(value, who: str = "local") -> str:
     return name
 
 
+WORK_PREFIX_EPOCH = "settings:work_prefixes"
+
+
+def work_prefixes_raw() -> str:
+    """관리자가 정한 스킬 이름 접두어 → 업무 대응(JSON 문자열, 정하지 않았으면 빈 문자열, 스펙 2026-11-17-003). 검사·해석은 market.tags 가 한다."""
+    from . import cache_epoch
+    if cache_epoch.changed(WORK_PREFIX_EPOCH):
+        _forget("work_prefixes")
+
+    def read() -> str:
+        with store.connect() as conn:
+            return _meta(conn, "skill_work_prefixes") or ""
+    return _cached("work_prefixes", COMPANY_TTL, read)
+
+
+def set_work_prefixes_raw(value: str, who: str = "local") -> None:
+    with store.connect() as conn:
+        _set_meta(conn, "skill_work_prefixes", value)
+        _set_meta(conn, "skill_work_prefixes_by", str(who or "local"))
+    from . import cache_epoch
+    _forget("work_prefixes")
+    cache_epoch.bump(WORK_PREFIX_EPOCH)
+
+
 def company_by() -> str:
     with store.connect() as conn:
         return _meta(conn, "company_by") or "local"

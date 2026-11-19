@@ -390,6 +390,53 @@ class HubNotFoundTest(unittest.TestCase):
             self.assertIsNone(mp._exists("testskill"))
 
 
+class HubTransientTest(unittest.TestCase):
+    """허브에 잠깐 닿지 않는 오류(연결 실패·시간 초과·5xx·429)를 일시적 오류로 가른다(OMAI-2085).
+    2026-11-17 운영 COP 업그레이드 중 스킬 허브가 다시 시작하는 동안 기본 스킬 배달 24건이 영구 실패로 남았다."""
+
+    @staticmethod
+    def raising(exc):
+        def urlopen(req, timeout=0):
+            raise exc
+        return urlopen
+
+    @staticmethod
+    def http(status):
+        import urllib.error
+        return urllib.error.HTTPError("http://hub/x", status, "x", {}, io.BytesIO(b"{}"))
+
+    def test_fetch_marks_connection_errors_and_5xx_429_as_transient(self):
+        for exc in (OSError("refused"), TimeoutError("t"), self.http(503), self.http(500), self.http(429)):
+            with self.subTest(exc=exc), mock.patch.object(mk.urllib.request, "urlopen", self.raising(exc)):
+                with self.assertRaises(mk.MarketError) as cm:
+                    mk.fetch("/api/v1/skills/free/x", CFG)
+                self.assertTrue(cm.exception.transient)
+
+    def test_fetch_keeps_refusals_and_missing_as_permanent(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status), mock.patch.object(mk.urllib.request, "urlopen", self.raising(self.http(status))):
+                with self.assertRaises(mk.MarketError) as cm:
+                    mk.fetch("/api/v1/skills/free/x", CFG)
+                self.assertFalse(cm.exception.transient)
+        with self.assertRaises(mk.MarketError) as cm:                         # 주소가 없는 설정은 기다려도 풀리지 않는다
+            mk.fetch("/api/v1/skills/free/x", {**CFG, "url": ""})
+        self.assertFalse(cm.exception.transient)
+        self.assertFalse(mk.MarketError("x", 409).transient)                  # 기존 호출은 그대로 영구
+
+    def test_stage_hub_raises_unavailable_only_for_transient_errors(self):
+        with mock.patch.object(mk, "settings", return_value=CFG):
+            for exc in (OSError("refused"), self.http(503), self.http(429)):
+                with self.subTest(exc=exc), mock.patch.object(agent.urllib.request, "urlopen", self.raising(exc)):
+                    with self.assertRaises(agent.Unavailable):
+                        agent._hub("/api/v1/skills/free/x/versions/1.0.0/files")
+            for status in (403, 404):
+                with self.subTest(status=status), mock.patch.object(agent.urllib.request, "urlopen", self.raising(self.http(status))):
+                    with self.assertRaises(agent.Refuse) as cm:
+                        agent._hub("/api/v1/skills/free/x/versions/1.0.0/files")
+                    self.assertNotIsInstance(cm.exception, agent.Unavailable)
+        self.assertTrue(issubclass(agent.Unavailable, agent.Refuse))           # 잡던 곳(except Refuse)은 그대로 잡는다
+
+
 class StageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(dir=TMP.name))
@@ -544,6 +591,16 @@ class RouteTest(unittest.TestCase):
         self.assertNotIn("summary_src", en)
         self.assertEqual((one["summary"], one["summary_by"]), ("번역된 요약", "seed"))
 
+    def test_overview_says_whose_workspace_the_installs_belong_to(self):
+        """「설치된 곳」이 ma·main 만 보여 누구의 프로파일인지 몰랐다 — 응답에 설치본 글자 재료를 붙인다(OMAI-2086, 모델 화면과 같음)."""
+        with mock.patch.object(self.server.office, "agent_names_provider", lambda: {"p9": "운영"}), \
+                mock.patch.object(self.server.office, "people", lambda: {"t@example.com": {"name": "김철수"}}), \
+                mock.patch.object(self.server.office, "display_name", lambda email, known: known.get(email, {}).get("name", email)):
+            code, ov = self.call("GET", "/api/market")
+        self.assertEqual(code, 200)
+        self.assertEqual((ov["pod"], ov["name"], ov["owner_name"]), ("p9", "운영", "김철수"))
+        self.assertIn("installed", ov)                                                           # 설치 기록은 그대로
+
     def test_list_grant_install(self):
         code, ov = self.call("GET", "/api/market")
         self.assertEqual((code, ov["admin"], len(ov["packages"])), (200, True, 3))
@@ -592,6 +649,31 @@ class RouteTest(unittest.TestCase):
         self.assertEqual((code, pub["namespace_labels"]["free"], pub["namespace_labels"]["paid"]), (200, "공용", "제한"))
         code, pub = self.call("GET", "/api/market/publish", headers={"Accept-Language": "en"})
         self.assertEqual((code, pub["namespace_labels"]["free"], pub["namespace_labels"]["paid"]), (200, "shared", "restricted"))
+
+    def test_work_prefix_rules_are_saved_by_admins_and_returned_with_the_market(self):
+        """스킬 이름 접두어 → 업무(스펙 2026-11-17-003): 관리자가 저장하고 /api/market 이 함께 준다. 틀린 규칙은 400, 관리자 아니면 403."""
+        from aas.market import tags
+        rules = [{"prefix": "sa-", "work": "sales"}, {"prefix": "ma-", "work": "marketing"}]
+        try:
+            code, out = self.call("POST", "/api/market/work-prefixes", {"rules": rules})
+            self.assertEqual((code, out["rules"]), (200, rules))
+            self.assertEqual(self.call("GET", "/api/market")[1]["work_prefixes"], rules)
+            self.assertEqual(self.call("POST", "/api/market/work-prefixes", {"rules": [{"prefix": "sa-", "work": "docs"}]})[0], 400)
+            self.assertEqual(tags.work_prefixes(), rules)                              # 틀린 저장은 앞 값을 지우지 않는다
+            reg = self.server._registry
+            old = (self.server._auth, reg.is_admin)
+
+            class On:
+                enabled = True
+                def user(self, cookie): return {"email": "t@example.com", "name": ""}
+            self.server._auth = On(); reg.is_admin = lambda u: False
+            try:
+                self.assertEqual(self.call("POST", "/api/market/work-prefixes", {"rules": []})[0], 403)
+            finally:
+                self.server._auth, reg.is_admin = old
+            self.assertEqual(tags.work_prefixes(), rules)
+        finally:
+            tags.set_work_prefixes([])
 
     def test_owner_installs_but_cannot_grant_and_others_cannot_install(self):
         """주인은 설치, 유료 허용은 관리자만, 남의 POD 는 403(OMAI-1126 리뷰 R2)."""

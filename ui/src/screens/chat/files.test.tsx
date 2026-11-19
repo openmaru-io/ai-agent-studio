@@ -181,7 +181,7 @@ describe('FilesDrawerBody → 파일 뷰어(§3-7, DD3·DD10·DD11)', () => {
   });
 
   it('지우기는 뷰어 「…」 안에서 확인을 거쳐 DELETE, 지운 뒤 뷰어를 닫고 알린다(DD11)', async () => {
-    const fn = mountDrawer(store(), { '/api/chat/files?pod=p1&path=workspace%2Freport': (url: string) => new Response('{}', { status: 200 }) });
+    const fn = mountDrawer(store(), { '/api/chat/files?pod=p1&path=workspace%2Freport': () => new Response('{}', { status: 200 }) });
     await userEvent.click(await screen.findByRole('button', { name: /^report 폴더/ })); // 폴더는 처음에 접혀 있다(스펙 2026-10-27-012 D2)
     const dlg = await openRow('summary.md');
     await userEvent.click(within(dlg).getByRole('button', { name: '더 보기' }));

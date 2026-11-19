@@ -15,17 +15,25 @@
              (스펙 2026-10-23-002 R2·R6·12-5·12-6). 사내 주소를 코드에 두지 않는다(공개 소스 내보내기 규칙).
   Outline    Docmost 옆에 `outline` 항목을 둔다(스펙 2026-10-23-004). 같은 순서로 설치하고 browser 와 connections 도구 묶음을 함께 끈다.
              삭제 도구는 쓰기를 켜도 등록하지 않는다(Q3). Docmost 코드와 같은 규칙을 두 벌로 둔다 — 한쪽을 고치면 다른 쪽도 고친다(Q1).
+  MindWiki   설치 값 AAS_MINDWIKI_URL 이 있을 때만 `mindwiki` 항목을 보인다(스펙 2026-11-14-001 1단계). 사용자는 MindWiki 개인 토큰(wiki_pat_)만 넣고
+             주소는 설치 값 + /mcp 다. Outline 과 같은 순서로 설치하고 include 로 읽기 도구(고르면 쓰기 도구까지)만 등록한다. trash_page 는 늘 뺀다.
+  CogentAI   URL·키만 받는 항목(SimpleBuiltin). 일반판 cogentai-database 는 SQL 진단만, 설치 값 AAS_COGENTAI_DATABASE_REB_ENABLED 를 켜면
+             그 대신 부동산원 청약 통계 판 cogentai-database-reb 를 보인다(OMAI-1863). 보이지 않는 항목은 설치도 받지 않는다.
 """
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import os
 import re
 import secrets
+import ssl
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from urllib.parse import quote, urlsplit
 
 import yaml
@@ -36,10 +44,10 @@ from ..common import config, db, store
 from ..common.i18n import tr
 from ..common.redact import redact
 from ..hermes.hermes_api import HermesAPI, HermesError
-from . import network_mode, owner_guard
+from . import network_mode, owner_guard, restart_pending
 
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
-ENV_NAME = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$")
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}\Z")
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*\Z")
 REF = re.compile(r"\$\{(MCP_[A-Z0-9_]+)\}")
 RUNNERS = ("npx", "uvx", "uv", "python", "python3", "node")      # 직접 입력도 받지만 흔한 실행 파일만 안내한다(화면)
 TEST_TIMEOUT = 45                                                 # 연결 시험은 Hermes 가 30초만 기다린다(스펙 R14)
@@ -63,13 +71,157 @@ OUTLINE_READ_TOOLS = ("list_documents", "fetch", "list_collections", "list_colle
 OUTLINE_WRITE_TOOLS = ("create_document", "update_document", "move_document", "restore_document", "create_collection", "update_collection",
                        "create_comment", "update_comment", "create_attachment")   # delete_document·delete_collection·delete_comment 는 두지 않는다(Q3)
 OUTLINE_DELETE_TOOLS = ("delete_document", "delete_collection", "delete_comment")
+# 서버 이름. Skill(cogentai-mindwiki)이 mcp__cogentai_mindwiki__* 도구 이름으로 가리킨다(Hermes 가 - 를 _ 로 바꾼다). 처음 이름은 mindwiki 였고
+# cogentai-chart·cogentai-database-reb 처럼 cogentai- 를 붙였다(사용자 결정 2026-11-15, 스펙 2026-11-14-001). 옛 이름으로 붙은 서버는 옮기지 않는다(다시 연결)
+MINDWIKI = "cogentai-mindwiki"
+MINDWIKI_KEY = "MCP_COGENTAI_MINDWIKI_API_KEY"                 # Hermes 가 서버 이름에서 만드는 변수 이름과 같아야 한다(MCP_<서버 키>_API_KEY)
+MINDWIKI_SKILL = "free/cogentai-mindwiki"
+MINDWIKI_PAT = "wiki_pat_"                                        # /mcp 가 받는 개인 토큰 접두. wiki_oat_(OAuth, 1시간)는 고정 헤더에 넣으면 곧 끊긴다
+# MindWiki internal/api/mcp*.go 의 ReadOnly 도구(2026-11-14 기준 18개). MindWiki 가 도구를 더하면 여기에 더해야 보인다 — include 를 쓰는 것은
+# 주인이 아닌 사람의 쓰기 막기(foreign_write_blocks)와 같은 규칙을 지키기 위해서다(스펙 2026-11-14-001 0-6)
+MINDWIKI_READ_TOOLS = ("search_pages", "read_page", "list_pages", "ask_wiki", "related_pages", "list_comments", "read_page_blocks", "read_page_version",
+                       "page_history", "list_attachments", "list_teamspaces", "list_databases", "query_database", "graph_query", "graph_pattern",
+                       "graph_questions", "graph_question_run", "list_notifications")
+# suggest_edit: 남의 페이지를 본문 대신 편집 제안으로 고친다(스펙 2026-11-15-002 2단계, MindWiki 2026-11-15-004 W1)
+# start_/complete_attachment_upload: 파드에서 첨부를 올리는 세 단계(MindWiki W2, 올릴 주소는 MindWiki api 아래)
+MINDWIKI_WRITE_TOOLS = ("create_page", "append_to_page", "edit_block", "suggest_edit", "start_attachment_upload", "complete_attachment_upload", "rename_page", "move_page", "restore_page", "restore_page_version",
+                        "add_comment", "resolve_comment", "create_row", "update_row", "mark_notifications_read")
+MINDWIKI_DELETE_TOOLS = ("trash_page",)                           # 쓰기를 켜도 등록하지 않는다(Outline Q3 와 같은 이유)
+
+
+@dataclass(frozen=True)
+class SimpleBuiltin:
+    """URL·키만 받는 읽기 전용 builtin 항목(OMAI-1863). Docmost·Outline 과 달리 쓰기 스위치·끌 도구 묶음이 없다."""
+    name: str                     # 서버 이름. 스킬이 mcp__<이름>__* 로 가리킨다
+    key: str                      # Hermes 가 bearer_token 을 쓰는 변수(MCP_<서버 키>_API_KEY)
+    url_field: str                # 카탈로그 주소 칸
+    url_setting: str              # 주소 칸을 미리 채울 설치 값
+    skill: str                    # 함께 설치할 스킬
+    tools: tuple[str, ...]        # 등록할 도구(include)
+    label: Callable[[], str]      # 문구는 부를 때 tr() 로 고른다(요청마다 화면 언어가 다르다)
+    description: Callable[[], str]
+    url_prompt: Callable[[], str]
+    key_prompt: Callable[[], str]
+    instructions: str = ""        # 설치하면 프로파일 작업 지침(AGENTS.md)에 넣을 블록 본문(비우면 넣지 않는다)
+    plugin: str = ""              # 설치하면 프로파일에 넣고 켤 Hermes 플러그인(aas/assets/hermes_plugins/<이름>, 비우면 없음)
+
+
+# CogentAI 의 orchestrator MCP 창구와 Chart MCP. 주소·키는 COP 인스톨러가 설치 끝에 알린다(OMAI-1863).
+# 일반판 cogentai-database 는 SQL 진단만 등록한다. 부동산원 청약 통계(Text-to-SQL)는 그 업무 지식이 든 설치에서만 쓰므로
+# 설치 값 AAS_COGENTAI_DATABASE_REB_ENABLED 를 켜면 cogentai-database 대신 cogentai-database-reb 를 보인다(사용자 결정, 2026-11-08).
+# 두 항목은 같은 orchestrator /mcp 를 가리키므로 주소 칸은 같은 설치 값으로 채운다.
+COGENTAI = SimpleBuiltin(
+    name="cogentai-database", key="MCP_COGENTAI_DATABASE_API_KEY", url_field="COGENTAI_DATABASE_MCP_URL", url_setting="AAS_COGENTAI_DATABASE_MCP_URL",
+    skill="free/cogentai-database", tools=("diagnose_sql",),
+    label=lambda: tr("CogentAI SQL 진단", "CogentAI SQL diagnosis"),
+    description=lambda: tr("CogentAI 의 느린 SQL 진단. 실행 계획·인덱스·통계를 보고 튜닝 방법을 제시합니다. 진단 도구만 등록하고 사용 규칙 스킬을 설치합니다.",
+                 "CogentAI slow SQL diagnosis. Reads the execution plan, indexes and statistics and suggests tuning. Registers the diagnosis tool only and installs the usage skill."),
+    url_prompt=lambda: tr("CogentAI MCP 주소(설치 끝에 알려 준 …/mcp)", "CogentAI MCP address (the …/mcp given at install)"),
+    key_prompt=lambda: tr("COP 인스톨러의 cogentai_mcp_aas_key 값", "The cogentai_mcp_aas_key value of the COP installer"))
+COGENTAI_REB = SimpleBuiltin(
+    name="cogentai-database-reb", key="MCP_COGENTAI_DATABASE_REB_API_KEY", url_field="COGENTAI_DATABASE_REB_MCP_URL", url_setting="AAS_COGENTAI_DATABASE_MCP_URL",
+    skill="free/cogentai-database-reb", tools=("ask_subscription_statistics", "diagnose_sql", "export_subscription_result"),
+    plugin="cogentai-reb-route",  # 지시문만으로는 「청약 넣으면 될까?」에 도구 없이 되물었다(OKE 2026-11-12 O03, OMAI-1850)
+    label=lambda: tr("CogentAI 청약 통계·SQL 진단", "CogentAI statistics and SQL diagnosis"),
+    description=lambda: tr("CogentAI 의 부동산원 청약 통계 질문(Text-to-SQL)과 느린 SQL 진단. 질문이 모호하면 답할 수 있는 질문을 골라 묻습니다. 읽기 도구만 등록하고 사용 규칙 스킬을 설치합니다.",
+                 "CogentAI housing-subscription statistics (Text-to-SQL) and slow SQL diagnosis. Asks you to pick an answerable question when yours is unclear. Registers read tools only and installs the usage skill."),
+    url_prompt=lambda: tr("CogentAI MCP 주소(설치 끝에 알려 준 …/mcp)", "CogentAI MCP address (the …/mcp given at install)"),
+    key_prompt=lambda: tr("COP 인스톨러의 cogentai_mcp_aas_key 값", "The cogentai_mcp_aas_key value of the COP installer"),
+    # 스킬 목록은 설명 앞 60자만 보여 모델이 스킬을 건너뛰고 웹 검색 수치로 답했다(OKE 2026-11-08). 작업 지침은 시스템 프롬프트에 그대로 실린다
+    # 후보를 「clarify 로 고르게 한다」고만 적어 Gemma 가 후보를 글 목록으로 옮겨 선택 카드가 뜨지 않았다(OKE 2026-11-08 P10, OMAI-1863).
+    # 「수치 질문」·「웹 검색 수치」만 막아, 통계 답 뒤의 「요즘 청약 분위기 어때?」를 Gemma 가 도구 없이 자기 지식으로 답했다(OKE 2026-11-08).
+    # 긴 대화에서 앞 질문이 모두 「2025년 …」이면 Gemma 가 「올해」를 2025년, 「작년」을 2024년으로 고쳐 넘겼다(OKE 2026-11-08). 기간은 도구가 오늘 날짜로 푼다
+    # kordoc 4.24.12 는 띄어 쓴 「숫자. 숫자.」(공문서 날짜 2024. 1. 1.) 뒤를 버린다. 마침표 앞 \ 로 피한다(OKE 2026-11-08, 사용자 결정, OMAI-1863)
+    # 통계 결과 HWP 를 Gemma 가 매번 다른 모양(공문서 보고서 틀·표만)으로 만들었다. 사용자 지시로 공문서 보고서 양식으로 고정한다(OKE 2026-11-08, OMAI-1863)
+    # 엑셀 결과 파일을 작업 폴더로 옮기라는 지시가 스킬 본문에만 있어, 스킬을 읽지 않은 Gemma 가 캐시에만 두어 화면에서 받을 수 없었다(OKE 2026-11-08, OMAI-1863)
+    # 「우리 동네는 괜찮아?」는 위 낱말이 없어 Gemma 가 도구 없이 지역을 되묻고 「시세를 확인해 드릴 수 있습니다」라고 답했다(OKE 2026-11-12 O08, OMAI-1850)
+    # i18n-ignore: 에이전트 작업 지침(AGENTS.md) 본문 — 화면 문구가 아니라 모델이 읽는다
+    instructions=("## 부동산 질문 (CogentAI 청약 통계)\n"
+                  "- 아파트 청약·분양·매매가·시세·전월세에 관한 질문과, 동네·지역·집 상황처럼 부동산을 뜻할 수 있는 질문은 "
+                  "수치를 묻지 않아도(분위기·동향·전망 등) 자기 지식이나 웹 검색으로 답하기 전에, 그리고 지역 등을 되묻기 전에 "
+                  "먼저 `cogentai-database-reb` 스킬을 읽고 `mcp__cogentai_database_reb__ask_subscription_statistics` 에 사용자 질문 원문을 넘긴다. "
+                  "같은 대화에서 앞서 통계 답을 받았어도 새 질문마다 다시 부른다(앞 답의 「다시 부르지 말라」 안내는 그 질문에만 해당한다).\n"
+                  "- 이 도구의 데이터는 청약 공고·공급세대수·신청·당첨·경쟁률·주택형별 최고분양가다. 시세·실거래가·매매가·전월세는 없다. "
+                  "도구 없이 답하거나 되물을 때도 이런 정보를 확인해 줄 수 있다고 말하지 않는다.\n"
+                  "- 질문은 고쳐 쓰지 않는다. 특히 기간 낱말(올해·작년·지난해·재작년·이번 달·지난달·최근 N년)을 연도나 날짜로 바꾸지 않는다. "
+                  "도구가 오늘 날짜로 계산해 「적용한 조건」의 기간에 적는다. 결과 뒤에 덧붙이는 말에는 연도·기간을 쓰지 않는다(결과의 기간이 보이지 않고, 짐작한 올해는 틀린다).\n"
+                  "- 도구 결과에 질문 후보(`structuredContent.candidates`)가 있으면 답 글을 쓰지 말고 곧바로 `clarify` 를 부른다: "
+                  "`question` 은 `structuredContent.ask` 그대로, `choices` 는 `candidates[].question` 을 순서대로. "
+                  "결과 글의 「이렇게 물으면 답할 수 있습니다」 목록을 글로 옮기거나 「말씀해 주세요」로 되묻지 않는다(눌러 고를 수 없다). "
+                  "웹 검색 수치나 자기 지식으로 대신 답하지 않는다. 웹 검색은 사용자가 웹·뉴스 검색을 직접 부탁할 때만 쓴다.\n"
+                  "- 느린 SQL 의 원인·튜닝은 `mcp__cogentai_database_reb__diagnose_sql` 로 진단하고 결과를 그대로 보인다.\n"
+                  "- 통계 결과를 다른 차트로 다시 그리거나 일부(상위 N)만 그릴 때는 행을 직접 고르지 않는다. "
+                  "`mcp__cogentai_database_reb__export_subscription_result` 를 `sql` 없이(이 대화의 마지막 통계 답 SQL 을 쓴다) `format=chart` 로 부르고 `chart_type`·`sort_by`·`order`·"
+                  "`limit`·`value`·`category` 를 준다. DB 가 전체 행에서 정렬해 고르고 차트가 원문으로 붙는다.\n"
+                  "- 엑셀로 달라고 하면 `mcp__cogentai_database_reb__export_subscription_result` 를 `sql` 없이 `format=xlsx`(excel 아님)로 부른다. "
+                  "결과의 「[MCP resource saved to <경로> …]」 파일은 화면에서 받을 수 없으므로 곧바로 `terminal` 로 "
+                  "`mkdir -p /opt/data/workspace/exports && cp <경로> /opt/data/workspace/exports/<결과 첫 줄의 파일 이름>` 을 실행하고, "
+                  "답에 그 경로를 백틱으로 적는다(화면이 내려받기 링크로 바꾼다).\n"
+                  "- 통계 결과를 HWP·한글 문서로 달라고 하면 `korean-business-writing`·`markdown-to-doc` 스킬을 읽고 공문서 보고서 양식으로 만든다: "
+                  "제목 바로 뒤에 보고 목적 인용문(「…하고자 함」), Ⅰ 개요, Ⅱ 결과 표, 「끝.」 순서의 Markdown 을 `kordoc generate <원고.md> -o /opt/data/workspace/output/<이름>.hwpx --preset 보고서` 로 만든다. "
+                  "표의 열 이름·값·행 순서는 통계 답의 결과 표를 그대로 옮기고, 다시 계산하거나 반올림하거나 행을 빼지 않는다. "
+                  "원고의 날짜처럼 숫자 뒤 마침표가 띄어 쓰여 이어지면 마침표 앞에 `\\` 를 붙인다(`2024\\. 1\\. 1\\.∼2024\\. 12\\. 31\\.`). "
+                  "그대로 쓰면 kordoc 이 「2024.」 뒤를 버린다.\n"
+                  "- 차트 도구 결과는 `echarts_option` 을 ```echarts 블록으로 넣는다. SVG·PNG 그림(data:image)으로 넣지 않는다."))
+COGENTAI_CHART = SimpleBuiltin(
+    name="cogentai-chart", key="MCP_COGENTAI_CHART_API_KEY", url_field="COGENTAI_CHART_MCP_URL", url_setting="AAS_COGENTAI_CHART_MCP_URL",
+    skill="free/cogentai-chart",
+    tools=("generate_line_chart", "generate_bar_chart", "generate_pie_chart", "generate_area_chart", "generate_scatter_chart",
+           "generate_heatmap_chart", "generate_radar_chart", "generate_funnel_chart", "generate_gauge_chart", "generate_multi_chart"),
+    label=lambda: tr("CogentAI 차트", "CogentAI charts"),
+    description=lambda: tr("표 데이터를 선·막대·원 차트로 그립니다. 답에 차트가 그려지는 블록으로 넣습니다. 사용 규칙 스킬을 함께 설치합니다.",
+                 "Draws line, bar and pie charts from table data and puts them in the answer as a chart block. Installs the usage skill."),
+    url_prompt=lambda: tr("CogentAI Chart MCP 주소(설치 끝에 알려 준 …/mcp)", "CogentAI Chart MCP address (the …/mcp given at install)"),
+    key_prompt=lambda: tr("COP 인스톨러의 cogentai_mcp_aas_chart_key 값", "The cogentai_mcp_aas_chart_key value of the COP installer"))
+SIMPLE_BUILTINS = {b.name: b for b in (COGENTAI, COGENTAI_REB, COGENTAI_CHART)}   # 이름 검사용 전체. 보이는 항목은 simple_builtins()
+
+
+def reb_enabled() -> bool:
+    return config.get("AAS_COGENTAI_DATABASE_REB_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def simple_builtins() -> dict[str, SimpleBuiltin]:
+    """이 설치의 카탈로그에 보이는 URL·키 항목. 부동산원 판을 켜면 일반판 대신 그것을 보인다."""
+    database = COGENTAI_REB if reb_enabled() else COGENTAI
+    return {b.name: b for b in (database, COGENTAI_CHART)}
+
+
+def _instruction_marks(server: str) -> tuple[str, str]:
+    # i18n-ignore: 작업 지침 안의 표식 주석 — 화면 문구가 아니다
+    return (f"<!-- aas:mcp:{server}:begin (MCP 카탈로그가 넣음, 서버를 지우면 함께 지워진다) -->", f"<!-- aas:mcp:{server}:end -->")
+
+
+def instruction_block_present(text: str, server: str) -> bool:
+    begin, end = _instruction_marks(server)
+    i = text.find(begin)
+    return i >= 0 and text.find(end, i) >= 0
+
+
+def with_instructions(text: str, server: str, body: str) -> str:
+    """작업 지침에 그 서버의 블록을 넣거나 바꾼다. 사용자가 쓴 다른 줄은 그대로 둔다(OMAI-1863)."""
+    begin, end = _instruction_marks(server)
+    block = f"{begin}\n{body.strip()}\n{end}"
+    base = without_instructions(text, server)
+    return (base.rstrip("\n") + "\n\n" if base.strip() else "") + block + "\n"
+
+
+def without_instructions(text: str, server: str) -> str:
+    """그 서버의 블록(표식 줄 포함)만 뺀다. 블록이 없으면 그대로 돌려준다."""
+    begin, end = _instruction_marks(server)
+    i = text.find(begin)
+    j = text.find(end, i) if i >= 0 else -1
+    if i < 0 or j < 0:
+        return text
+    head, tail = text[:i].rstrip("\n"), text[j + len(end):].lstrip("\n")
+    return head + ("\n\n" + tail if head and tail else tail if tail else ("\n" if head else ""))
 
 
 def foreign_write_blocks() -> list[str]:
     """주인·관리자·팀 관리자가 아닌 사람이 오피스·회의에서 시킨 턴에서 Hermes 가 막을 도구(스펙 2026-10-23-004 15-9).
     그 턴은 주인의 위키 계정으로 쓰면 안 된다. 서버를 다른 이름(예: opsknow-oauth)으로 더해도 막히게 mcp__*__<도구> 패턴으로 준다.
     삭제 도구는 카탈로그가 등록하지 않지만 「원격 주소」로 전부 등록했을 수 있어 같이 넣는다."""
-    return [f"mcp__*__{t}" for t in dict.fromkeys(OUTLINE_WRITE_TOOLS + OUTLINE_DELETE_TOOLS + DOCMOST_WRITE_TOOLS)]
+    return [f"mcp__*__{t}" for t in dict.fromkeys(OUTLINE_WRITE_TOOLS + OUTLINE_DELETE_TOOLS + DOCMOST_WRITE_TOOLS
+                                                     + MINDWIKI_WRITE_TOOLS + MINDWIKI_DELETE_TOOLS)]
 
 
 def strip_bearer(token: str) -> str:
@@ -380,7 +532,7 @@ def add(api: HermesAPI, prof: str | None, body: dict, *, owner: bool, secure: bo
                 entry["oauth"] = {**(entry.get("oauth") or {}), **oauth}
                 return entry
             try:
-                replace_server(api, prof, name, build, pod=pod, by=by, note="MCP OAuth 클라이언트 정보")   # i18n-ignore: 판 메모
+                replace_server(api, prof, name, build, pod=pod, by=by, note="MCP OAuth 클라이언트 정보", record=False)   # i18n-ignore: 판 메모
             except (HermesError, FileError) as exc:
                 raise HermesError(tr(f"서버는 추가했지만 클라이언트 정보를 저장하지 못했습니다: {exc}", f"The server was added but the client details could not be saved: {exc}"), 502) from None
     except HermesError as exc:
@@ -424,7 +576,7 @@ def remove(api: HermesAPI, prof: str | None, name: str, config_text: str, *, pod
     if pod:
         forget_forced(pod, profile, name)
     # Outline 을 설치할 때 끈 browser·connections 는 지워도 돌아오지 않는다 — 다시 켜지 않고 알리기만 한다(스펙 2026-10-23-004 R6·D9)
-    return {"ok": True, "name": name, "env_cleared": len(doomed) - left, "env_left": left, **({"toolsets_off_notice": True} if name == OUTLINE else {})}
+    return {"ok": True, "name": name, "env_cleared": len(doomed) - left, "env_left": left, **({"toolsets_off_notice": True} if name in (OUTLINE, MINDWIKI) else {})}
 
 
 def to_oauth(api: HermesAPI, prof: str | None, name: str, *, pod: str, by: str) -> dict:
@@ -511,10 +663,12 @@ def _create_entry(api: HermesAPI, prof: str | None, name: str, entry: dict, *, p
                                "MCP 서버 추가 전")                   # i18n-ignore: DB 에 저장하는 판 메모
 
 
-def replace_server(api: HermesAPI, prof: str | None, name: str, build, *, pod: str, by: str, note: str = "") -> dict:
+def replace_server(api: HermesAPI, prof: str | None, name: str, build, *, pod: str, by: str, note: str = "", record: bool = True) -> dict:
     """서버 항목 하나를 새로 만들어 mcp_servers 지도 전체를 PUT /api/mcp/servers 로 쓴다(스펙 2026-10-16-010 4-2·13절 X1).
     build(항목 사본) 이 새 항목을 돌려준다 — 지울 키는 실제로 뺀다(PUT /api/config 의 깊은 병합은 키를 지우지 못하고 null 은 null 로 남는다).
-    순서: 잠금 → 원본 읽기 → 새 항목 → 쓰기 직전 다시 읽기(바뀌었으면 409) → 이전 지도를 판으로 → 쓰기. Hermes 가 모든 항목을 다시 검사한다."""
+    순서: 잠금 → 원본 읽기 → 새 항목 → 쓰기 직전 다시 읽기(바뀌었으면 409) → 이전 지도를 판으로 → 쓰기. Hermes 가 모든 항목을 다시 검사한다.
+    있던 서버의 내용은 게이트웨이가 다시 떠야 읽힌다 — 바뀌었고 record 면 다시 시작 장부에 적는다(스펙 2026-11-18-016 4-2).
+    같은 요청에서 막 만든 서버(add 의 OAuth 클라이언트 정보)와 로그인 준비(ensure_redirect)는 record=False 다."""
     with _write_lock(pod, prof):
         servers = _raw_servers(api, prof)
         if not isinstance(servers.get(name), dict):
@@ -534,6 +688,8 @@ def replace_server(api: HermesAPI, prof: str | None, name: str, build, *, pod: s
             raise _message(exc) from None
         before = json.dumps(servers, ensure_ascii=False, indent=2, sort_keys=True)
         version = files.remember_version(pod, f"mcp_servers:{prof or ''}", before, by, note or "MCP 서버 설정 바꾸기 전")  # i18n-ignore: DB 에 저장하는 판 메모
+    if record:
+        restart_pending.note(restart_pending.needs_restart("mcp", name=name), note)
     return {"ok": True, "name": name, "changed": True, "version": version}
 
 
@@ -563,8 +719,9 @@ def catalog(api: HermesAPI, prof: str | None) -> dict:
                           **({"url": str(r["url"])[:500], "network": network_mode.check(str(r["url"]))} if r.get("url") else {})})
     # 쓸 수 없는 주소(에어갭 등)는 목록 끝으로 — 쓸 수 있는 항목이 묻히지 않게(14-10). 같은 무리 안의 순서는 그대로
     shown.sort(key=lambda e: (e.get("network") or {}).get("verdict") == "blocked")
-    own = [_docmost_entry(api, prof), _outline_entry(api, prof)]
-    shown = own + [e for e in shown if e["name"] not in (DOCMOST, OUTLINE)]
+    own = [_docmost_entry(api, prof), _outline_entry(api, prof)] + ([_mindwiki_entry(api, prof)] if mindwiki_url() else []) \
+        + [_simple_entry(api, prof, b) for b in simple_builtins().values()]
+    shown = own + [e for e in shown if e["name"] not in (DOCMOST, OUTLINE, MINDWIKI, *SIMPLE_BUILTINS)]
     return {"entries": shown, "hidden": hidden}
 
 
@@ -589,7 +746,7 @@ def _docmost_entry(api: HermesAPI, prof: str | None) -> dict:
     include = ((mine or {}).get("tools") or {}).get("include") if isinstance((mine or {}).get("tools"), dict) else None
     write = bool(include) and all(t in include for t in DOCMOST_WRITE_TOOLS)
     return {"name": DOCMOST, "transport": "http", "auth_type": "api_key", "installed": installed, "enabled": installed,
-            "builtin": True, "write": write,
+            "builtin": True, "writable": True, "write": write,
             "description": tr("Docmost 위키. 내 API 키로 연결하고 기본은 읽기 도구만 등록합니다. 이 프로파일의 브라우저·외부 연결 도구는 끕니다.",
                               "Docmost wiki. Connects with your own API key and registers read tools by default. Turns off this profile's browser and connections tools."),
             "required_env": [{"name": DOCMOST_URL_FIELD, "required": True, "secret": False, "value": docmost_url()[:500],
@@ -602,16 +759,25 @@ _PROBE_BODY = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                           "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "aas", "version": "1"}}}).encode()
 
 
+def _probe_context() -> ssl.SSLContext:
+    """기본 신뢰 묶음에 설치의 사내 CA(AAS_EXTRA_CA_FILE, 차트가 agents.trustedCA 와 같은 값을 넣는다)를 더한다. 사설 CA 로 서명한 MindWiki 에
+    서버가 닿지 못해 사전 확인이 늘 0 이었다(2026-11-14 OKE, OMAI-2018). 파일이 없으면 기본 묶음만 쓴다."""
+    ctx = ssl.create_default_context()
+    extra = os.environ.get("AAS_EXTRA_CA_FILE", "").strip()
+    if extra and os.path.isfile(extra):
+        ctx.load_verify_locations(cafile=extra)
+    return ctx
+
+
 def _docmost_probe(url: str, key: str) -> int:
     """키를 붙여 POST initialize 를 한 번 보내고 HTTP 상태를 돌려준다. 닿지 않으면 0. 설치 값 주소(관리자가 정함)에만 부른다 — 사용자가 적은 주소로
     AAS 서버가 요청하면 서버를 거쳐 내부망을 찌를 수 있다."""
-    import ssl
     import urllib.error
     import urllib.request
     req = urllib.request.Request(url, data=_PROBE_BODY, method="POST", headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
     try:
-        with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=_probe_context()) as resp:
             return int(resp.status)
     except urllib.error.HTTPError as exc:
         return int(exc.code)
@@ -682,6 +848,56 @@ def _install_docmost(api: HermesAPI, prof: str | None, env: dict, write: bool, *
     return {**out, "write": write, "browser_off": off[BROWSER_TOOLSET], "connections_off": off[CONNECTIONS_TOOLSET], "skill_package": DOCMOST_SKILL}
 
 
+def _simple_entry(api: HermesAPI, prof: str | None, b: SimpleBuiltin) -> dict:
+    """URL·키만 받는 builtin 항목(OMAI-1863). 쓰기 스위치가 없다(writable=False)."""
+    try:
+        installed = any(r["name"] == b.name for r in _servers(api, prof))
+    except HermesError:
+        installed = False
+    return {"name": b.name, "label": b.label(), "transport": "http", "auth_type": "api_key", "installed": installed, "enabled": installed,
+            "builtin": True, "writable": False, "write": False, "description": b.description(),
+            "required_env": [{"name": b.url_field, "required": True, "secret": False, "value": config.get(b.url_setting, "").strip()[:500],
+                              "prompt": b.url_prompt()},
+                             {"name": b.key, "required": True, "secret": True, "prompt": b.key_prompt()}]}
+
+
+def _simple_key_check(api: HermesAPI, prof: str | None, b: SimpleBuiltin) -> None:
+    """_outline_key_check 와 같다: 사용자의 Hermes 로 연결 시험을 한 번 하고, 401·403 이면 서버와 키 줄을 지우고 거절한다."""
+    try:
+        res = api.call("POST", f"/api/mcp/servers/{_q(b.name)}/test", {}, {"profile": prof}, timeout=TEST_TIMEOUT)
+    except HermesError:
+        return
+    if not isinstance(res, dict) or res.get("ok") or res.get("success"):
+        return
+    m = HTTP_STATUS.search(str(res.get("error") or ""))
+    if not m or m.group(1) not in ("401", "403"):
+        return
+    try:
+        api.call("DELETE", f"/api/mcp/servers/{_q(b.name)}", None, {"profile": prof})
+        _clear_env(api, prof, [b.key])
+    except HermesError:
+        pass
+    raise FileError(tr(f"{b.label()} 이 키를 거절했습니다(HTTP {m.group(1)}). COP 인스톨러가 알려 준 키를 빠짐없이 넣었는지 확인하세요. 추가한 서버는 지웠습니다.",
+                       f"{b.label()} rejected the key (HTTP {m.group(1)}). Check that you entered the whole key the COP installer gave. The added server was removed."),
+                    400, reason="key_rejected", field="env")
+
+
+def _install_simple(api: HermesAPI, prof: str | None, b: SimpleBuiltin, env: dict, *, owner: bool, secure: bool, profs: list[str | None],
+                    pod: str, by: str, profile: str) -> dict:
+    """_install_outline 과 같은 순서(include 를 넣은 채로 한 번에 만들고, Hermes 로 연결 시험). 도구 묶음은 끄지 않는다."""
+    url = str(env.get(b.url_field) or "").strip()
+    key = str(env.get(b.key) or "")
+    if not url or not strip_bearer(key):
+        raise FileError(tr("필요한 환경변수를 모두 넣으세요", "Fill in all required variables"), 400, reason="env_missing", field="env")
+    if urlsplit(url).scheme not in ("http", "https"):
+        raise FileError(tr("주소는 http:// 나 https:// 로 시작해야 합니다", "The address must start with http:// or https://"), 400, reason="url_format", field="url")
+    _secure_needed(secure)
+    out = add(api, prof, {"server": b.name, "kind": "url", "url": url, "auth": "header", "bearer_token": key},
+              owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile, tools_include=list(b.tools))
+    _simple_key_check(api, prof, b)
+    return {**out, "write": False, "skill_package": b.skill}
+
+
 def outline_url() -> str:
     """주소 칸을 미리 채울 값(설치 값). 없어도 항목은 보인다(스펙 2026-10-23-004 D2)."""
     return config.get("AAS_OUTLINE_MCP_URL", "").strip()
@@ -703,7 +919,7 @@ def _outline_entry(api: HermesAPI, prof: str | None) -> dict:
     include = ((mine or {}).get("tools") or {}).get("include") if isinstance((mine or {}).get("tools"), dict) else None
     write = bool(include) and all(t in include for t in OUTLINE_WRITE_TOOLS)
     return {"name": OUTLINE, "transport": "http", "auth_type": "api_key", "installed": installed, "enabled": installed,
-            "builtin": True, "write": write,
+            "builtin": True, "writable": True, "write": write,
             "description": tr("Outline 위키. 내 API 키로 연결하고 기본은 읽기 도구만 등록합니다. 이 프로파일의 브라우저·외부 연결 도구는 끄고 Outline 사용 규칙 스킬을 설치합니다.",
                               "Outline wiki. Connects with your own API key and registers read tools by default. Turns off this profile's browser and connection tools and installs the Outline usage skill."),
             "required_env": [{"name": OUTLINE_URL_FIELD, "required": True, "secret": False, "value": outline_url()[:500],
@@ -793,6 +1009,136 @@ def _install_outline(api: HermesAPI, prof: str | None, env: dict, write: bool, *
             "connections_off": _toolset_off(api, prof, CONNECTIONS_TOOLSET), "skill_package": OUTLINE_SKILL}
 
 
+def mindwiki_url() -> str:
+    """MindWiki 기본 주소(설치 값, 끝 / 없이). 없으면 MindWiki 항목을 보이지 않는다(스펙 2026-11-14-001). 사용자가 주소를 넣지 않는다 —
+    AAS 서버가 키를 미리 물어보는 곳이 관리자가 정한 주소뿐이어야 하기 때문이다."""
+    url = config.get("AAS_MINDWIKI_URL", "").strip().rstrip("/")
+    return url if urlsplit(url).scheme in ("http", "https") and urlsplit(url).netloc else ""
+
+
+def mindwiki_mcp_url() -> str:
+    return mindwiki_url() + "/mcp" if mindwiki_url() else ""
+
+
+def _mindwiki_entry(api: HermesAPI, prof: str | None) -> dict:
+    """AAS 가 만든 MindWiki 항목. _outline_entry 와 같은 꼴이되 주소 칸이 없다(설치 값으로 정해짐)."""
+    try:
+        installed = any(r["name"] == MINDWIKI for r in _servers(api, prof))
+    except HermesError:
+        installed = False
+    mine = None
+    if installed:
+        try:
+            raw = _raw_servers(api, prof).get(MINDWIKI)
+        except FileError:
+            raw = None
+        mine = raw if isinstance(raw, dict) else {}
+    include = ((mine or {}).get("tools") or {}).get("include") if isinstance((mine or {}).get("tools"), dict) else None
+    # 쓰기 여부는 기준 도구 하나로 본다: 이 판에서 쓰기 도구가 늘어도(suggest_edit·첨부 올리기, 스펙 2026-11-15-002) 예전에 연결한 항목이
+    # 「읽기만」으로 보이지 않게. 빠진 새 도구는 자동 점검이 채운다(refresh_mindwiki_tools)
+    write = bool(include) and "create_page" in include
+    return {"name": MINDWIKI, "transport": "http", "auth_type": "api_key", "installed": installed, "enabled": installed,
+            "builtin": True, "writable": True, "write": write, "url": mindwiki_mcp_url()[:500],
+            "description": tr("사내 위키 MindWiki 문서를 찾고 읽습니다. 내 개인 토큰으로 연결하고 기본은 읽기 도구만 등록합니다. 이 프로파일의 브라우저·외부 연결 도구는 끄고 MindWiki 사용 규칙 스킬을 설치합니다.",
+                              "Finds and reads documents in the MindWiki company wiki. Connects with your own personal token and registers read tools by default. Turns off this profile's browser and connection tools and installs the MindWiki usage skill."),
+            "required_env": [{"name": MINDWIKI_KEY, "required": True, "secret": True,
+                              "prompt": tr(f"MindWiki › 설정 › MCP 연결에서 만든 개인 토큰(wiki_pat_ 로 시작). 읽기만 쓰려면 쓰기 권한 없이 만드세요. 설정 화면: {mindwiki_url()}",
+                                           f"The personal token created in MindWiki › Settings › MCP connection (starts with wiki_pat_). To read only, create it without write access. Settings: {mindwiki_url()}")}]}
+
+
+def _mindwiki_tools(write: bool) -> list[str]:
+    return list(MINDWIKI_READ_TOOLS + (MINDWIKI_WRITE_TOOLS if write else ()))
+
+
+def refresh_mindwiki_tools(api: HermesAPI, prof: str | None, *, pod: str, by: str) -> bool:
+    """예전 판이 적은 tools.include 에 이 판의 도구가 빠졌으면 같은 범위(읽기·쓰기)로 다시 쓴다. 바꿨으면 True.
+    AAS 는 연결할 때 도구 목록을 적어 두므로, MindWiki 에 새 도구가 생겨도(suggest_edit·start_/complete_attachment_upload) 다시 쓰기 전에는
+    Hermes 가 그 도구를 받지 못했다(OKE 2026-11-15, 스펙 2026-11-15-002). 로그인 때 자동 점검이 부른다."""
+    try:
+        raw = _raw_servers(api, prof).get(MINDWIKI)
+    except FileError:
+        return False
+    include = (raw.get("tools") or {}).get("include") if isinstance(raw, dict) and isinstance(raw.get("tools"), dict) else None
+    if not include:
+        return False                                    # include 가 없으면 Hermes 가 모든 도구를 받는다 — 고칠 것이 없다
+    want = _mindwiki_tools("create_page" in include)
+    if all(t in include for t in want):
+        return False
+    set_mindwiki_write(api, prof, "create_page" in include, pod=pod, by=by)
+    return True
+
+
+def set_mindwiki_write(api: HermesAPI, prof: str | None, write: bool, *, pod: str, by: str) -> dict:
+    """설치한 MindWiki 서버의 쓰기 도구를 켜고 끈다. 토큰에 쓰기 권한이 없으면 MindWiki 가 쓰기 도구를 내지 않으므로 켜도 보이지 않는다."""
+    def build(item: dict) -> dict:
+        item["tools"] = {**(item.get("tools") if isinstance(item.get("tools"), dict) else {}), "include": _mindwiki_tools(write)}
+        return item
+    replace_server(api, prof, MINDWIKI, build, pod=pod, by=by, note="MindWiki 도구 범위 바꾸기")   # i18n-ignore: 판 메모
+    return {"ok": True, "name": MINDWIKI, "write": write}
+
+
+def _mindwiki_key_check(api: HermesAPI, prof: str | None) -> None:
+    """_outline_key_check 와 같다: 사용자의 Hermes 로 연결 시험을 한 번 하고, 401·403 이면 서버와 키 줄을 지우고 거절한다."""
+    try:
+        res = api.call("POST", f"/api/mcp/servers/{_q(MINDWIKI)}/test", {}, {"profile": prof}, timeout=TEST_TIMEOUT)
+    except HermesError:
+        return
+    if not isinstance(res, dict) or res.get("ok") or res.get("success"):
+        return
+    m = HTTP_STATUS.search(str(res.get("error") or ""))
+    if not m:
+        return
+    try:
+        api.call("DELETE", f"/api/mcp/servers/{_q(MINDWIKI)}", None, {"profile": prof})
+        _clear_env(api, prof, [MINDWIKI_KEY])
+    except HermesError:
+        pass
+    raise FileError(tr(f"MindWiki 가 토큰을 거절했습니다(HTTP {m.group(1)}). 토큰을 빠짐없이 복사했는지, 만료·폐기되지 않았는지 확인하세요. 추가한 서버는 지웠습니다.",
+                       f"MindWiki rejected the token (HTTP {m.group(1)}). Check that the whole token was copied and that it is not expired or revoked. The added server was removed."),
+                    400, reason="mindwiki_key_rejected", field="env")
+
+
+def _install_mindwiki(api: HermesAPI, prof: str | None, env: dict, write: bool, *, owner: bool, secure: bool, profs: list[str | None], pod: str, by: str,
+                      profile: str) -> dict:
+    """_install_outline 과 같은 순서. 다른 점: 주소는 설치 값, 키는 wiki_pat_ 만 받는다, 404 안내가 없다(MindWiki /mcp 는 늘 켜져 있다)."""
+    url = mindwiki_mcp_url()
+    key = strip_bearer(str(env.get(MINDWIKI_KEY) or ""))
+    if not url:
+        raise FileError(tr("MindWiki 주소가 설정되지 않았습니다", "The MindWiki address is not set"), 400, reason="catalog_hidden", field="name")
+    if not key:
+        raise FileError(tr("필요한 환경변수를 모두 넣으세요", "Fill in all required variables"), 400, reason="env_missing", field="env")
+    if not key.startswith(MINDWIKI_PAT):
+        raise FileError(tr("MindWiki 개인 토큰(wiki_pat_ 로 시작)을 넣으세요. OAuth 토큰(wiki_oat_)은 1시간 뒤 끊겨 쓸 수 없습니다.",
+                           "Enter a MindWiki personal token (starting with wiki_pat_). An OAuth token (wiki_oat_) stops working after an hour."),
+                        400, reason="mindwiki_key_format", field="env")
+    _secure_needed(secure)
+    status = _docmost_probe(url, key)                                # 설치 값 주소라 AAS 서버가 미리 물어도 된다(Docmost 와 같은 이유)
+    if status in (401, 403):
+        raise FileError(tr(f"MindWiki 가 토큰을 거절했습니다(HTTP {status}). 토큰을 빠짐없이 복사했는지, 만료·폐기되지 않았는지 확인하세요.",
+                           f"MindWiki rejected the token (HTTP {status}). Check that the whole token was copied and that it is not expired or revoked."),
+                        400, reason="mindwiki_key_rejected", field="env")
+    out = add(api, prof, {"server": MINDWIKI, "kind": "url", "url": url, "auth": "header", "bearer_token": key},
+              owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile, tools_include=_mindwiki_tools(write))
+    _mindwiki_key_check(api, prof)
+    return {**out, "write": write, "browser_off": _toolset_off(api, prof, BROWSER_TOOLSET),
+            "connections_off": _toolset_off(api, prof, CONNECTIONS_TOOLSET), "skill_package": MINDWIKI_SKILL}
+
+
+def connect_mindwiki(api: HermesAPI, prof: str | None, key: str, write: bool, *, owner: bool, profs: list[str | None], pod: str, by: str,
+                     profile: str) -> dict:
+    """MindWiki 계정으로 연결(스펙 2026-11-14-001 2단계)이 받은 개인 토큰을 붙인다. 설치 전이면 1단계 설치와 같은 경로,
+    설치돼 있으면(다시 연결·쓰기 범위 바꾸기) 키 줄과 도구 범위만 바꾼다. 새 키는 먼저 MindWiki 에 물어 본다 — 거절되면 아무것도 바꾸지 않는다."""
+    if not any(r["name"] == MINDWIKI for r in _servers(api, prof)):
+        return _install_mindwiki(api, prof, {MINDWIKI_KEY: key}, write, owner=owner, secure=True, profs=profs, pod=pod, by=by, profile=profile)
+    status = _docmost_probe(mindwiki_mcp_url(), key)
+    if status in (401, 403):
+        raise FileError(tr(f"MindWiki 가 새 토큰을 거절했습니다(HTTP {status})", f"MindWiki rejected the new token (HTTP {status})"),
+                        400, reason="mindwiki_key_rejected", field="env")
+    _put_env(api, prof, MINDWIKI_KEY, key)
+    out = set_mindwiki_write(api, prof, write, pod=pod, by=by)
+    return {**out, "replaced": True}
+
+
 def install(api: HermesAPI, prof: str | None, body: dict, *, owner: bool, secure: bool, profs: list[str | None], pod: str = "", by: str = "",
             profile: str = "") -> dict:
     """카탈로그 항목을 설치한다. 보이는 항목만, 항목이 선언한 환경변수 이름만 받는다."""
@@ -805,12 +1151,20 @@ def install(api: HermesAPI, prof: str | None, body: dict, *, owner: bool, secure
         raise FileError(net["message"], 403, reason="network_" + net["reason"], field="name")
     env = body.get("env") or {}
     if entry.get("builtin"):                                         # AAS 가 만든 항목(Docmost·Outline) — Hermes 카탈로그 설치로 보내지 않는다
-        allowed = {OUTLINE_KEY, OUTLINE_URL_FIELD} if name == OUTLINE else {DOCMOST_KEY, DOCMOST_URL_FIELD}
+        visible = simple_builtins()
+        if name in visible:
+            allowed = {visible[name].key, visible[name].url_field}
+        elif name == MINDWIKI:
+            allowed = {MINDWIKI_KEY}
+        else:
+            allowed = {OUTLINE_KEY, OUTLINE_URL_FIELD} if name == OUTLINE else {DOCMOST_KEY, DOCMOST_URL_FIELD}
         if not isinstance(env, dict) or set(env) - allowed or any(not isinstance(v, str) or any(c in v for c in "\r\n\x00") for v in env.values()):
             raise FileError(tr("항목이 선언한 환경변수만 넣을 수 있고, 값에는 줄바꿈이 없어야 합니다", "Only the variables the entry declares can be set, and values cannot contain a line break"), 400, reason="env_undeclared", field="env")
         if entry["installed"]:
             raise FileError(tr("이미 추가한 서버입니다. 키는 비밀값 탭에서 바꿉니다.", "That server is already added. Change the key in the Secrets tab."), 409, reason="name_exists", field="name")
-        installer = _install_outline if name == OUTLINE else _install_docmost
+        if name in visible:
+            return _install_simple(api, prof, visible[name], env, owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile)
+        installer = {OUTLINE: _install_outline, MINDWIKI: _install_mindwiki}.get(name, _install_docmost)
         return installer(api, prof, env, bool(body.get("write")), owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile)
     declared = {e["name"] for e in entry["required_env"]}
     if not isinstance(env, dict) or set(env) - declared or any(not isinstance(v, str) or any(c in v for c in "\r\n\x00") or len(v) > 4000 for v in env.values()):

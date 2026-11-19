@@ -42,7 +42,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { type Ref, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, type Ref, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { ScreenLoading, Tag } from '@/components/bits';
@@ -53,14 +53,17 @@ import { Composer, ComposerHandle } from '@/components/chat/Composer';
 import { EndedRow } from '@/components/chat/EndedRow';
 import { ErrorRow } from '@/components/chat/ErrorRow';
 import { MessageRow } from '@/components/chat/MessageRow';
+import { SaveToMindwiki } from '@/components/chat/MindwikiSave';
 import { OomRow } from '@/components/chat/OomRow';
 import { answerKeys, ReadAloudButton, readPinned, useReadScope, useReadSnap } from '@/components/chat/ReadAloud';
 import { ReconnectRow, statusRowSx } from '@/components/chat/ReconnectRow';
+import { SaveAnswerButton } from '@/components/chat/SaveAnswerFormat';
 import { planSlash, skillSuggestItems, slashItems, slashSource } from '@/components/chat/skillSuggest';
 import { TypingDots } from '@/components/chat/TypingDots';
 import { useChatTokens } from '@/components/chat/useChatTokens';
 import { Pill } from '@/components/DataGrid';
 import { PageTitle } from '@/components/PageTitle';
+import { SharedWorkspaceNote } from '@/components/SharedWorkspaceNote';
 import { SubtleBadge } from '@/components/SubtleBadge';
 import { teamOwnerName, TeamStatusRow } from '@/components/TeamTargetNote';
 import { tier1, tier2 } from '@/components/tierButton';
@@ -68,11 +71,13 @@ import { useUi } from '@/components/UiContext';
 import { useOpenParam, useParamPatch, useRouteDrawerValue } from '@/components/useRouteDrawer';
 import { RequestAdminButton } from '@/features/requests/RequestAdminButton';
 import { t } from '@/i18n';
+import { appHref } from '@/lib/api';
 import { setCardAreaTop } from '@/lib/cardArea';
-import { groupItems, isAsk, pending, Session } from '@/lib/chat';
+import { ElapsedParts, elapsedText, groupItems, isAsk, pending, Session } from '@/lib/chat';
 import { AgentInfo, ChatGroup, ChatStatus, ChatStore, chatStore, groupLabel, rowTitle, SessionRow, singleProfile, targetTitle, useChat } from '@/lib/chatStore';
-import { chatColumn, chatColumnPad, chatMetrics, chatType, coarseTouch, hueOf } from '@/lib/chatTokens';
+import { chatColumn, chatColumnPad, chatMetrics, chatTokens, chatType, coarseTouch, hueOf } from '@/lib/chatTokens';
 import { useIsAdmin, useMe } from '@/lib/data';
+import { useEmbed } from '@/lib/embedContext';
 import { fmtClock, zonedDate } from '@/lib/format';
 import { CH } from '@/lib/labels';
 import { MONO_FONT } from '@/lib/monoFont';
@@ -82,15 +87,33 @@ import { useSkillSuggest } from '@/lib/useSkillSuggest';
 
 import { AnswerMarkdown, FilesBlock, FilesDrawerBody, NoticeLine, PLANS_DIR, UploadRow, UserMessageBody } from './chat/files';
 import { AgentStrip, LIMITS, SESSION_STRIP_W, Splitter, STRIP_W, useChatLayout } from './chat/layout';
-import { AgentAvatar, ApprovalCard, cancelLine, choiceLabel, ClarifyCard, GuardMark, PastBody, Steps } from './chat/parts';
+import {
+  AgentAvatar,
+  ApprovalCard,
+  BusyHint,
+  cancelLine,
+  choiceLabel,
+  ClarifyCard,
+  GuardMark,
+  PastBody,
+  Steps,
+} from './chat/parts';
 import { agentLabelOf, SessionList, SessionStrip, StateMark } from './chat/SessionList';
+import { TemplateExamples } from './chat/TemplateExamples';
 
 // 시각은 설정 › 일반의 시간대로 보인다(디자인 리뷰 7-1). 브라우저 로컬 시간을 따로 만들지 않는다.
 const hhmm = (ts: number) => fmtClock(ts);
 
 /** 내 말풍선 아래: 시각과 /retry 로 다시 보낸 표시(스펙 2026-10-26-010 DC9). 색 배지 없이 회색 글자 */
-function userFoot(ts: number | undefined, retry: boolean | undefined) {
-  if (!retry) return ts ? hhmm(ts) : undefined;
+/** 그 답 바로 앞의 사람 질문(위젯 답 저장의 채우기 입력, 스펙 2026-11-18-012 D19) */
+export function questionBefore(items: ReadonlyArray<{ kind: string; text?: string }>, answer: unknown): string {
+  const i = items.indexOf(answer as (typeof items)[number]);
+  for (let j = i - 1; j >= 0; j--) if (items[j].kind === 'user') return items[j].text ?? '';
+  return '';
+}
+
+function userFoot(ts: number | undefined, retry: boolean | undefined, sending?: boolean) {
+  if (sending) return t('chat.sending'); // 서버가 받기 전(이슈 #22)  if (!retry) return ts ? hhmm(ts) : undefined;
   return (
     <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
       {ts ? hhmm(ts) : null}
@@ -877,6 +900,55 @@ function AgentList({
   );
 }
 
+const elapsedSx = (color: string) => ({ ml: 0.5, color, fontSize: chatType.meta, whiteSpace: 'nowrap' });
+
+/** 응답 시간 툴팁: 설명 한 줄, 세부가 있으면 이름·값 두 칸(값은 오른쪽·자릿수 정렬)과 합계(스펙 2026-11-06-006 5절).
+ *  툴팁 바탕은 두 테마 모두 검정이라 다크 채팅 토큰을 쓴다 */
+const tipTk = chatTokens.dark;
+
+function ElapsedHelp({ ms, parts }: { ms: number; parts?: ElapsedParts }) {
+  if (!parts) return <>{t('chat.elapsedHelp')}</>;
+  const rows: [string, number][] = [
+    [t('chat.elapsedModel'), parts.model],
+    [t('chat.elapsedMcp'), parts.mcp],
+    ...(parts.other ? [[t('chat.elapsedOther'), parts.other] as [string, number]] : []),
+  ];
+  const cell = { color: tipTk.text, textAlign: 'right' } as const;
+  return (
+    <Box data-elapsed-parts sx={{ fontSize: 12, lineHeight: 1.5, py: 0.25 }}>
+      <Box sx={{ color: tipTk.muted }}>{t('chat.elapsedHelp')}</Box>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: 'auto auto',
+          columnGap: 3,
+          rowGap: 0.25,
+          mt: 0.75,
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {rows.map(([label, sec]) => (
+          <Fragment key={label}>
+            <Box component="span" sx={{ color: tipTk.muted }}>
+              {label}
+            </Box>
+            <Box component="span" sx={cell}>
+              {elapsedText(sec * 1000)}
+            </Box>
+          </Fragment>
+        ))}
+        <Box sx={{ gridColumn: '1 / -1', height: '1px', bgcolor: tipTk.line, my: 0.5 }} />
+        <Box component="span" sx={{ color: tipTk.text, fontWeight: 600 }}>
+          {t('chat.elapsedTotal')}
+        </Box>
+        <Box component="span" sx={{ ...cell, fontWeight: 600 }}>
+          {elapsedText(ms)}
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
 function Messages({
   S,
   store,
@@ -896,6 +968,7 @@ function Messages({
   const tk = useChatTokens();
   const admin = useIsAdmin();
   const navigate = useNavigate();
+  const embed = !!useEmbed(); // 다른 사이트에 붙은 위젯: 읽어 주기·관리자 요청을 끈다(OMAI-1873)
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const first = useRef(true);
@@ -903,7 +976,7 @@ function Messages({
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<number | null>(null);
   const [live, setLive] = useState({ n: 0, text: '' });
-  const prev = useRef<{ id?: string; busy: boolean }>({ busy: false });
+  const prev = useRef<{ id?: string; completed: number }>({ completed: 0 });
   // 답한 사람: 프로파일이 하나뿐이면 에이전트 이름, 아바타 글자·색도 목록과 같다(2026-10-19-013 DD8·DD9)
   const g = store.group() ?? store.status;
   const me = store.agent(profile);
@@ -944,16 +1017,18 @@ function Messages({
     first.current = false; // 처음 그린 뒤에 붙는 행만 120ms 전환을 쓴다
   }, []);
 
-  // 스트리밍 중에는 읽지 않고(aria-busy), 답이 끝나면 한 번만 알린다(디자인 리뷰 6-2)
+  // 스트리밍 중에는 읽지 않고(aria-busy), 답이 끝나면 한 번만 알린다(디자인 리뷰 6-2).
+  // 완료 수로 견준다 — 짧은 차례는 한 화면 갱신 안에 시작·끝이 묶여 busy 가 켜진 렌더가 없을 수 있다
   const busy = !!S?.busy;
-  // 렌더마다 직전 busy 와 견주는 것이 의도라 의존성 목록을 두지 않는다
+  const completed = S?.completed ?? 0;
+  // 렌더마다 직전 완료 수와 견주는 것이 의도라 의존성 목록을 두지 않는다
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (S && prev.current.id === S.id && prev.current.busy && !busy) {
+    if (S && prev.current.id === S.id && completed > prev.current.completed && !busy) {
       const last = [...S.items].reverse().find((x) => x.kind === 'assistant' || x.kind === 'error');
       if (last?.kind === 'assistant') setLive((l) => ({ n: l.n + 1, text: t('chat.replyArrived', { name: title }) }));
     }
-    prev.current = { id: S?.id, busy };
+    prev.current = { id: S?.id, completed };
   });
 
   // 지난 이벤트를 따라잡는 동안은 반쯤 쌓인 대화를 그리지 않는다 — 다른 세션 때문에 다시 그려져도 끝난 뒤 한 번에 보인다
@@ -1019,6 +1094,9 @@ function Messages({
               <Typography sx={{ ...small, fontSize: chatType.name }} align="center">
                 {store.opening || catching ? t('chat.loadingPast') : t('chat.startHint')}
               </Typography>
+              {S && !store.opening && !catching && store.profile && (
+                <TemplateExamples pod={store.status?.pod} profile={store.profile} onPick={(text) => store.fillDraft(text)} />
+              )}
             </Stack>
           )}
           {blocks.map((b, i) => {
@@ -1057,7 +1135,7 @@ function Messages({
             if (it.kind === 'user')
               return (
                 <Box key={i} sx={gap}>
-                  <MessageRow side="mine" enter={!first.current} foot={userFoot(it.t, it.retried)}>
+                  <MessageRow side="mine" enter={!first.current} foot={userFoot(it.t, it.retried, it.pending)}>
                     <UserMessageBody text={it.text ?? ''} files={it.files} store={store} />
                   </MessageRow>
                 </Box>
@@ -1087,7 +1165,22 @@ function Messages({
                             {copied === i ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 16 }} />}
                           </IconButton>
                         </Tooltip>
-                        <ReadAloudButton target={readTarget} conv={readConv} msg={rk} name={title} text={it.text ?? ''} streaming={it === writing} />
+                        {!embed && <ReadAloudButton target={readTarget} conv={readConv} msg={rk} name={title} text={it.text ?? ''} streaming={it === writing} />}
+                        {!embed && it !== writing && store.pod && profile && (
+                          <SaveToMindwiki pod={store.pod} profile={profile} conversation={readConv} message={rk} markdown={it.text ?? ''} agent={title} />
+                        )}
+                        {embed && it !== writing && !guardOf[i] && !it.llmBlocked && (it.text ?? '').trim() && store.pod && profile && (
+                          <SaveAnswerButton
+                            target={{ markdown: it.text ?? '', question: questionBefore(S?.items ?? [], it), answerKey: rk, session: S?.storedId ?? '', agent: title, pod: store.pod, profile }}
+                          />
+                        )}
+                        {it.elapsedMs !== undefined && (
+                          <Tooltip title={<ElapsedHelp ms={it.elapsedMs} parts={it.elapsedParts} />}>
+                            <Box component="span" sx={elapsedSx(tk.muted)}>
+                              {elapsedText(it.elapsedMs)}
+                            </Box>
+                          </Tooltip>
+                        )}
                       </>
                     }
                   >
@@ -1114,7 +1207,7 @@ function Messages({
                   key={i}
                   inset
                   action={
-                    it.llmBlocked && store.profile ? (
+                    it.llmBlocked && store.profile && !embed ? (
                       // 모델 설정이 AAS LiteLLM 을 거치지 않는다 — 고칠 수 있는 사람은 관리자다(D17). 도구가 막힌 줄은 도구 이름·프로파일을 미리 채운다(디자인 3B)
                       <RequestAdminButton
                         profile={store.profile}
@@ -1165,7 +1258,7 @@ function Messages({
                   label={store.group(pod)?.name || pod}
                   admin={admin}
                   compact={compact}
-                  onSize={() => (compact ? window.open(`${window.location.pathname}#${sizeUrl}`, '_blank', 'noopener') : navigate(sizeUrl))}
+                  onSize={() => (compact ? window.open(appHref(sizeUrl), '_blank', 'noopener') : navigate(sizeUrl))}
                 />
               );
             }
@@ -1312,6 +1405,7 @@ export function Conversation({
 }) {
   const tk = useChatTokens();
   const navigate = useNavigate();
+  const embed = useEmbed();
   const pickAgent = onPickAgent ?? (() => navigate('/chat'));
   const profile = store.profile;
   const a = store.agent(profile);
@@ -1478,24 +1572,48 @@ export function Conversation({
       return;
     }
     const text = input;
+    // Enter 를 누른 그 순간 입력칸을 비운다(이슈 #22). 서버 왕복(최대 몇 초)을 기다려 비우면 눌리지 않은 줄 알고 다시 누른다.
+    // 보내지 못했으면(올리는 중·다시 잇는 중·첨부 거절 등) 글을 되돌린다 — 그사이 새로 친 글이 있으면 덮지 않는다
+    setInput('');
     const r = await store.send(text, undefined, plan.skill);
-    if (r === 'sent' || r === 'failed') {
-      setInput('');
-      refocus(); // 보낸 뒤에도 다음에 쓸 곳은 입력칸이다(디자인 리뷰 3-1)
-    }
+    if (r === 'sent' || r === 'failed') refocus(); // 보낸 뒤에도 다음에 쓸 곳은 입력칸이다(디자인 리뷰 3-1)
+    else setInput((now) => now || text);
+    if (r === 'busy' && store.sending(S)) showIgnored('sending'); // 보내는 중의 두 번째 Enter(D7)
+  };
+  // 무시된 Enter 의 이유(스펙 2026-11-19-003 D7): 승인·되묻기 대기 → 보내는 중 → 답하는 중 차례로 고른다.
+  // canSend 가 다른 까닭(명령 막힘·압축 중·다시 잇는 중·끝난 대화)으로 거짓이면 표시하지 않는다
+  const [ignored, setIgnored] = useState<'' | 'waiting' | 'sending' | 'busy'>('');
+  const ignoredTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showIgnored = (why: 'waiting' | 'sending' | 'busy') => {
+    setIgnored(why);
+    clearTimeout(ignoredTimer.current);
+    ignoredTimer.current = setTimeout(() => setIgnored(''), 3000);
+  };
+  useEffect(() => () => clearTimeout(ignoredTimer.current), []);
+  const blockedEnter = () => {
+    if (plan.block || compressing || blocked || ended) return;
+    if (S && pending(S).length > 0) showIgnored('waiting');
+    else if (store.sending(S)) showIgnored('sending');
+    else if (busy && !plan.command) showIgnored('busy');
   };
   const close = () => setAnchor(null);
-  const link = (to: string, label: string) => (
-    <MenuItem component={Link} to={to} onClick={close}>
-      {label}
-    </MenuItem>
-  );
+  // 위젯 안에서는 호스트 주소창을 바꾸지 않는다 — AAS 화면을 새 탭으로 연다(OMAI-1873)
+  const link = (to: string, label: string) =>
+    embed ? (
+      <MenuItem component="a" href={appHref(to)} target="_blank" rel="noopener" onClick={close}>
+        {label}
+      </MenuItem>
+    ) : (
+      <MenuItem component={Link} to={to} onClick={close}>
+        {label}
+      </MenuItem>
+    );
   const canSend = (!!input.trim() || store.uploads.some((u) => u.state === 'done' && u.path)) && !plan.block && !compressing && (!busy || !!plan.command);
   // 말로 입력(스펙 2026-10-22-005 §3-10): 채팅은 대화 상대의 에이전트·프로파일로 받아쓴다. AAS 연결이 다시 여는 중이거나(blocked) 상태에 error 가 있으면 막는다(§11 M3).
   // connected 는 보지 않는다 — AAS↔Hermes 채팅 웹소켓이 지금 열려 있는지일 뿐이고(대화를 보낼 때만 열림), 받아쓰기는 HTTP 다.
   // conversation: 같은 프로파일에서 새 대화·지난 대화로 바꿔도 녹음을 버린다(21A). Conversation 은 프로파일로만 key 를 잡아 다시 그려지지 않는다
   const vst = store.group() ?? store.status;
-  const voice = profile
+  const voice = profile && !embed
     ? {
         pod: store.status?.pod,
         profile,
@@ -1654,6 +1772,12 @@ export function Conversation({
             {t('chat.newSessionHeading')}
           </Typography>
           <Typography sx={{ mt: 0.5, fontSize: 13, color: tk.muted, maxWidth: 520 }}>{t('chat.newSessionSub', { agent: title })}</Typography>
+          {/* 템플릿에서 만든 프로파일이면 만든 사람이 적은 첫 일 예시(스펙 2026-11-18-002 §4-5). 새 세션 첫 화면이 이쪽이라 여기에도 둔다(OKE 시험 2026-11-18) */}
+          {profile && (
+            <Box sx={{ mt: 1.5 }}>
+              <TemplateExamples pod={store.status?.pod} profile={profile} onPick={(text) => store.fillDraft(text)} />
+            </Box>
+          )}
         </Box>
       )}
       <Stack
@@ -1688,6 +1812,7 @@ export function Conversation({
             {S && store.announceFor === S.id ? store.announce + (store.announceSeq % 2 ? ' ' : '') : ''}
           </Box>
           {teamOwner && <TeamStatusRow text={t('chat.sendingToTeam', { owner: teamOwner })} />}
+          <SharedWorkspaceNote key={target?.pod} pod={target?.pod} access={target?.role} owner={target?.owner_name} note={target?.share_note} />
           {/* 지난 이벤트를 8초 안에 다 받지 못해 받은 데까지만 그렸다(G10). 「다시 여는 중」 줄과 같은 회색 줄 — 기다리는 중이 아니라 돌림 표시 대신 안내 아이콘 */}
           {S?.partial && !view ? (
             <Box data-testid="partial-row" sx={statusRowSx(tk)}>
@@ -1757,6 +1882,7 @@ export function Conversation({
               onControl={(command, op) => void store.command(command, op)}
             />
           )}
+          {embed?.composerTop}
           <Composer
             ref={composer}
             variant={compact ? 'default' : 'prominent'}
@@ -1778,6 +1904,7 @@ export function Conversation({
             value={input}
             onChange={setInput}
             onSend={send}
+            onBlockedEnter={blockedEnter}
             sendOn="enter"
             canSend={canSend && !blocked && !ended}
             disabled={ended}
@@ -1790,9 +1917,12 @@ export function Conversation({
             sendLabel={t('chat.send')}
             stopLabel={t('chat.interrupt')}
             compact={compact}
+            hintShown={busy || !!ignored}
             hint={
-              busy
-                ? t('chat.cmd.busyHint')
+              ignored
+                ? <span aria-live="polite">{t(`chat.ignored.${ignored}`)}</span>
+                : busy
+                ? <BusyHint since={S?.sentAt} short={compact} />
                 : uploading
                   ? t('chat.files.uploadingHint')
                   : files

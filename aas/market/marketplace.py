@@ -12,10 +12,12 @@ AAS 는 Hermes 에 직접 쓰지 않는다. 설치는 Hermes 의 공식 CLI(`her
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import secrets
+from contextlib import contextmanager
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,9 +31,9 @@ from ..common.redact import redact
 from ..ops import pc_import
 from . import tags as market_tags
 
-NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")              # 패키지·네임스페이스 이름
-PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
-VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}\Z")              # 패키지·네임스페이스 이름
+PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}\Z")
+VERSION = re.compile(r"^\d+\.\d+\.\d+\Z")
 AGENT_MANIFEST = "agent/distribution.yaml"
 PAYLOAD_LIMIT = 512 * 1024                 # HermesTask 에 실을 묶음(tar.gz) 크기 한도. market_stage 가 묶은 뒤 같은 값으로 거른다(C5)
 MAX_PACKING_RATIO = 20                     # 글 파일이 아주 잘 눌려도 이 배율까지다. 파일 합계가 한도의 이 배를 넘으면 묶어 볼 것도 없이 못 들어간다
@@ -46,9 +48,13 @@ CREATE TABLE IF NOT EXISTS market_default_pending (
 
 
 class MarketError(Exception):
-    def __init__(self, message: str, code: int = 400):
+    """transient = 허브에 잠깐 닿지 않은 오류(연결 실패·시간 초과·5xx·429). 기본 스킬 배달기가 이것만 다시 시도한다(OMAI-2085)."""
+
+    def __init__(self, message: str, code: int = 400, transient: bool = False, reason: str = ""):
         super().__init__(message)
         self.code = code
+        self.transient = transient
+        self.reason = reason                       # 오류 코드(스펙 2026-11-18-002 §4-5: name_taken·profile_limit·pending 등). 화면이 코드별 문구를 고른다
 
 
 def settings() -> dict:
@@ -144,12 +150,15 @@ def fetch(path: str, cfg: dict | None = None) -> dict:
     except urllib.error.HTTPError as exc:
         # SkillHub 는 없는 스킬에 404 가 아니라 HTTP 400 과 {"msg": "Skill not found: x"} 를 준다(OKE 에서 확인). 처음 올리는 이름의 조회가 이것 때문에 막혔다
         if exc.code == 404 or (exc.code == 400 and _not_found(exc)):
-            raise MarketError(tr("스킬 허브에 없는 패키지입니다", "The skill hub has no such package"), 404) from None
+            raise MarketError(tr("스킬 허브에 없는 스킬·템플릿입니다", "The skill hub has no such skill or template"), 404) from None
         if exc.code in (401, 403):
-            raise MarketError(tr("스킬 허브가 거절했습니다 — AAS 의 연결 토큰에 이 네임스페이스 권한이 없습니다", "The skill hub refused the request. The AAS connection token has no access to this namespace"), 502) from None
-        raise MarketError(tr(f"스킬 허브 오류 (HTTP {exc.code})", f"Skill hub error (HTTP {exc.code})"), 502) from None
+            raise MarketError(tr("스킬 허브가 거절했습니다 — AAS 의 연결 토큰에 이 네임스페이스 권한이 없습니다", "The skill hub refused the request. The AAS connection token has no access to this namespace"), 502,
+                              reason="hub_auth") from None
+        raise MarketError(tr(f"스킬 허브 오류 (HTTP {exc.code})", f"Skill hub error (HTTP {exc.code})"), 502,
+                          transient=exc.code >= 500 or exc.code == 429) from None
     except (OSError, ValueError) as exc:
-        raise MarketError(tr(f"스킬 허브에 연결할 수 없습니다: {type(exc).__name__}", f"Cannot reach the skill hub: {type(exc).__name__}"), 503) from None
+        raise MarketError(tr(f"스킬 허브에 연결할 수 없습니다: {type(exc).__name__}", f"Cannot reach the skill hub: {type(exc).__name__}"), 503,
+                          transient=True) from None
     return body.get("data", body) if isinstance(body, dict) else {}
 
 
@@ -245,7 +254,9 @@ def package(ns: str, name: str, cfg: dict | None = None) -> dict:
     return {"id": f"{ns}/{name}", "namespace": ns, "name": name, "summary": str(info.get("summary") or "")[:400], "version": version,
             "paid": info.get("visibility") != "PUBLIC", "restricted": info.get("visibility") != "PUBLIC", "kind": kind_of(paths), "owner": str(info.get("ownerDisplayName") or ""),
             "files": [{"path": p, "size": f.get("fileSize") or 0} for p, f in zip(paths, files)][:300],
-            "bytes": sum(int(f.get("fileSize") or 0) for f in files), "limit": PAYLOAD_LIMIT, "too_big": sum(int(f.get("fileSize") or 0) for f in files) > PAYLOAD_LIMIT * MAX_PACKING_RATIO, "origin": origin_of(ns, name, cfg), "tags": market_tags.row_tags(market_tags.load(), f"{ns}/{name}"),
+            "bytes": sum(int(f.get("fileSize") or 0) for f in files),
+            "status": str(info.get("status") or "").upper(),
+            "template_bytes": sum(int(f.get("fileSize") or 0) for p, f in zip(paths, files) if p.startswith("template/")), "limit": PAYLOAD_LIMIT, "too_big": sum(int(f.get("fileSize") or 0) for f in files) > PAYLOAD_LIMIT * MAX_PACKING_RATIO, "origin": origin_of(ns, name, cfg), "tags": market_tags.row_tags(market_tags.load(), f"{ns}/{name}"),
             "scripts": sum(1 for p in paths if p.startswith("scripts/") or "/scripts/" in p),
             "versions": [{"version": v.get("version"), "published": str(v.get("publishedAt") or "")[:19]} for v in versions if v.get("status") == "PUBLISHED"][:30],
             "body": "\n".join(mask_line(ln) for ln in body[:6000].splitlines())}
@@ -259,9 +270,112 @@ def _conn():
     return conn
 
 
+ALL_PODS = "*"          # 「모든 AI 에이전트 작업공간」 허용 행의 pod 값(새로 생기는 작업공간 포함, 스펙 2026-11-18-015 §3-2). 레지스트리 id 와 겹치지 않는다
+GRANT_BATCH_MAX = 200   # POST /api/market/grants 한 번에 받는 작업공간 수(§3-3)
+
+
+class GrantError(MarketError):
+    """허용 요청 검사 실패. reason = 화면·스크립트가 읽는 code(allow_required·pods_invalid·too_many_pods·unknown_pods·namespace_not_restricted·hub_unreachable),
+    extra = 응답에 함께 싣는 값(limit·pods·namespace, 스펙 2026-11-18-015 DX 1)."""
+
+    def __init__(self, message: str, reason: str, **extra):
+        super().__init__(message, 400, reason=reason)
+        self.extra = extra
+
+
 def grants() -> list[dict]:
+    """허용 행 모두. pod='*'(ALL_PODS) 행 — 모든 작업공간 허용 — 도 들어 있다(스펙 2026-11-18-015 E4). 작업공간 행으로 읽지 말 것."""
     with _conn() as conn:
         return [dict(r) for r in conn.execute("SELECT pod, namespace, by, ts FROM market_grants ORDER BY pod, namespace")]
+
+
+def granted_namespaces(pod: str) -> set[str]:
+    """이 작업공간이 받을 수 있는 허용 필요 네임스페이스 — 그 작업공간 행과 '*' 행. 허용 판정은 모두 이것을 쓴다(X1:
+    allowed·overview·updates.scan). 한 곳이라도 따로 계산하면 전체 허용이 그곳에서만 빠진다."""
+    with _conn() as conn:
+        return {r[0] for r in conn.execute("SELECT namespace FROM market_grants WHERE pod IN (?, ?)", (pod, ALL_PODS))}
+
+
+def allowed_by(pod: str, namespace: str) -> str:
+    """허용의 출처: "all"(전체 허용, 작업공간 행이 함께 있어도 먼저) · "pod" · ""(없음). 서랍 자물쇠가 읽는다(§3-3)."""
+    with _conn() as conn:
+        pods = {r[0] for r in conn.execute("SELECT pod FROM market_grants WHERE namespace=? AND pod IN (?, ?)", (namespace, pod, ALL_PODS))}
+    return "all" if ALL_PODS in pods else "pod" if pod in pods else ""
+
+
+def restricted_namespaces(cfg: dict | None = None, cat: dict | None = None) -> dict:
+    """허용이 필요한 네임스페이스(「제한 스킬·템플릿 설치 허용」의 열) — GET·POST 가 함께 쓴다(E3). cat = 서버가 기억해 둔 허브 목록 {ok, items}.
+    설정의 네임스페이스 가운데 게시가 공개로 올리지 않는 곳 ∪ 목록에 공개가 아닌 패키지가 있는 곳 ∪ 허용 행이 남은 곳.
+    허브를 못 읽으면(complete 거짓) 목록 몫은 알 수 없다 — 그때 그 몫만으로 생기는 열의 허용은 hub_unreachable 로 거절한다."""
+    from .market_publish import VISIBILITY            # market_publish 가 이 모듈을 가져온다 — 순환을 피해 여기서
+    cfg = cfg or settings()
+    ok = bool(cat and cat.get("ok"))
+    cols = [n for n in cfg["namespaces"] if n not in VISIBILITY]
+    for n in sorted({p["namespace"] for p in (cat or {}).get("items", []) if ok and p.get("paid")}) + sorted({g["namespace"] for g in grants()}):
+        if n not in cols:
+            cols.append(n)
+    return {"slugs": cols, "complete": ok}
+
+
+def check_grants(namespace: str, pods, allow, known: set[str], cols: dict) -> tuple[str, list[str] | str]:
+    """POST 본문 검사. 쓰기 전에 모두 한다 — 하나라도 틀리면 GrantError, 아무것도 쓰지 않는다(§3-3).
+    known = 레지스트리의 작업공간 id, cols = restricted_namespaces() 결과. (slug, 작업공간 id 목록 또는 '*')."""
+    if not isinstance(allow, bool):
+        raise GrantError(tr("allow 는 true 나 false 여야 합니다", "allow must be true or false"), "allow_required")
+    ns = ns_slug(str(namespace or "")[:63])
+    if not NAME.match(ns):                                          # 해제에도 한다 — 열 검사만 건너뛴다(E5)
+        raise GrantError(tr("네임스페이스 이름이 올바르지 않습니다", "The namespace name is not valid"), "namespace_not_restricted", namespace=ns)
+    if pods == ALL_PODS:
+        target: list[str] | str = ALL_PODS
+    elif isinstance(pods, list) and pods and all(isinstance(x, str) for x in pods):
+        target = list(dict.fromkeys(pods))                          # 중복은 하나로 합친 뒤 센다
+        if len(target) > GRANT_BATCH_MAX:
+            raise GrantError(tr(f"한 번에 {GRANT_BATCH_MAX}곳까지입니다", f"Up to {GRANT_BATCH_MAX} AI Agent Workspaces at a time"), "too_many_pods", limit=GRANT_BATCH_MAX)
+        unknown = [x for x in target if x not in known]             # 배열 안의 "*" 도 작업공간 id 가 아니다(E4)
+        if unknown:
+            raise GrantError(tr("없는 AI 에이전트 작업공간이 있습니다. 목록을 다시 읽으세요", "Some AI Agent Workspaces do not exist. Reload the list"), "unknown_pods", pods=unknown[:20])
+    else:
+        raise GrantError(tr("pods 는 AI 에이전트 작업공간 id 목록이나 \"*\" 여야 합니다", 'pods must be a list of AI Agent Workspace ids or "*"'), "pods_invalid")
+    if allow and ns not in cols["slugs"]:
+        if not cols["complete"] and ns not in settings()["namespaces"]:
+            raise GrantError(tr("스킬 허브를 읽지 못해 이 구역에 허용이 필요한지 알 수 없습니다. 잠시 뒤 다시 하세요",
+                                "Could not read the skill hub, so it is unknown whether this zone needs an allowance. Try again shortly"), "hub_unreachable", namespace=ns)
+        raise GrantError(tr("허용이 필요한 구역이 아닙니다", "This zone does not need an allowance"), "namespace_not_restricted", namespace=ns)
+    return ns, target
+
+
+def apply_grants(namespace: str, pods: list[str] | str, allow: bool, who: str, after=None, every: list[str] | None = None) -> dict:
+    """검사가 끝난 허용·해제를 쓰고 뒷일을 한다(새 경로·옛 경로 공용, §3-3·DX 5). 한 트랜잭션.
+    바뀐 줄은 미리 읽지 않고 rowcount 로 정한다 — 두 관리자가 같은 칸을 동시에 켜도 한쪽만 changed 에 남는다(E1). db.upsert 는 by·ts 가 있으면
+    DO UPDATE 를 만들어 이 판정에 못 쓴다. after(pod_id) = 서버의 뒷일(토픽·캐시), 작업공간마다 감싸 실패해도 다음으로 넘어간다 → stale.
+    '*' 는 같은 상태여도 every(모든 작업공간)의 뒷일을 다시 돈다 — stale 이 남았을 때 다시 눌러 고칠 수 있게."""
+    targets = [ALL_PODS] if pods == ALL_PODS else list(pods)
+    changed: list[str] = []
+    with _conn() as conn:
+        for pid in targets:
+            if allow:
+                cur = conn.execute("INSERT INTO market_grants (pod, namespace, by, ts) VALUES (?,?,?,?) ON CONFLICT (pod, namespace) DO NOTHING",
+                                   (pid, namespace, who, _now()))
+            else:
+                cur = conn.execute("DELETE FROM market_grants WHERE pod=? AND namespace=?", (pid, namespace))
+            if (cur.rowcount or 0) > 0:
+                changed.append(pid)
+        all_row = pods != ALL_PODS and not allow and conn.execute("SELECT 1 FROM market_grants WHERE pod=? AND namespace=?", (ALL_PODS, namespace)).fetchone()
+    word = "허용" if allow else "해제"          # i18n-ignore: 사용 기록에 저장되는 문장
+    for pid in changed:
+        store.log_usage("market_grant", f"{who} {pid} {namespace} → {word}", pod=pid)
+    redo = (every or []) if pods == ALL_PODS else [p for p in changed if p != ALL_PODS]
+    stale = []
+    for pid in redo:
+        try:
+            if after is not None:
+                after(pid)
+        except Exception:                                            # noqa: BLE001 — 행은 이미 반영됐다. 정리 하나가 실패해도 나머지를 한다(DX 2)
+            stale.append(pid)
+    out = {"changed": changed, "stale": stale}
+    if all_row:
+        out["warning"] = "all_granted"                               # 전체 허용이 있어 실제 허용은 그대로다(DX 7)
+    return out
 
 
 def set_grant(pod: str, namespace: str, allow: bool, by: str) -> None:
@@ -276,10 +390,7 @@ def set_grant(pod: str, namespace: str, allow: bool, by: str) -> None:
 
 
 def allowed(pod: str, pkg: dict) -> bool:
-    if not pkg["paid"]:
-        return True
-    with _conn() as conn:
-        return bool(conn.execute("SELECT 1 FROM market_grants WHERE pod=? AND namespace=?", (pod, pkg["namespace"])).fetchone())
+    return not pkg["paid"] or pkg["namespace"] in granted_namespaces(pod)
 
 
 # ---- 설치 요청과 결과 (파일 — 서버의 배달기와 주고받는다) ----------------------------------------
@@ -365,6 +476,9 @@ def _fold(rows: list[dict]) -> list[dict]:
             seen[(r["profile"], r["package"])]["skills_version"] = r.get("version")
         else:
             seen[(r["profile"], r["package"])] = {k: r.get(k) for k in ("profile", "package", "namespace", "name", "version", "kind", "mode", "ts", "who")}
+            for k in ("template", "template_version", "env_names", "waiting_mcp", "id", "post", "examples"):     # 템플릿에서 만든 프로파일(스펙 2026-11-18-002 §4-2 6·7). id·post = 설치 뒤 단계(3단계)
+                if r.get(k) is not None and (k not in ("id", "post") or r.get("template")):
+                    seen[(r["profile"], r["package"])][k] = r[k]
     return sorted(seen.values(), key=lambda r: (r["profile"], r["package"]))
 
 
@@ -392,8 +506,52 @@ def agent_skills(pkg: dict) -> list[str]:
     return [d for d in dirs if not any(d.startswith(o + "/") for o in dirs)]   # 스킬 폴더 안의 SKILL.md 는 따로 세지 않는다
 
 
-def request_install(pod_id: str, container: str, pkg: dict, version: str, profile: str, mode: str, who: str, profiles: list[str], on_modified: str = "") -> dict:
+# ---- 프로파일 수 한도(스펙 2026-11-18-002 §4-2 4, E7) ---------------------------------------------------------
+# 프로파일을 새로 만드는 모든 길(주 프로파일 복제·PC 가져오기·에이전트 패키지 설치)이 같은 잠금과 같은 세기 함수를 쓴다.
+# 에이전트 패키지 설치는 요청을 줄에 세우고 나중에 리더가 만들므로, 줄에 선 것까지 세지 않으면 한도를 넘는다(R13).
+
+@contextmanager
+def create_lock(pod_id: str):
+    """작업공간마다 프로파일 만들기를 서버 사이에서도 하나씩. 공유 데이터 폴더(NFS)의 flock 은 읽기로도 연 파일이어야 해 "a+" 로 연다."""
+    d = store.data_dir() / "market" / "create-locks"
+    d.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", pod_id or "_")[:120]
+    with open(d / f"{safe}.lock", "a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def pending_profiles(pod_id: str) -> list[str]:
+    """줄에 선(아직 끝나지 않은) 에이전트 패키지 새 프로파일 설치의 프로파일 이름들."""
+    return sorted({str(r["profile"]) for r in requests(pod_id) if r["status"] in ("queued", "running")
+                   and r.get("kind") == "agent" and r.get("mode") == "install"})
+
+
+def counted_profiles(pod_id: str, existing: list[str]) -> list[str]:
+    """한도에 세는 프로파일 = 지금 있는 것 + 줄에 선 새 프로파일 설치."""
+    return sorted(set(existing) | set(pending_profiles(pod_id)))
+
+
+def limit_error(pod_id: str, existing: list[str]) -> MarketError | None:
+    """주인의 프로파일 수 한도를 넘으면 그 오류(409, reason profile_limit). create_lock 안에서 부른다."""
+    from ..ops import cron_policy, owner_guard
+    limit = owner_guard.profile_limit()
+    used = owner_guard.profile_count(counted_profiles(pod_id, existing), cron_policy.root_hidden(pod_id))
+    if used >= limit:
+        return MarketError(tr(f"이 AI 에이전트 작업공간에는 프로파일을 {limit}개까지 둘 수 있습니다(지금 {used}개, 설치 중 포함). 쓰지 않는 프로파일을 지운 뒤 다시 하세요.",
+                              f"This AI Agent Workspace can have up to {limit} profiles (now {used}, including installs in progress). Delete one you do not use and try again."),
+                           409, reason="profile_limit")
+    return None
+
+
+def request_install(pod_id: str, container: str, pkg: dict, version: str, profile: str, mode: str, who: str, profiles: list[str], on_modified: str = "",
+                    consents: list[str] | None = None, owner_limit: bool = False) -> dict:
     """요청을 검사하고 줄에 세운다. profiles = 이 설치본에 지금 있는 프로파일 이름들.
+    consents = stdio MCP 동의 해시들(새 프로파일 에이전트 설치. 리더의 stage 가 받은 본문과 대조한다, 스펙 2026-11-18-002 §4-2 2).
+    owner_limit = 주인의 요청이면 True — 새 프로파일 설치에 프로파일 수 한도를 줄에 선 것까지 세어 적용한다(E7).
     on_modified = 고친 스킬을 만났을 때의 선택: "" 묻는다 / "keep" 내 것을 지키고 나머지만 / "overwrite" 백업을 남기고 덮는다 / "copy" 고친 것을 skills/local/<이름>-local 로 복사해 두고 새 판으로 덮는다(스펙 2026-10-14-015)."""
     st = install_state()
     if not st["enabled"]:
@@ -409,9 +567,10 @@ def request_install(pod_id: str, container: str, pkg: dict, version: str, profil
         raise MarketError(pc_import.reserved_error())
     if not VERSION.match(version) or version not in {v["version"] for v in pkg["versions"]}:
         raise MarketError(tr("공개된 버전이 아닙니다", "That version is not published"))
-    if int(pkg.get("bytes") or 0) > PAYLOAD_LIMIT * MAX_PACKING_RATIO:      # 확실히 못 들어가는 것만 요청 전에 막는다(C5). 경계는 묶은 뒤 market_stage 가 거른다
-        raise MarketError(tr(f"패키지가 너무 큽니다(파일 합계 {int(pkg['bytes']) // 1024} KiB, 묶음 한도 {PAYLOAD_LIMIT // 1024} KiB)",
-                       f"The package is too large ({int(pkg['bytes']) // 1024} KiB of files, bundle limit {PAYLOAD_LIMIT // 1024} KiB)"))
+    size = hermes_bytes(pkg)
+    if size > PAYLOAD_LIMIT * MAX_PACKING_RATIO:      # 확실히 못 들어가는 것만 요청 전에 막는다(C5). 경계는 묶은 뒤 market_stage 가 거른다
+        raise MarketError(tr(f"패키지가 너무 큽니다(파일 합계 {size // 1024} KiB, 묶음 한도 {PAYLOAD_LIMIT // 1024} KiB)",
+                       f"The package is too large ({size // 1024} KiB of files, bundle limit {PAYLOAD_LIMIT // 1024} KiB)"))
     if not allowed(pod_id, pkg):
         label = ns_label(pkg["namespace"])
         raise MarketError(tr(f"이 AI 에이전트 작업공간은 허용이 필요한 네임스페이스 '{label}' 를 받을 수 없습니다 — 관리자가 허용해야 합니다",
@@ -421,31 +580,57 @@ def request_install(pod_id: str, container: str, pkg: dict, version: str, profil
     exists = profile in profiles
     if mode == "skills":                                          # 에이전트 패키지의 스킬만 있는 프로파일에 넣는다 — SOUL·설정·크론·MCP 는 그대로
         if pkg["kind"] != "agent":
-            raise MarketError(tr("스킬만 설치는 AI 에이전트 패키지에만 씁니다", "Installing only the skills applies to AI Agent packages"))
+            raise MarketError(tr("스킬만 설치는 AI 에이전트 템플릿에만 씁니다", "Installing only the skills applies to AI Agent templates"))
         if not exists:
             raise MarketError(tr(f"프로파일 '{profile}' 이 없습니다", f"Profile '{profile}' does not exist"))
         if not agent_skills(pkg):
-            raise MarketError(tr("이 AI 에이전트 패키지에는 스킬이 없습니다", "This AI Agent package has no skills"))
+            raise MarketError(tr("이 AI 에이전트 템플릿에는 스킬이 없습니다", "This AI Agent template has no skills"))
     elif pkg["kind"] == "agent":
         if mode == "install" and exists:
-            raise MarketError(tr(f"프로파일 '{profile}' 이 이미 있습니다 — AI 에이전트 패키지는 새 이름으로 설치합니다",
-                           f"Profile '{profile}' already exists. Install an AI Agent package under a new name"))
+            raise MarketError(tr(f"프로파일 '{profile}' 이 이미 있습니다 — AI 에이전트 템플릿은 새 이름으로 설치합니다",
+                           f"Profile '{profile}' already exists. Install an AI Agent package under a new name"), 409, reason="name_taken")
         if mode == "update" and not (exists and same and same.get("mode") != "skills"):   # 스킬만 넣은 프로파일을 올리면 SOUL 을 덮는다
-            raise MarketError(tr("이 패키지로 만든 프로파일만 새 버전으로 올릴 수 있습니다", "You can upgrade only profiles created from this package"))
+            raise MarketError(tr("이 AI 에이전트 템플릿으로 만든 프로파일만 새 버전으로 올릴 수 있습니다", "You can upgrade only profiles created from this AI Agent template"))
     else:
         if not exists:
             raise MarketError(tr(f"프로파일 '{profile}' 이 없습니다", f"Profile '{profile}' does not exist"))
         mode = "update" if same else "install"
     if mode == "update" and same and _ver(version) <= _ver(str(same["version"])) and pkg["kind"] == "agent":
         raise MarketError(tr(f"이미 {same['version']} 버전입니다", f"Version {same['version']} is already installed"))
-    if any(r["status"] in ("queued", "running") and r["profile"] == profile for r in requests(pod_id)):
-        raise MarketError(tr("이 프로파일에 아직 끝나지 않은 설치 요청이 있습니다", "This profile still has an unfinished install request"), 409)
-    row = {"id": datetime.now().strftime("%Y%m%d%H%M%S%f") + "-" + secrets.token_hex(3), "ts": _now(), "who": who, "pod": pod_id, "container": container,
-           "package": pkg["id"], "namespace": pkg["namespace"], "name": pkg["name"], "version": version, "kind": pkg["kind"],
-           "profile": profile, "mode": mode, "status": "queued"}
-    if on_modified:
-        row["on_modified"] = on_modified
-    return _enqueue(row)
+    new_profile = pkg["kind"] == "agent" and mode == "install"
+    if new_profile:
+        from . import hub_hide
+        if pkg.get("status") and pkg["status"] not in hub_hide.ACTIVE:     # 내린 템플릿·패키지는 API 로 바로 불러도 새로 설치하지 않는다(E5). 허브 상태가 기준(R15)
+            raise MarketError(tr("스킬 허브에서 내린 스킬·템플릿이라 설치할 수 없습니다", "This item was taken down from the skill hub and cannot be installed"), 404, reason="hidden")
+    with create_lock(pod_id) if new_profile else _no_lock():
+        if any(r["status"] in ("queued", "running") and r["profile"] == profile for r in requests(pod_id)):
+            raise MarketError(tr("이 프로파일에 아직 끝나지 않은 설치 요청이 있습니다", "This profile still has an unfinished install request"), 409, reason="pending")
+        if new_profile and owner_limit:
+            err = limit_error(pod_id, profiles)
+            if err:
+                raise err
+        row = {"id": datetime.now().strftime("%Y%m%d%H%M%S%f") + "-" + secrets.token_hex(3), "ts": _now(), "who": who, "pod": pod_id, "container": container,
+               "package": pkg["id"], "namespace": pkg["namespace"], "name": pkg["name"], "version": version, "kind": pkg["kind"],
+               "profile": profile, "mode": mode, "status": "queued"}
+        if on_modified:
+            row["on_modified"] = on_modified
+        if mode == "update" and same:
+            row["from_version"] = str(same.get("version") or "")      # 템플릿 새 판 합치기가 이전 판과 견준다(없어진 MCP 알림)
+            if same.get("waiting_mcp"):
+                row["prev_waiting"] = list(same["waiting_mcp"])        # 아직 KEY 를 기다리던 MCP 는 새 판에서도 기다린다
+        if (new_profile or (pkg["kind"] == "agent" and mode == "update")) and consents:     # 템플릿 새 판의 stdio 동의도 싣는다
+            row["consents"] = sorted({str(c)[:64] for c in consents if re.match(r"^[0-9a-f]{64}\Z", str(c))})
+        return _enqueue(row)
+
+
+@contextmanager
+def _no_lock():
+    yield
+
+
+def hermes_bytes(pkg: dict) -> int:
+    """Hermes 로 넘기는 부분의 파일 합계. template/(참고 파일·AGENTS.md)은 설치 뒤 AAS 가 따로 넣어 묶음에 들지 않는다(E4)."""
+    return max(0, int(pkg.get("bytes") or 0) - int(pkg.get("template_bytes") or 0))
 
 
 # ---- 새 사용자 기본 스킬 (스펙 2026-10-23-002 Q5) ----------------------------------------------------
@@ -484,18 +669,25 @@ def _has(pod_id: str, profile: str, package_id: str) -> bool:
     return any(r["profile"] == profile and r["package"] == package_id for r in installed(pod_id))
 
 
-def install_companion(pod_id: str, container: str, profile: str, package_id: str, who: str) -> str:
+def install_companion(pod_id: str, container: str, profile: str, package_id: str, who: str, version: str = "", why: list | None = None) -> str:
     """다른 설치에 딸린 스킬 하나를 그 프로파일에 설치 요청한다(스펙 2026-10-23-002 12-8). 결과: queued·queued_later(끝나지 않은 요청이 있어
     대기 표에 넣음, 다음 주기에 다시)·installed(이미 설치됨)·failed·skipped. 실패해도 부른 쪽(MCP 서버 추가)은 성공으로 둔다 — 예외를 올리지 않는다.
-    이미 설치된 스킬을 다시 요청하지 않는다 — request_install 이 update 로 받고, 사용자가 고친 스킬이면 묻는 상태로 멈춘다(스펙 2026-10-23-004 R3)."""
+    이미 설치된 스킬을 다시 요청하지 않는다 — request_install 이 update 로 받고, 사용자가 고친 스킬이면 묻는 상태로 멈춘다(스펙 2026-10-23-004 R3).
+    version = 설치할 판(템플릿에 적힌 판, 스펙 2026-11-18-002 E6). 비면 공개된 마지막 판. 대기 표로 미룬 것은 마지막 판으로 들어간다.
+    why = 빈 목록을 주면 실패 사유(허용 없음·숨김·없음)를 담는다."""
     ns, _, name = package_id.partition("/")
     if not (NAME.match(ns) and NAME.match(name)) or profile == "default":       # 루트 프로파일에는 Hermes 가 설치를 막는다
         return "skipped"
     if _has(pod_id, profile, package_id):
         return "installed"
     try:
-        request_install(pod_id, container, package(ns, name), "", profile, "install", who, [profile])
+        pkg = package(ns, name)
+        if pkg.get("status") and pkg["status"] not in ("", "ACTIVE"):
+            raise MarketError(tr("허브에서 숨긴 스킬·템플릿입니다", "The skill or template is hidden in the hub"), 404, reason="hidden")
+        request_install(pod_id, container, pkg, version, profile, "install", who, [profile])
     except MarketError as exc:
+        if why is not None and exc.code != 409:
+            why.append(redact(str(exc), 200))
         if exc.code == 409:                                       # 같은 프로파일에 끝나지 않은 요청 — 기본 스킬과 같은 대기 표로 다시 시도한다
             with _conn() as conn:
                 if not conn.execute("SELECT 1 FROM market_default_pending WHERE pod=? AND profile=? AND package=?", (pod_id, profile, package_id)).fetchone():
@@ -505,6 +697,8 @@ def install_companion(pod_id: str, container: str, profile: str, package_id: str
         return "failed"
     except Exception as exc:                                      # 스킬 허브에 닿지 않는 등
         store.log_usage("market_companion_failed", f"{pod_id}/{profile} {package_id}: {type(exc).__name__}", pod=pod_id)
+        if why is not None:
+            why.append(type(exc).__name__)
         return "failed"
     store.log_usage("market_companion_install", f"{pod_id}/{profile} {package_id}", pod=pod_id)
     return "queued"
@@ -564,7 +758,7 @@ def request_remove(pod_id: str, container: str, package_id: str, profile: str, w
     if not have:
         raise MarketError(tr("스킬 허브에서 이 프로파일에 설치한 기록이 없습니다", "No skill hub install is recorded for this profile"), 404)
     if have["kind"] != "skill":
-        raise MarketError(tr("AI 에이전트 패키지는 프로파일째 지웁니다 — 내 AI 에이전트 › 프로파일에서 삭제하세요", "AI Agent packages are removed together with their profile. Delete it under My AI Agents › Profiles"))
+        raise MarketError(tr("AI 에이전트 템플릿은 프로파일째 지웁니다 — 내 AI 에이전트 › 프로파일에서 삭제하세요", "AI Agent templates are removed together with their profile. Delete it under My AI Agents › Profiles"))
     if any(r["status"] in ("queued", "running") and r["profile"] == profile for r in requests(pod_id)):
         raise MarketError(tr("이 프로파일에 아직 끝나지 않은 요청이 있습니다", "This profile still has an unfinished request"), 409)
     return _enqueue({"id": datetime.now().strftime("%Y%m%d%H%M%S%f") + "-" + secrets.token_hex(3), "ts": _now(), "who": who, "pod": pod_id, "container": container,
@@ -572,7 +766,7 @@ def request_remove(pod_id: str, container: str, package_id: str, profile: str, w
                      "profile": profile, "mode": "remove", "status": "queued"})
 
 
-_SKILL = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
+_SKILL = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}\Z")
 
 
 def request_restore(pod_id: str, container: str, profile: str, skill: str, who: str) -> dict:
@@ -663,7 +857,7 @@ def overview(pod_id: str, cfg: dict | None = None, cat: dict | None = None, rows
     have = {}
     for r in out["installed"]:
         have.setdefault(r["package"], []).append(r)
-    granted = {g["namespace"] for g in out["grants"]}
+    granted = granted_namespaces(pod_id)                       # 작업공간 행 + 전체 허용('*') — out["grants"] 는 작업공간 행만이다(X1)
     for p in out["packages"]:
         p["installed"] = have.get(p["id"], [])
         if rows is None:

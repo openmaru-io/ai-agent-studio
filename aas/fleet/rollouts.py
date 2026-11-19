@@ -7,6 +7,7 @@ status 는 읽기만 한다. 대화 중인 에이전트에는 busy-until 주석�
 """
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import threading
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from ..common.i18n import tr
 from . import k8s
 
-DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+DIGEST = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}\Z")
 MAX_BATCH, DEFAULT_BATCH, MAX_CANARY, NAME_MAX = 5, 2, 5, 80
 TERMINAL = ("Done", "Failed")
 ANN_ROLLOUT_IMAGE = "aas.openmaru.io/rollout-image"
@@ -201,10 +202,90 @@ def summary(items: list[dict], agent_items: list[dict], now: datetime | None = N
         "reverted": by_state("reverted"), "failed": by_state("failed"),
         "started": st.get("startedAt") or meta.get("creationTimestamp") or "", "completed": st.get("completionTime") or "",
         "created_by": (meta.get("annotations") or {}).get(ANN_BY, ""),
+        # 시작 전 레지스트리 확인(스펙 2026-11-17-001 O2): ImageMissing 이면 화면이 「다시 시도」 대신 「digest 고쳐서 새로 만들기」
+        "reason": st.get("reason") or "",
+        "unavailable_targets": [_image_ref(r) for r in (st.get("unavailableTargets") or []) if isinstance(r, dict)],
+        "rollback_unavailable": [_image_ref(r) for r in (st.get("rollbackUnavailable") or []) if isinstance(r, dict)],
+        "registry_check_skipped": bool(st.get("registryCheckSkipped")), "registry_check_skip_reason": st.get("registryCheckSkipReason") or "",
         "agents": [{k: a.get(k) for k in ("name", "state", "image", "sidecarImage", "previous", "previousSidecar", "suspended", "startedAt", "finishedAt", "message")}
                    for a in agents],
     }
     return out
+
+
+def _image_ref(r: dict) -> dict:
+    return {"repo": str(r.get("repo") or ""), "digest": str(r.get("digest") or ""), "container": str(r.get("container") or ""),
+            "field": str(r.get("field") or ""), "agents": [str(a) for a in (r.get("agents") or [])]}
+
+
+# ---- 쓰는 중 digest 주기 확인(스펙 2026-11-17-001 O4). 오퍼레이터가 ConfigMap aas-registry-status 에 쓰고 서버는 읽기만 한다 ----
+REGISTRY_CM = "aas-registry-status"
+REGISTRY_STALE_SECONDS = 40 * 60                 # 오퍼레이터는 30분마다 lastCheckedTime 을 고친다. 40분 넘은 ok 는 「확인이 멈춤」(operator·리더 선출이 멈춰도 ok 가 남지 않게, DX 검토 C2)
+_REG_TTL = 15.0
+_reg: dict = {"at": -1e9, "value": None, "busy": False}
+_reg_lock = threading.Lock()
+_EMPTY = {"check": "unknown", "missing_images": [], "last_checked": "", "last_error": None, "stalled": False}
+
+
+def parse_registry(cm: dict | None, namespace: str, now: datetime | None = None) -> dict:
+    """ConfigMap 내용 → 화면 값. check: ok·unavailable·disabled·unknown(읽지 못함·아직 정하지 못함)·""(확인할 digest 가 없음 — 띠 없음)."""
+    now = now or datetime.now(timezone.utc)
+    if cm is None:
+        return dict(_EMPTY)
+    data = cm.get("data") or {}
+    try:
+        st = json.loads(data.get("registryCheck") or "{}")
+        missing = json.loads(data.get("missingImages") or "[]")
+    except ValueError:
+        return dict(_EMPTY)
+    if not isinstance(st, dict) or not isinstance(missing, list):
+        return dict(_EMPTY)
+    check, last = str(st.get("state") or "unknown"), str(st.get("lastCheckedTime") or "")
+    stalled = False
+    if check == "ok":
+        try:
+            stalled = (now - datetime.fromisoformat(last.replace("Z", "+00:00"))).total_seconds() > REGISTRY_STALE_SECONDS
+        except ValueError:
+            stalled = True
+        if stalled:
+            check = "unavailable"
+        elif not int(st.get("checkedImages") or 0) and not missing:
+            check = ""                            # Done 롤아웃이 없는 설치(차트 태그만): 확인할 digest 가 없다
+    rows = [{"repo": str(m.get("repo") or ""), "digest": str(m.get("digest") or ""), "agents": [str(a) for a in (m.get("agents") or [])],
+             "since": str(m.get("since") or ""), "namespace": namespace} for m in missing if isinstance(m, dict) and m.get("digest")]
+    err = st.get("lastError") if isinstance(st.get("lastError"), dict) else None
+    return {"check": check, "missing_images": rows if check != "disabled" else [], "last_checked": last, "last_error": err, "stalled": stalled}
+
+
+def _read_registry(client: k8s.K8s) -> dict:
+    try:
+        value = parse_registry(client.get_configmap(REGISTRY_CM), client.namespace)
+    except k8s.K8sError:                          # 없음(옛 오퍼레이터)·권한 없음(옛 차트)은 unknown — 띠를 띄우지 않는다(DX 검토 M8)
+        value = dict(_EMPTY)
+    with _reg_lock:
+        _reg.update(at=time.monotonic(), value=value, busy=False)
+    return value
+
+
+def registry_status(client: k8s.K8s, fresh: bool = False) -> dict:
+    """관리자 응답 최상위 registry. 목록 요청이 쿠버네티스를 기다리지 않게 마지막 값을 주고 오래되면 뒤에서 다시 읽는다(capacity_doc 과 같은 방식)."""
+    if fresh:
+        return _read_registry(client)
+    with _reg_lock:
+        value, stale = _reg["value"], time.monotonic() - _reg["at"] >= _REG_TTL
+        start = stale and not _reg["busy"]
+        if start:
+            _reg["busy"] = True
+    if start:
+        threading.Thread(target=_read_registry, args=(client,), daemon=True, name="aas-registry-status").start()
+    if value is None:                             # 처음 한 번은 기다린다(서버를 띄운 직후 경고가 늦게 뜨지 않게)
+        return _read_registry(client)
+    return value
+
+
+def forget_registry() -> None:
+    with _reg_lock:
+        _reg.update(at=-1e9, value=None, busy=False)
 
 
 # ---- 쓰기 -----------------------------------------------------------------

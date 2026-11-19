@@ -118,7 +118,7 @@ def blockers(name: str, version: str | None, namespace: str, files: list[tuple[s
     from . import hub_hide
     there = mp._exists(name)
     if there and hub_hide.hidden(there["namespace"], name):
-        out.append(tr(f"{name} 은 허브에서 숨긴 패키지입니다. 먼저 다시 보이기를 한 뒤 새 버전으로 게시하세요",
+        out.append(tr(f"{name} 은 허브에서 숨긴 스킬입니다. 먼저 다시 보이기를 한 뒤 새 버전으로 게시하세요",
                       f"{name} is hidden in the skill hub. Show it again first, then publish a new version"))
     if any(r["name"] == name and r["id"] != rid and r["status"] in ("requested", "publishing") for r in mp.requests()):
         out.append(tr("같은 이름의 게시 요청이 기다리고 있습니다", "A publish request with that name is already waiting"))

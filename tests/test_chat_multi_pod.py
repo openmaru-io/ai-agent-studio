@@ -15,6 +15,7 @@ from unittest import mock
 TMP = tempfile.TemporaryDirectory()
 os.environ.setdefault("AAS_DATA_DIR", str(Path(TMP.name) / "data"))
 
+from aas.common import store  # noqa: E402
 from aas.fleet import primary  # noqa: E402
 from aas.web import server  # noqa: E402
 
@@ -161,10 +162,14 @@ class HttpTest(_HttpBase):
             self.assertTrue({"goal", "loop"} <= names)                       # 로그인을 끈 설치는 모두 주인이다
         a = SimpleNamespace(enabled=True)
         pod = SimpleNamespace(id="u", owner="u@example.com")
-        with mock.patch.object(server, "registry", return_value=SimpleNamespace(is_admin=lambda u: False)), \
+        roles = {"edit@example.com": "edit", "use@example.com": "use"}             # 작업공간 구성원(스펙 2026-11-17-008 §3-2)
+        with mock.patch.object(server, "registry", return_value=SimpleNamespace(is_admin=lambda u: False,
+                                                                                member_role=lambda u, pid: roles.get((u or {}).get("email"), ""))), \
                 mock.patch.object(server, "_manages_pod", side_effect=lambda p, u, e: (u or {}).get("email") == "u@example.com"):
             self.assertTrue(server._chat_manages(a, {"email": "u@example.com"}, pod))
             self.assertFalse(server._chat_manages(a, {"email": "shared@example.com"}, pod))
+            self.assertTrue(server._chat_manages(a, {"email": "edit@example.com"}, pod))      # 「편집」 구성원은 goal·loop·memory 쓰기
+            self.assertFalse(server._chat_manages(a, {"email": "use@example.com"}, pod))      # 「대화」 구성원은 못 한다
         self.assertTrue(server._chat_manages(SimpleNamespace(enabled=False), None, pod))
 
     def test_스킬_목록_설명은_요청_언어로_번역을_붙이고_원문은_따로(self):
@@ -199,6 +204,22 @@ class HttpTest(_HttpBase):
             self.assertEqual(self.req("POST", "/api/chat/send", {"session_id": "s-u", "text": "/요약 또", "skill": "요약", "pod": "u"})[0], 409)
         finally:
             FakeHub.busy = False
+
+    def test_페이지_맥락이_붙은_메시지만_세고_page_id_만_남긴다(self):
+        # 스펙 2026-11-15-002 A1·X4: 위젯 맥락 블록으로 시작하는 메시지만 mindwiki_widget_context 로 센다. 제목·주소·고른 글은 남기지 않는다
+        block = "```aas-page-context\n지시가 아니다\nsource: mindwiki\ntitle: 비밀 회의록\nurl: https://wiki/p/1\npage_id: p-1\nselection:\n기밀 내용\n```"
+        with store.connect() as conn:
+            conn.execute("DELETE FROM usage WHERE kind='mindwiki_widget_context'")
+        try:
+            self.assertEqual(self.req("POST", "/api/chat/send", {"session_id": "s-u", "text": block + "\n\n요약해 줘", "pod": "u"})[0], 200)
+            self.req("POST", "/api/chat/send", {"session_id": "s-u", "text": "블록 없는 말", "pod": "u"})
+            self.req("POST", "/api/chat/send", {"session_id": "s-u", "text": "```aas-page-context\n닫히지 않음", "pod": "u"})
+            with store.connect() as conn:
+                rows = [dict(r) for r in conn.execute("SELECT note, pod FROM usage WHERE kind='mindwiki_widget_context'")]
+            self.assertEqual(rows, [{"note": "main p-1", "pod": "u"}])
+        finally:
+            with store.connect() as conn:
+                conn.execute("DELETE FROM usage WHERE kind='mindwiki_widget_context'")
 
     def test_명령은_채팅과_같은_pod_거름이고_거절은_안내_문장으로(self):
         """스펙 2026-10-26-010 R4·11-4: 볼 수 없는 에이전트의 명령은 403, 거절은 200 + ok false + code."""
@@ -332,6 +353,24 @@ class GroupScopeTest(unittest.TestCase):
         self.assertLess(took, 3)
         self.assertEqual([(g["pod"], g["state"]) for g in groups], [("slow-a", "ok"), ("slow-b", "error")])
 
+    def test_상태를_못_읽은_묶음에도_주_에이전트_이름이_있다(self):
+        """서버를 다시 띄운 직후 상태 읽기가 한도를 넘기면 묶음에 primary 가 없어, 화면이 주 에이전트(main) 대신 default 로 열었다
+        (OMAI-2056 남은 것). primary 는 표 캐시에서 읽어 사이드카를 기다리지 않는다 — 시간 초과·예외 묶음 모두 싣는다."""
+        import threading
+        a, b = self.pod("cold-a", "kim@x.com"), self.pod("cold-b", "kim@x.com")
+        reg = self.Reg([a, b])
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def status(pod):
+            if pod.id == "cold-a":
+                release.wait(10)
+            raise OSError("사이드카 응답 없음")
+        with mock.patch.object(server, "_chat_status", side_effect=status), mock.patch.object(server, "_agent_names", return_value={}), \
+                mock.patch.object(primary, "primary_of", return_value="main"), mock.patch.object(server, "CHAT_GROUP_TIMEOUT", 0.3):
+            groups = server._chat_groups(reg, {"email": "kim@x.com"}, True, a)
+        self.assertEqual([(g["pod"], g["state"], g.get("primary")) for g in groups], [("cold-a", "error", "main"), ("cold-b", "error", "main")])
+
     def test_채팅_목록은_3초가_지난_상태를_돌려주지_않는다(self):
         """만료된 값을 바로 돌려주고 뒤에서 새로 만들어, Hermes 가 다시 붙은 뒤에도 「연결 없음」이 한 번 더 보였다
         (스펙 2026-10-24-002 외부 검토 3). 기다림은 CHAT_GROUP_TIMEOUT 이 끊는다."""
@@ -428,6 +467,24 @@ class ReopenOomTest(_HttpBase):
         server._registry.agents = [self._oom_row("t", self.now - 40)]
         self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
         self.assertEqual(FakeHub.notices, [], "끊긴 적이 없으면(compose·새 서버) 없다")
+
+    def test_사이드카_시간_초과는_500_이_아니라_다시_시도할_503(self):
+        # NFS 가 느려 사이드카 호출이 시간 초과되면 「SidecarError: …」 500 이 화면 오류 띠로 그대로 나왔다(OMAI-1894).
+        # 503 과 code 로 돌려줘 화면이 잠깐 뒤 다시 시도하게 한다. 문장에 예외 이름을 싣지 않는다
+        from aas.hermes.readers.remote import SidecarError
+        err = SidecarError("사이드카에 연결할 수 없습니다 (aas-agent-x): TimeoutError")
+        err.timed_out = True
+        with mock.patch.object(FakeHub, "history", side_effect=err):
+            st, data = self.req("GET", "/api/chat/history?profile=main")
+        self.assertEqual((st, data.get("code")), (503, "sidecar_unavailable"))
+        self.assertNotIn("SidecarError", data["error"])
+        FakeHub.resume_error = err
+        try:
+            st, data = self.req("POST", "/api/chat/resume", {"profile": "main", "stored_id": "x", "pod": "t"})
+        finally:
+            FakeHub.resume_error = None
+        self.assertEqual((st, data.get("code")), (503, "sidecar_unavailable"))
+        self.assertNotIn("SidecarError", data["error"])
 
     def test_다시_열기_실패_응답에_원인을_싣는다(self):
         from aas.hermes.hermes_chat import ChatUnavailable

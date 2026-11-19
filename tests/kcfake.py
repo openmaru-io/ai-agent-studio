@@ -124,7 +124,10 @@ class FakeKC(BaseHTTPRequestHandler):
             if rest == "" and method == "GET":
                 return self._send(200, U[uid])
             if rest == "" and method == "PUT":
-                U[uid] = {**body, "id": uid}                       # 통째로 바꾼다(실제 Keycloak 26 처럼 빠진 attributes 는 사라진다)
+                mail = str(body.get("email") or "").lower()
+                if mail and any(i != uid and str(u.get("email") or "").lower() == mail for i, u in U.items()):
+                    return self._send(409, {"errorMessage": "User exists with same email"})   # duplicateEmailsAllowed=false
+                U[uid] = {**body, "id": uid}                     # 통째로 바꾼다(실제 Keycloak 26 처럼 빠진 attributes 는 사라진다)
                 return self._send(204)
             if rest == "" and method == "DELETE":
                 del U[uid]

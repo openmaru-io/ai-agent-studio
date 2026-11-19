@@ -44,7 +44,7 @@ class BundlePublishTest(unittest.TestCase):
         bundle_publish.reset()
         with store.connect() as conn:
             conn.execute("DELETE FROM meta WHERE key LIKE ?", (bundle_publish.KEY + "%",))
-        self.names = skill_bundle.names()
+        self.names = skill_bundle.enabled_names()
         self.version = {n: skill_bundle.front(n)["version"] for n in self.names}
         self.posts = []
 
@@ -91,6 +91,26 @@ class BundlePublishTest(unittest.TestCase):
         row = bundle_publish.state(self.names[0])
         self.assertEqual((row["status"], row["version"]), ("failed", self.version[self.names[0]]))
         self.assertIn("500", row["message"])
+
+    def test_rejected_publish_token_is_retried_once_with_the_server_token(self):
+        """OKE 허브의 cogentai-mindwiki·docmost 등은 마켓 레포 시절 CI 계정(서버 토큰 키 token)이 처음 올렸다 — 새 판은 처음 올린
+        계정만 올릴 수 있어 게시 전용 토큰은 거절된다(OMAI-2031). 그때 서버 토큰으로 한 번 더 보낸다."""
+        Path(os.environ["AAS_SKILLHUB_TOKEN_FILE"]).write_text("t-server\n", encoding="utf-8")
+        name = self.names[0]
+        calls = []
+
+        def post(namespace, n, version, blob, token=None):
+            calls.append((n, token))
+            if token == "t-publish":
+                return 403, {"msg": "Only the skill owner can publish new versions"}
+            return 200, {"code": 0, "data": {"status": "PUBLISHED"}}
+        hub = {n: self.version[n] for n in self.names}
+        hub[name] = "0.0.1"
+        with mock.patch.object(marketplace, "fetch", _hub(hub)), mock.patch.object(market_publish, "_post", post):
+            done = bundle_publish.publish_once()
+        self.assertEqual(calls, [(name, "t-publish"), (name, "t-server")])
+        self.assertEqual(done, [f"{name} {self.version[name]}"])
+        self.assertEqual(bundle_publish.state(name)["status"], "published")
 
     def test_already_existing_version_counts_as_published(self):
         hub = _hub({n: None for n in self.names})

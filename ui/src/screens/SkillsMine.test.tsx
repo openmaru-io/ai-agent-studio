@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mountScreen, rowByName, stubApi } from '@/test/mountScreen';
+import { listProfiles, pickProfile, profileShown } from '@/test/pickProfile';
 
 import { isMySkill } from './profiles/skillOrigin';
 import { Skills } from './Skills';
@@ -194,15 +195,14 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     stubApi({ '/api/market/publish': { items: [], can: false }, '/api/skills': body, '/api/me': me });
     mountScreen(<Skills />, at);
   };
-  const picker = () => screen.findByRole('combobox', { name: '프로파일' }) as Promise<HTMLSelectElement>;
+  // 프로파일 고르기는 MUI 드롭다운(스펙 2026-11-18-007 R7) — 공용 시험 도우미로 연다
 
   it('주소 없이 열면 주 프로파일을 골라 주소에 채우고, 수는 그 프로파일 기준이며 부제에 정적 분석이 없다(R3·D8·2A·3A·9A)', async () => {
+    const user = userEvent.setup();
     open('/skills?tab=all');
-    const sel = await picker();
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=main'));
-    expect(sel.value).toBe('main');
-    expect(within(sel).getAllByRole('option').map((o) => o.textContent)).toEqual(['main · 주 프로파일', 'p2', '전체 프로파일']);
-    expect(sel.querySelector('optgroup')?.getAttribute('label')).toBe('프로파일');
+    expect(await profileShown()).toContain('main · 주 프로파일');
+    expect(await listProfiles(user)).toEqual(['main · 주 프로파일', 'p2', '전체 프로파일']);
     expect(screen.getByRole('tab', { name: /전체, 2/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /기본 제공, 1/ })).not.toHaveAccessibleDescription(/프로파일/); // 둘째 줄 없음
     expect(screen.queryByText('정적 분석')).not.toBeInTheDocument();
@@ -212,7 +212,7 @@ describe('스킬 목록 — 프로파일 먼저', () => {
   it('다른 프로파일을 고르면 lens·open 은 지우고 tag·q·chip 은 남기며, 저장하고 한 번 읽어 주고 선택 상자에 포커스를 둔다(D5·6A·11A)', async () => {
     const user = userEvent.setup();
     open('/skills?tab=all&profile=main&tag=dev-workflow&q=m&chip=mcp&lens=mcp%3Achart');
-    await user.selectOptions(await picker(), 'p2');
+    await pickProfile(user, 'p2');
     const loc = screen.getByTestId('loc');
     await waitFor(() => expect(loc).toHaveTextContent('profile=p2'));
     expect(loc).toHaveTextContent('tag=dev-workflow');
@@ -249,7 +249,7 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     });
     open('/skills?tab=all');
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=main'));
-    await user.selectOptions(await picker(), 'p2');
+    await pickProfile(user, 'p2');
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=p2'));
     get.mockRestore();                                                              // restoreAllMocks 는 공통 matchMedia 대역까지 되돌린다
     set.mockRestore();
@@ -283,9 +283,8 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     expect(await rowByName(/^shared-one/)).toHaveTextContent('공용');
     expect(screen.getAllByRole('row', { name: /^pdf/ })).toHaveLength(1);         // main 의 pdf 만, 공용 pdf 는 빠진다
     expect(screen.getByRole('columnheader', { name: '위치' })).toBeInTheDocument();
-    const sel = await picker();
-    expect(within(sel).getAllByRole('option').map((o) => o.textContent)).toEqual(['main · 주 프로파일', 'p2', '공용', '전체 프로파일']);
-    await user.selectOptions(sel, 'default');
+    expect(await listProfiles(user)).toEqual(['main · 주 프로파일', 'p2', '공용', '전체 프로파일']);
+    await pickProfile(user, '공용');
     await waitFor(() => expect(screen.getByRole('tab', { name: /전체, 2/ })).toBeInTheDocument());
   });
 

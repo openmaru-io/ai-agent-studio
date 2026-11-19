@@ -1,0 +1,147 @@
+<!doctype html>
+<!-- Copyright 2026 OPENMARU, Inc. SPDX-License-Identifier: Apache-2.0 -->
+<!-- 위젯 답 저장 시험용 게시판(스펙 2026-11-18-012 §8-7). serve.py 가 __AAS__ 를 AAS 주소로 바꿔 내보낸다. 외부 CDN 을 쓰지 않는다. -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시험 게시판</title>
+<style>
+  :root { --line: #d8dde3; --muted: #5f6b7a; --accent: #1f6feb; }
+  body { margin: 0; font: 15px/1.6 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; color: #1c2430; background: #f6f7f9; }
+  header { background: #fff; border-bottom: 1px solid var(--line); padding: 14px 24px; display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  main { max-width: 860px; margin: 24px auto; padding: 0 16px; }
+  .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  select, button { font: inherit; padding: 4px 10px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  tr.post { cursor: pointer; }
+  tr.post:hover { background: #f0f4fa; }
+  .cat { font-size: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; white-space: nowrap; }
+  .imp { color: #b42318; font-weight: 700; }
+  .detail { white-space: pre-wrap; background: #fafbfc; }
+  .tags span { font-size: 12px; color: var(--muted); margin-right: 6px; }
+  pre { background: #fff; border: 1px solid var(--line); padding: 10px; overflow: auto; font-size: 12px; max-height: 280px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>시험 게시판</h1>
+  <span id="status">위젯 연결 중…</span>
+</header>
+<main>
+  <div class="bar">
+    <label>저장 방식
+      <select id="mode">
+        <option value="registered">등록 형식(board-post)</option>
+        <option value="page">페이지 형식(질문 카드)</option>
+        <option value="none">형식 없음(원문)</option>
+        <option value="off">끄기</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="fail"> 다음 저장을 거절하기</label>
+    <button id="open">AI 에이전트에게 묻기</button>
+    <button id="clear">게시글 모두 지우기</button>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>분류</th><th>제목</th><th>태그</th><th>기한</th><th>쓴 때</th></tr></thead>
+    <tbody id="posts"></tbody>
+  </table>
+  <h2 style="font-size:15px;margin-top:28px">마지막 onSave 인자</h2>
+  <pre id="last">아직 없음</pre>
+</main>
+<script>
+  // 게시글은 이 브라우저에만 남긴다(시험용). session+answerKey, 새 대화면 attemptId 로 두 번 넣기를 거른다(스펙 D8)
+  const KEY = 'save-answer-board-posts';
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } };
+  const store = (p) => localStorage.setItem(KEY, JSON.stringify(p));
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  let open = -1;
+
+  function render() {
+    const posts = load();
+    const tb = document.getElementById('posts');
+    if (!posts.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">게시글이 없습니다. 위젯에서 답을 「게시판에 저장」 하세요.</td></tr>'; return; }
+    tb.innerHTML = posts.map((p, i) => {
+      const d = p.data || {};
+      const row = `<tr class="post" data-i="${i}"><td>${p.id}</td><td><span class="cat">${esc(d.category || '원문')}</span></td>`
+        + `<td>${d.important ? '<span class="imp">! </span>' : ''}${esc(d.title || (p.markdown || '').split('\n')[0].slice(0, 60))}</td>`
+        + `<td class="tags">${(d.tags || []).map((t) => `<span>#${esc(t)}</span>`).join('')}</td>`
+        + `<td>${d.dueAt ? esc(new Date(d.dueAt).toLocaleString()) : ''}</td><td>${esc(new Date(p.at).toLocaleString())}</td></tr>`;
+      const more = open === i ? `<tr><td></td><td colspan="5" class="detail">${d.summary ? `<b>요약</b>\n${esc(d.summary)}\n\n` : ''}${esc(d.body || p.markdown)}</td></tr>` : '';
+      return row + more;
+    }).join('');
+  }
+  document.getElementById('posts').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr.post');
+    if (!tr) return;
+    const i = Number(tr.dataset.i);
+    open = open === i ? -1 : i;
+    render();
+  });
+  document.getElementById('clear').onclick = () => { store([]); render(); };
+
+  async function onSave(r) {
+    document.getElementById('last').textContent = JSON.stringify(r, null, 2);
+    if (document.getElementById('fail').checked) {
+      document.getElementById('fail').checked = false;
+      throw { message: '게시판이 이 글을 받지 않았습니다(시험용 거절)', retryable: true };
+    }
+    const posts = load();
+    const dup = posts.find((p) => (r.session && p.session === r.session && p.answerKey === r.answerKey && p.format === r.format) || p.attemptId === r.attemptId);
+    if (dup) return { message: `이미 게시글 #${dup.id} 로 저장했습니다` };
+    const id = posts.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+    posts.unshift({ id, at: Date.now(), format: r.format, session: r.session, answerKey: r.answerKey, attemptId: r.attemptId, data: r.payload, markdown: r.markdown });
+    store(posts);
+    render();
+    return { message: `게시글 #${id} 로 저장했습니다` };
+  }
+
+  // 페이지 형식: 페이지가 스키마와 채우는 법을 직접 넘긴다(임베드 앱이 「페이지가 형식을 넘길 수 있음」을 켰을 때만)
+  const QA_SCHEMA = {
+    type: 'object',
+    properties: {
+      title: { type: 'string', title: '질문 제목', maxLength: 80 },
+      category: { title: '분류', enum: ['질문'] },
+      body: { type: 'string', title: '답 요약', description: '다섯 줄 이내', maxLength: 1000 },
+      tags: { type: 'array', title: '태그', items: { type: 'string', title: '태그', maxLength: 20 } },
+    },
+    required: ['title', 'category', 'body'],
+    additionalProperties: false,
+  };
+  function saveAnswer(mode) {
+    if (mode === 'off') return null;
+    if (mode === 'page') return { schema: QA_SCHEMA, instructions: '질문과 답을 질문 카드로 만든다. 제목은 사람이 물은 것을 한 줄로 쓴다.', label: { ko: '질문 카드로 저장', en: 'Save as Q&A card' }, onSave, onError: (e) => console.warn('onError', e) };
+    if (mode === 'none') return { label: { ko: '게시판에 원문 저장', en: 'Save raw to board' }, onSave, onError: (e) => console.warn('onError', e) };
+    return { format: 'board-post', onSave, onError: (e) => console.warn('onError', e) };
+  }
+
+  const s = document.createElement('script');
+  s.src = '__AAS__/static/js/aas-widget.js';
+  s.onload = () => {
+    const w = window.CogentAIAASWidget.init({
+      backendUrl: '__AAS__',
+      getAccessToken: async () => (await (await fetch('/token')).json()).token,
+      title: '시험 게시판의 AAS',
+      widgetInfo: 'save-answer-board',
+      saveAnswer: saveAnswer('registered'),
+      onStatusChange: (ev) => {
+        document.getElementById('status').textContent = `위젯: ${ev.state}${ev.code ? ' (' + ev.code + ')' : ''} · 저장 단추: ${w.saveAnswerState ? w.saveAnswerState().state : '-'}`;
+      },
+    });
+    window.aasWidget = w;
+    document.getElementById('mode').onchange = (e) => w.updateConfig({ saveAnswer: saveAnswer(e.target.value) });
+    document.getElementById('open').onclick = () => w.open();
+    setInterval(() => {
+      const st = w.saveAnswerState();
+      document.getElementById('status').textContent = document.getElementById('status').textContent.replace(/저장 단추: .*/, `저장 단추: ${st.state}${st.code ? ' (' + st.code + ')' : ''}`);
+    }, 1000);
+  };
+  document.head.appendChild(s);
+  render();
+</script>
+</body>
+</html>

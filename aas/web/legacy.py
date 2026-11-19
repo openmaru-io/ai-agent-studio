@@ -66,7 +66,9 @@ class AdaptedHandler(server.Handler):
         if self.principal is None:
             self.handle_one_request()
             return
-        mark = store.actor_via.set("token")                # 이 요청이 남기는 기록에 via=token(F8)
+        # 이 요청이 남기는 기록에 via=token(F8). 임베드 위젯(OMAI-1873)은 사람이 화면에서 한 일이라 붙이지 않는다 — 붙이면 「Claude Code」로 보인다
+        via = (self.principal.get("user") or {}).get("via")
+        mark = store.actor_via.set("" if via == "embed" else "token")
         try:
             self.handle_one_request()
         finally:

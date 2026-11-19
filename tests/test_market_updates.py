@@ -3,6 +3,7 @@
 """스킬 새 버전 찾기 시험(스펙 2026-10-24-003) — 가짜 Hermes 데이터 폴더와 가짜 허브 목록으로 판 비교·건너뛰기·대기 표·자동 올리기를 본다."""
 import json
 import os
+import re
 import tempfile
 import types
 import unittest
@@ -42,6 +43,8 @@ class UpdatesTestBase(unittest.TestCase):
         root = self.home if profile == "default" else self.home / "profiles" / profile
         d = root / "skills" / "market" / name
         d.mkdir(parents=True, exist_ok=True)
+        if profile != "default":
+            (root / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
         head = f"---\nname: {name}\n" + (f"version: {version}\n" if version else "") + "---\n"
         (d / "SKILL.md").write_text(head + body, encoding="utf-8")
         return d
@@ -99,6 +102,7 @@ class ScanTest(UpdatesTestBase):
 
     def test_agent_package_compares_record(self):
         (self.home / "profiles" / "bot1").mkdir(parents=True)
+        (self.home / "profiles" / "bot1" / "config.yaml").write_text("model: x\n")
         rows = self.scan([rec("bot1", "free/bot", "1.0.0", kind="agent")])
         self.assertEqual([(r["kind"], r["current"], r["latest"], r["mode"]) for r in rows], [("agent", "1.0.0", "1.1.0", "update")])
         skills_only = self.scan([rec("bot1", "free/bot", "1.0.0", kind="agent", mode="skills")])
@@ -163,6 +167,47 @@ class QueueTest(UpdatesTestBase):
         issues = updates.auto_issues("p1", "work")
         self.assertEqual([(i["code"], i["level"]) for i in issues], [("market_auto_failed", "bad")])
         self.assertIn("디스크 가득", issues[0]["text"])
+
+    def _fail_auto_request(self, **done_fields):
+        self.skill("work", "outline", "0.1.1")
+        rows = self.scan([rec("work", "free/outline", "0.1.1")])
+        with mock.patch.object(mk, "default_packages", lambda: ["free/outline"]), mock.patch.object(updates, "modified", lambda home, r: "same"):
+            updates.auto_queue(rows, self.home)
+        updates.drain([POD], lambda pod: ["work"])
+        p = next(mk._dir("queue").glob("*.json"))
+        row = json.loads(p.read_text())
+        p.unlink()
+        (mk._dir("done") / p.name).write_text(json.dumps({**row, "status": "failed", **done_fields}))
+        updates.settle_auto_all(["p1"])
+
+    def test_auto_failed_needs_choice_is_translated(self):
+        """고친 스킬이 있어 실패한 자동 올리기는 저장된 한국어 문장 대신 언어별 문장을 낸다(스펙 2026-11-19-004 §2)."""
+        from aas.common import i18n
+        self._fail_auto_request(message="내가 고쳤거나 직접 만든 스킬이 있습니다: skills/market/outline — 지키거나 덮을지 고르세요",
+                                needs={"modified": ["skills/market/outline"], "occupied": []})
+        with updates._conn() as conn:
+            code, message = conn.execute("SELECT code, message FROM market_update_auto WHERE pod='p1'").fetchone()
+        self.assertEqual((code, message), ("needs_choice", "skills/market/outline"))
+        token = i18n._lang.set("en")
+        try:
+            text = updates.auto_issues("p1", "work")[0]["text"]
+        finally:
+            i18n._lang.reset(token)
+        self.assertIn("skills/market/outline", text)
+        self.assertIsNone(re.search(r"[가-힣]", text), text)
+        self.assertIn("skills/market/outline", updates.auto_issues("p1", "work")[0]["text"])    # 한국어 요청은 한국어 문장
+
+    def test_auto_failed_korean_cause_hidden_in_english(self):
+        """코드가 없는 옛 실패 원인이 한국어면 영어 화면에는 스킬 허브 요청 기록을 보라는 문장을 낸다."""
+        from aas.common import i18n
+        self._fail_auto_request(message="디스크 가득")
+        token = i18n._lang.set("en")
+        try:
+            text = updates.auto_issues("p1", "work")[0]["text"]
+        finally:
+            i18n._lang.reset(token)
+        self.assertIsNone(re.search(r"[가-힣]", text), text)
+        self.assertIn("request log", text)
 
     def test_auto_done_notice_can_be_marked_seen(self):
         """자동 올리기 안내는 사람이 확인하면 7일을 기다리지 않고 빠진다. 실패 줄은 확인으로 바뀌지 않는다(2026-10-30)."""

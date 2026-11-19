@@ -19,7 +19,7 @@ from ..common import leader, store
 
 TASK_PREFIX = "mkt-"
 STUCK_SECONDS = 15 * 60          # 이 시간이 지나도 끝나지 않으면 요청을 실패로 닫는다(오퍼레이터가 멈춰 있을 수 있다)
-_RID = re.compile(r"^\d{20}-[0-9a-f]{6}$")
+_RID = re.compile(r"^\d{20}-[0-9a-f]{6}\Z")
 
 
 def _now() -> str:
@@ -42,6 +42,9 @@ def _close(row: dict, status: str, message: str) -> dict:
     row.update(status=status, message=message, finished=_now())
     _write("done", row)
     (marketplace._dir("queue") / (row["id"] + ".json")).unlink(missing_ok=True)
+    if status == "done" and row.get("template"):              # 템플릿 설치: 설치 뒤 단계 색인에 세운다(스펙 2026-11-18-002 §4-2 5, E11)
+        from . import template_post
+        template_post.enqueue(row)
     return row
 
 
@@ -104,9 +107,16 @@ def _dispatch(client: k8s.K8s, row: dict, agent_names: set[str], get_home=None, 
         except market_stage.NeedsChoice as exc:
             row["needs"] = exc.needs                          # 화면이 이 목록으로 「내 것 지키기 / 덮기」를 묻고 on_modified 를 담아 다시 요청한다
             return _close(row, "failed", str(exc))
+        except market_stage.Unavailable as exc:
+            row["transient"] = True                           # 허브에 잠깐 닿지 않았다 — 기본 스킬 배달기가 다시 시도한다(OMAI-2085)
+            return _close(row, "failed", str(exc))
         except market_stage.Refuse as exc:
+            if exc.code:
+                row["code"] = exc.code                        # 오류 코드(스펙 2026-11-18-002 §4-5) — 화면이 코드별 문구를 고른다
             return _close(row, "failed", str(exc))
         payload = res["payload"]
+        if res.get("template"):                               # 템플릿 설치: 이름·판·필요 KEY 이름·KEY 를 기다리는 MCP 를 줄에 적는다(값은 없다, §4-2 6·7)
+            row.update({k: res["template"][k] for k in ("template", "template_version", "env_names", "waiting_mcp", "examples") if k in res["template"]})
         if res["backup"]:
             row["backup"] = res["backup"]                    # 덮기 전 백업(AAS 서버 볼륨, 30일)
         if res["skipped"]:

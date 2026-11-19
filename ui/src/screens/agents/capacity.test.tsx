@@ -31,7 +31,7 @@ describe('숫자 카드 「더 만들 수 있는 작업공간」(스펙 2026-10-
   it('성공: 숫자와 몰린 노드, 접근 이름은 「… 15개, …, 노드별 보기」(R8)', () => {
     const c = capacityCard(cap(), false, NOW, open);
     expect([c.n, c.sub, c.tone]).toEqual([15, '14개가 oke-worker-5', undefined]);
-    expect(c.ariaLabel).toBe('더 만들 수 있는 작업공간 15개, 14개가 oke-worker-5, 노드별 보기');
+    expect(c.ariaLabel).toBe('더 만들 수 있는 AI 에이전트 작업공간 15개, 14개가 oke-worker-5, 노드별 보기');
     c.onClick?.();
     expect(open).toHaveBeenCalled();
   });

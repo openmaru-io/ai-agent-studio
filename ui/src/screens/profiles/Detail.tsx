@@ -10,6 +10,7 @@ import DriveFileRenameOutlineOutlinedIcon from '@mui/icons-material/DriveFileRen
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import FileUploadOutlinedIcon from '@mui/icons-material/FileUploadOutlined';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
+import PublishOutlinedIcon from '@mui/icons-material/PublishOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
 import {
@@ -33,6 +34,7 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import { DrawerAction, DrawerActions } from '@/components/DrawerActions';
 import { DrawerBadges, DrawerNote } from '@/components/DrawerBadges';
 import { GuideHint } from '@/components/help/GuideRunner';
+import { RestartPendingPill } from '@/components/RestartPending';
 import { TabCountBadge } from '@/components/TabCountBadge';
 import { TeamTargetNote } from '@/components/TeamTargetNote';
 import { TextEditor } from '@/components/TextEditor';
@@ -62,6 +64,7 @@ import {
   DEFAULT_MODEL_REF,
   detailRefetchMs,
   GatewayTag,
+  mayEditTab,
   mayManage,
   type McpLoginTopic,
   mergeMcpLogin,
@@ -73,6 +76,8 @@ import {
 } from './shared';
 import { SoulTemplateBar } from './SoulTemplateBar';
 import { type ProfileSpot, ProfileSpotContext, useProfileSpot } from './spot';
+import { TemplatePublish } from './TemplatePublish';
+import { TemplateUpdate } from './TemplateUpdate';
 import type { ProfileDetailData } from './types';
 
 // 문장은 그릴 때 만든다(언어를 바꾸면 바뀌어야 한다)
@@ -155,6 +160,7 @@ function Overview({ d, onDirty }: { d: ProfileDetailData; onDirty: Dirty }) {
           <IssueList
             issues={p.issues}
             onAck={(i) => void run(() => post('/api/profile/issue/ack', { profile: p.name, sig: i.sig, code: i.code }), t('common.issueAckDone'))}
+            onRetry={(i) => void run(() => post('/api/market/template/post-retry', { request: i.retry }), t('common.issueRetryDone'))}
           />
         </Section>
       )}
@@ -207,6 +213,7 @@ function Overview({ d, onDirty }: { d: ProfileDetailData; onDirty: Dirty }) {
         ]}
       />
       <Section title={t('profiles.about')}>
+        {p.template && <TemplateOrigin profile={p.name} template={p.template} canUpdate={!!(d.can_edit || mayManage(d))} />}
         <TextEditor
           label={t('profiles.about')}
           compact
@@ -381,7 +388,8 @@ function TextPane({ d, kind, onDirty }: { d: ProfileDetailData; kind: TextKind; 
   const doc = kind === 'soul' ? d.soul : kind === 'config' ? d.config : d.agents;
   const isRoot = !!d.profile.is_default;
   // SOUL·config 는 관리자와 에이전트 주인이 고친다. 주인의 config 는 잠글 키(모델·제공자 등)를 서버가 막는다(OMAI-1126, 스펙 2026-10-15-011 D4)
-  const canWrite = kind === 'agents' && d.caps?.agents ? d.caps.agents.can : d.can_edit || mayManage(d);
+  const canWrite =
+    kind === 'agents' && d.caps?.agents ? d.caps.agents.can : kind === 'soul' ? mayEditTab(d, 'soul') : d.can_edit || mayManage(d);
   // 템플릿(SOUL)이나 예시(AGENTS.md)에서 시작하면 편집기를 그 글로 열고, SOUL 은 저장할 때 어느 템플릿 판을 적용했는지 함께 보낸다(009 D2)
   const [seed, setSeed] = useState<{ text: string; nonce: number; note: string } | undefined>();
   const [applied, setApplied] = useState<{ id: string; lang: string; rev: number } | null>(null);
@@ -552,6 +560,31 @@ function TextPane({ d, kind, onDirty }: { d: ProfileDetailData; kind: TextKind; 
   );
 }
 
+/** 「템플릿 x 판 에서 만듦」과 새 판이 있으면 「새 판으로 올리기」(스펙 2026-11-18-002 §4-2 7·「템플릿 새 판」) */
+function TemplateOrigin({ profile, template, canUpdate }: { profile: string; template: { package: string; version: string; latest?: string }; canUpdate: boolean }) {
+  const { openDrawer } = useUi();
+  return (
+    <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 0.5 }} data-template-origin="">
+      {t('profiles.tpl.origin', { name: template.package, version: template.version })}
+      {template.latest && (
+        <>
+          {' '}
+          <Tag tone="info">{t('profiles.tplUp.badge', { to: template.latest })}</Tag>
+          {canUpdate && (
+            <Button
+              size="small"
+              sx={{ ml: 0.5 }}
+              onClick={() => openDrawer({ title: t('profiles.tplUp.title'), sub: profile, body: <TemplateUpdate profile={profile} /> })}
+            >
+              {t('profiles.tplUp.open')}
+            </Button>
+          )}
+        </>
+      )}
+    </Typography>
+  );
+}
+
 function RenameBody({ name, bundle, onDone }: { name: string; /** 확인 단계의 PC 가져오기 묶음 파일 이름(함께 취소된다, DD7) */ bundle?: string; onDone?: () => void }) {
   const { act } = useProfileAct(name);
   const { closeDrawer } = useUi();
@@ -643,13 +676,17 @@ export function ProfileActions({ d }: { d: ProfileDetailData }) {
     );
     key = openDrawer({ title, sub: p.name, body });
   };
+  // 옮기는 동작 세 개(내보내기·가져오기·템플릿으로 올리기)는 짧은 글자의 조용한 단추로, 이름 바꾸기·삭제는 구분선 뒤 아이콘만 둔다(2026-11-18 사용자 요청 —
+  // 모두 테두리 글자 단추이던 첫 판은 글자가 길어 머리 줄이 무거웠다. 아이콘만이던 그 전 판은 템플릿·PC 동작을 찾지 못했다). 좁은 화면은 모두 아이콘(DrawerActions)
   // 단추 순서(OMAI-1444 DD1): 내 PC 로 내보내기 → PC 에서 가져오기 → 이름 바꾸기 → 삭제. 작업 폴더 「내보내기」는 뺐다(2026-10-23, R7 바꿈)
   const actions: DrawerAction[] = [
     ...(pc.can
       ? [
           {
             id: 'pc-export',
+            text: 'wide' as const,
             label: t('profiles.pcExport.action'),
+            short: t('profiles.pcExport.short'),
             description: t('profiles.pcExport.tip'),
             icon: FileDownloadOutlinedIcon,
             disabled: busyWhy,
@@ -657,11 +694,27 @@ export function ProfileActions({ d }: { d: ProfileDetailData }) {
           },
           {
             id: 'pc-import',
+            text: 'wide' as const,
             label: t('profiles.pcImport.action'),
+            short: t('profiles.pcImport.short'),
             description: t('profiles.pcImport.tip'),
             icon: FileUploadOutlinedIcon,
             disabled: busyWhy,
             onClick: openImport,
+          },
+        ]
+      : []),
+    // 템플릿으로 올리기(스펙 2026-11-18-002 2단계): 작업공간 주인과 관리자만. 팀 관리자·편집 구성원은 남의 프로파일을 공개하는 일이라 하지 않는다(A2)
+    ...(d.can_edit || d.owner
+      ? [
+          {
+            id: 'template-publish',
+            text: 'wide' as const,
+            label: t('profiles.tplPub.action'),
+            short: t('profiles.tplPub.short'),
+            description: t('profiles.tplPub.tip'),
+            icon: PublishOutlinedIcon,
+            onClick: () => openDrawer({ title: t('profiles.tplPub.action'), sub: p.name, body: <TemplatePublish profile={p.name} /> }),
           },
         ]
       : []),
@@ -706,6 +759,9 @@ export function ProfileActions({ d }: { d: ProfileDetailData }) {
         ]
       : []),
   ];
+  // 글자 단추 묶음과 아이콘 단추 사이에 구분선: 이름 바꾸기가 없는 사람(삭제만)도 같은 자리에 선이 온다
+  const firstIcon = actions.findIndex((a) => !a.short);
+  if (firstIcon > 0) actions[firstIcon] = { ...actions[firstIcon], divider: true };
   return <DrawerActions actions={actions} />;
 }
 
@@ -852,6 +908,8 @@ function DetailBody({
           {pcBusy && <Tag>{t('profiles.pcImport.stepRunning')}</Tag>}
           {d.owner ? <Tag>{t('profiles.mineTag')}</Tag> : d.owner_name ? <Tag>{t('profiles.ownedByTag', { name: d.owner_name })}</Tag> : null}
           <GatewayTag r={p} />
+          {/* 바꾼 설정이 게이트웨이 다시 시작을 기다린다 — 「실행 중」만 보이면 이미 반영된 것처럼 읽힌다(스펙 2026-11-18-016 4-5) */}
+          <RestartPendingPill profile={p.name} />
         </DrawerBadges>
         <Box sx={{ flex: 1 }} />
         <ProfileActions d={d} />

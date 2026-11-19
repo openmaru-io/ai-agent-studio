@@ -13,10 +13,10 @@ from ..common.redact import mcp_target
 from ..ops import models
 from . import env_desc
 
-NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
-ACTIONS = {"describe", "soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "config", "config_preview", "config_revert", "model", "gateway", "skill", "toolset", "mcp", "mcp_test", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_apply", "mcp_url_check", "mcp_to_oauth",
-           "create", "rename", "export", "delete", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke"}
-ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}\Z")
+ACTIONS = {"describe", "soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "config", "config_preview", "config_revert", "model", "gateway", "skill", "toolset", "mcp", "mcp_test", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_apply", "mcp_url_check", "mcp_to_oauth",
+           "create", "rename", "export", "delete", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear"}
+ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{1,63}\Z")
 
 
 def summarize(hermes_profiles: list[dict], agents: list[dict], chan: dict, mdl: dict, health: dict, creds: list[dict],
@@ -27,7 +27,8 @@ def summarize(hermes_profiles: list[dict], agents: list[dict], chan: dict, mdl: 
     for hp in hermes_profiles:
         name = hp["name"]
         a, c, m, h, v = ag.get(name, {}), ch.get(name, {}), mo.get(name, {}), he.get(name, {}), ac.get(name, {})
-        mine = [x for x in creds if x["profile"] == name]
+        # AAS 기본 값·설정 값 행은 세지 않는다 — 프로파일 목록의 키 수가 이번 표 변경으로 늘지 않게(스펙 2026-11-18-007 X3)
+        mine = [x for x in creds if x["profile"] == name and not x.get("aas_default") and x.get("value_kind") != "setting"]
         expiring = sum(1 for x in mine if any("만료" in f for f in x["flags"]))  # i18n-ignore: 자격증명 flags 의 한글 문구와 맞대어 본다
         running = c.get("running", hp.get("gateway_running"))
         # i18n-ignore: 문제 출처 코드(UI 가 크론만 맞대어 본다)

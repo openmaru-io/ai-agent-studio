@@ -5,7 +5,7 @@
 
 // 모델: 프로파일이 쓰는 모델과 LiteLLM 이 내놓는 모델. 서랍에서 모델에 1토큰짜리 호출을 보내 점검한다.
 import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined';
-import { Alert, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Typography } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useState } from 'react';
 
@@ -15,6 +15,7 @@ import type { PageOf } from '@/components/drawerPages';
 import { useDrawerHead } from '@/components/drawerScope';
 import { ListView, tabOf, Tone } from '@/components/ListView';
 import { useRoutePage } from '@/components/useRoutePage';
+import { type Whose, whoseOf,WhoseTag as SharedWhoseTag } from '@/components/WhoseTag';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
 import { useIsAdmin } from '@/lib/data';
@@ -47,6 +48,10 @@ interface ProfileModels {
 interface ModelsData {
   /** AAS 기본 모델 이름(서버 설정). 그 모델 옆에 「기본 모델」 뱃지 */
   default_model?: string;
+  /** 이 집계가 어느 에이전트(설치본)의 것인지: id·에이전트 이름·주인 이름(스펙 2026-11-17-002). 옛 서버는 주지 않는다 */
+  pod?: string;
+  name?: string;
+  owner_name?: string;
   litellm: {
     url: string;
     reachable: boolean;
@@ -67,6 +72,9 @@ interface ModelsData {
   models: ModelInfo[];
   profiles: ProfileModels[];
 }
+// 사용자마다 주 프로파일이 main 이라 「main」만으로는 누구의 것인지 모른다 — 채팅·메신저 연결과 같이 이름 옆에 주인 이름(2026-11-17-002).
+// whoseOf·WhoseTag 는 스킬 허브도 함께 쓰려고 components/WhoseTag 로 옮겼다(OMAI-2086). 이 화면의 풍선말 문장은 그대로다
+const WhoseTag = ({ w }: { w: Whose }) => <SharedWhoseTag w={w} title={t('models.agentOf', { agent: w.full })} />;
 interface Probe {
   pending?: boolean;
   ok?: boolean;
@@ -252,7 +260,8 @@ function ModelDetail({ m }: { m: ModelInfo }) {
 export function ModelPage({ page }: { page: PageOf<'model'> }) {
   const q = useQuery<ModelsData>({ queryKey: ['models'], queryFn: () => get<ModelsData>('/api/models') });
   const m = q.data?.models.find((x) => x.id === page.id);
-  useDrawerHead(m ? { title: m.id, sub: t('models.title') } : null);
+  const w = whoseOf(q.data);
+  useDrawerHead(m ? { title: m.id, sub: w.full ? `${t('models.title')} · ${w.full}` : t('models.title') } : null);
   if (!m) return q.data ? <Alert severity="warning">{t('models.notFound', { id: page.id })}</Alert> : <ScreenLoading title={page.id} error={q.error?.message} />;
   return <ModelDetail m={m} />;
 }
@@ -272,7 +281,22 @@ function withDefaultTag(col: GridColumn<ModelInfo>, defaultModel?: string): Grid
   };
 }
 
-const modelColumns = (probes: Record<string, Probe>, defaultModel?: string): GridColumn<ModelInfo>[] => [
+/** 프로파일 이름 목록 칸: 이름 뒤에 누구의 것인지. 검색 글에도 주인 이름이 들어간다 */
+const profilesColumn = (id: string, label: string, names: (m: ModelInfo) => string[], w: Whose): GridColumn<ModelInfo> => ({
+  id,
+  label,
+  value: (m) => (names(m).length ? [who(names(m)), w.short].filter(Boolean).join(' ') : ''),
+  render: (m) =>
+    names(m).length ? (
+      <Box component="span" sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        <span>{who(names(m))}</span>
+        <WhoseTag w={w} />
+      </Box>
+    ) : null,
+  width: 'minmax(140px, 1.5fr)',
+});
+
+const modelColumns = (probes: Record<string, Probe>, defaultModel: string | undefined, w: Whose): GridColumn<ModelInfo>[] => [
   withDefaultTag(nameColumn<ModelInfo>({ label: t('models.grid.model'), value: (m) => m.id }), defaultModel),
   statusColumn<ModelInfo>({
     id: 'litellm',
@@ -297,12 +321,26 @@ const modelColumns = (probes: Record<string, Probe>, defaultModel?: string): Gri
       );
     },
   }),
-  { id: 'primary', label: t('models.primaryProfiles'), value: (m) => (m.primary.length ? who(m.primary) : ''), width: 'minmax(140px, 1.5fr)' },
-  { id: 'fallback', label: t('models.fallbackProfiles'), value: (m) => (m.fallback.length ? who(m.fallback) : ''), width: 'minmax(140px, 1.5fr)' },
+  profilesColumn('primary', t('models.primaryProfiles'), (m) => m.primary, w),
+  profilesColumn('fallback', t('models.fallbackProfiles'), (m) => m.fallback, w),
   { id: 'aux', label: t('models.auxCron'), value: (m) => [...m.auxiliary, ...m.cron].join(', '), width: 'minmax(140px, 1fr)', hidden: true },
 ];
-const profileColumns = (): GridColumn<ProfileModels>[] => [
-  profileNameColumn<ProfileModels>({ label: t('models.grid.profile'), value: (p) => p.name }),
+// 프로파일 이름 칸: 채팅·메신저 연결(Channels.tsx profileColumn)과 같이 이름 옆에 주인 이름(2026-11-17-002)
+const profileName = (w: Whose): GridColumn<ProfileModels> => {
+  const base = profileNameColumn<ProfileModels>({ label: t('models.grid.profile'), value: (p) => p.name });
+  return {
+    ...base,
+    value: (p) => (w.short ? `${p.name} ${w.short}` : p.name),
+    render: (p) => (
+      <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: '0 1 auto' }}>{base.render?.(p)}</Box>
+        <WhoseTag w={w} />
+      </Box>
+    ),
+  };
+};
+const profileColumns = (w: Whose): GridColumn<ProfileModels>[] => [
+  profileName(w),
   statusColumn<ProfileModels>({ label: t('models.grid.status'), value: (p) => levelOf(p)[0], tone: (p) => levelOf(p)[1] }),
   {
     id: 'primary',
@@ -334,6 +372,7 @@ export function Models() {
 
   const g = d.litellm;
   const tot = d.totals;
+  const w = whoseOf(d);
   const unreachable =
     !g.reachable || g.auth !== 'ok'
       ? t('models.unreachable', { error: !g.url ? t('models.noUrl') : g.error || t('models.listFailed') })
@@ -345,9 +384,17 @@ export function Models() {
       title={t('models.title')}
       // 주소·키 출처 글자 대신 이름 뱃지를 보인다. 주소와 키 출처는 풍선말
       sub={
-        <span title={g.auth === 'ok' ? `${g.url} · ${t('models.keySource', { source: g.key_source })}` : g.url}>
-          <Tag>{t('models.litellmBadge')}</Tag>
-        </span>
+        <>
+          <span title={g.auth === 'ok' ? `${g.url} · ${t('models.keySource', { source: g.key_source })}` : g.url}>
+            <Tag>{t('models.litellmBadge')}</Tag>
+          </span>
+          {/* 이 화면이 어느 에이전트의 프로파일을 보는지(2026-11-17-002) */}
+          {w.full && (
+            <span title={t('models.agentOf', { agent: w.full })} data-testid="models-agent">
+              <Tag>{w.full}</Tag>
+            </span>
+          )}
+        </>
       }
       error={unreachable || null}
       // 보기 카드(2026-10-17-011): 카드 숫자는 표의 행 수다. LiteLLM 모델 수와 문제 프로파일 수는 둘째 줄 지표로 옮겼다(§4-1)
@@ -376,7 +423,7 @@ export function Models() {
                     : t('models.noFilter'),
             }),
           },
-          columns: modelColumns(probes, d.default_model),
+          columns: modelColumns(probes, d.default_model, w),
           rowId: (m) => m.id,
           onRow: (m) => route.openRow(m.id),
         }),
@@ -386,11 +433,11 @@ export function Models() {
           items: d.profiles,
           tone: tot.profiles_with_bad ? 'warn' : undefined,
           card: { sub: t('models.cardProfilesSub', { n: tot.profiles_with_bad, warn: tot.profiles_with_warn }) },
-          columns: profileColumns(),
+          columns: profileColumns(w),
           rowId: (p) => p.name,
           detail: (p) => ({
             title: p.name,
-            sub: t('models.profileModelConfig'),
+            sub: w.full ? `${t('models.profileModelConfig')} · ${w.full}` : t('models.profileModelConfig'),
             body: (
               <>
                 <KV
@@ -436,7 +483,7 @@ export function Models() {
       text={(i) => {
         const m = i as ModelInfo;
         const p = i as ProfileModels;
-        return [m.id, p.name, p.primary?.model, (p.issues ?? []).map((v) => v.text).join(' ')]
+        return [m.id, p.name, p.primary?.model, (p.issues ?? []).map((v) => v.text).join(' '), w.short]
           .filter(Boolean)
           .join(' ');
       }}

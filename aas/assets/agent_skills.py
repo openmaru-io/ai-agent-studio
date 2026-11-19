@@ -7,7 +7,7 @@
   enabled   — config.yaml 의 skills.disabled 에 없으면 켜짐(Hermes hermes_cli/skills_config.get_disabled_skills 와 같은 규칙)
   usage     — skills/.usage.json (Hermes tools/skill_usage: use/view/patch 횟수·마지막 사용·state)
   seen      — 최근 N일 세션 기록에서 skill_view 로 연 횟수(ops/observed)
-  missing   — SKILL.md 가 선언한 필수 환경변수 중 그 프로파일 .env 에 값이 없는 이름(값은 읽지 않는다)
+  missing   — SKILL.md 가 선언한 필수 환경변수 중 그 프로파일 .env 에 값이 없는 이름(값은 읽지 않는다). AAS 가 주는 LLM 접속값은 뺀다
   modes     — 어떻게 도는가: cron(예약 작업이 부름)·script(스크립트)·mcp·rest·chat(대화에서만)
   readiness — off(꺼짐) > setup(설정 필요) > unused(쓴 기록 없음) > ok
 """
@@ -91,7 +91,8 @@ def row_state(s: dict, facts: Facts, seen: int) -> dict:
     rec = facts.usage.get(s["name"]) or {}
     count = sum(_int(rec.get(k)) for k in ("use_count", "view_count", "patch_count"))
     last = max(str(rec.get("last_used_at") or ""), str(rec.get("last_viewed_at") or ""))
-    missing = [e["name"] for e in s.get("required_env") or [] if not e.get("optional") and e["name"] not in facts.env]
+    missing = [e["name"] for e in s.get("required_env") or []        # AAS 가 주는 LLM 접속값(managed)은 묻지 않는다(스펙 2026-11-19-002)
+               if not e.get("optional") and not e.get("managed") and e["name"] not in facts.env]
     modes = [m for m, on in (("cron", bool(s.get("cron"))),
                              ("script", bool(s.get("scripts") or s.get("external_scripts"))),
                              ("mcp", bool(s.get("mcp"))), ("rest", bool(s.get("rest")))) if on]

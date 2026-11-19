@@ -46,7 +46,20 @@ function CodeBlock({ code, children }: { code: string; children: ReactNode }) {
     }
   };
   return (
-    <Box component="pre" sx={{ position: 'relative', overflow: 'auto', p: 1.5, bgcolor: 'action.hover', borderRadius: 1 }}>
+    // 긴 줄은 옆으로 스크롤하지 않고 다음 줄로 넘긴다(OMAI-1863). 하이라이터의 code 도 같은 규칙을 따르게 한다
+    <Box
+      component="pre"
+      sx={{
+        position: 'relative',
+        overflow: 'auto',
+        p: 1.5,
+        bgcolor: 'action.hover',
+        borderRadius: 1,
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        '& code': { whiteSpace: 'inherit' },
+      }}
+    >
       <Button startIcon={<ContentCopyOutlinedIcon />} size="small" aria-label={t('common.copyCode')} onClick={copy} sx={{ position: 'absolute', top: 4, right: 4 }}>
         {t('common.copy')}
       </Button>

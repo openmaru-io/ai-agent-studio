@@ -13,10 +13,12 @@ from datetime import datetime
 import contextvars
 import html
 import json
+import logging
 import math
 import os
 import posixpath
 import re
+import secrets
 import ssl
 import threading
 import time
@@ -25,19 +27,20 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-from ..ops import activity, admin_requests, bundled_repair, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, shared_skills, slogan, card_brief, tts, workspace_notices
-from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts
+from ..ops import notify_out
+from ..ops import activity, admin_requests, bundled_repair, catalog_plugins, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mindwiki_connect, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, restart_pending, shared_skills, slogan, card_brief, tts, usage_hours, workspace_notices
+from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts, sharing
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
-from ..assets import agent_skills, credentials, explain, files, flow, inventory, skill_graph, skill_header, skill_setup
+from ..assets import agent_skills, credentials, explain, files, flow, image_packages, inventory, skill_graph, skill_header, skill_setup
 from ..office import hub_auto, inbox, meeting, meeting_files, office, office_access, office_changed, office_state, presence, relay, shared
-from ..auth import keycloak
-from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, tags as market_tags, updates as market_updates
-from ..auth.auth import COOKIE as SESSION_COOKIE, Auth, AuthError, _cookie, _env, has_admin_session, load_users
+from ..auth import embed, keycloak, login_alias
+from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, profile_template, tags as market_tags, template_checks, template_post, templates as market_templates, updates as market_updates
+from ..auth.auth import COOKIE as SESSION_COOKIE, Auth, AuthError, _cookie, _env, has_admin_session, load_users, safe_next
 from ..hermes.hermes_api import HermesAPI, HermesError, job_view, run_view
 from ..common.i18n import tr
 from ..hermes.hermes_chat import ChatHub, ChatNotFound, ChatUnavailable, ProfileDeleting, SessionBusy, load_settings
-from ..hermes import chat_commands, hermes_reader, readers, skill_commands, stt_config, workspace
+from ..hermes import chat_commands, hermes_reader, page_context, readers, skill_commands, stt_config, workspace
 from ..hermes.readers import remote as hermes_remote, tree_cache
 from ..common.redact import redact
 from ..fleet.pods import Pod, Registry
@@ -83,7 +86,75 @@ def auth() -> Auth:
             _auth = Auth()
             _auth.on_login = _first_login
             _auth.on_change = topics.user_changed      # 토큰 갱신이 세션을 끝내거나 관리자 여부를 바꾸면 웹소켓을 바로 다시 검사한다
+            _auth.on_access_token = mindwiki_connect.on_login   # MindWiki 자동 점검(스펙 2026-11-14-012)
+            mindwiki_connect.register_host(_MindwikiHost())
+            login_alias.ON_RENAMED.append(_login_renamed)
         return _auth
+
+
+def _login_renamed(old: str, new: str) -> None:
+    """한 사람의 이메일을 회사 도메인으로 바꾼 뒤(스펙 2026-11-15-005): 세션을 끝내 다시 로그인하게 하고 화면·소유 기억을 버린다.
+    세션 이메일·웹소켓 신원이 옛 값이라 그대로 두면 「내 에이전트」가 비어 보인다."""
+    a = _auth
+    if a is not None:
+        a.revoke(new)
+        a.revoke(old)
+    topics.user_changed(old)
+    topics.user_changed(new)
+    try:
+        registry().refresh(ttl=0)
+    except Exception as exc:
+        print(f"이름 바꾸기 뒤 목록 새로 읽기 실패 ({type(exc).__name__})", flush=True)   # i18n-ignore: 서버 로그
+
+
+def _login_alias_view() -> dict:
+    """설정 › 로그인(스펙 2026-11-15-005 3절). 설정·출처·설치 값, 로그인 제공자 관찰, claim 0건 경고, 처리 기록, 확인 필요."""
+    cfg, source = login_alias.load()
+    seen = login_alias.observed()
+    client = auth().cfg.get("client_id") or ""
+    aas_claims = sum(r["n"] for r in seen if r["client"] == client and r["alias"])
+    targets = set(cfg.get("providers") or [])
+    return {"config": cfg, "source": source, "install": login_alias.install_config(), "modes": list(login_alias.MODES),
+            "observed": seen, "client": client,
+            "no_claim": aas_claims == 0,                          # aas client 에 identity_provider claim 이 한 번도 오지 않았다(T6 scope 확인)
+            "unseen_providers": sorted(p for p in targets if not any(r["alias"] == p for r in seen)),
+            "keycloak": keycloak.admin_from_config() is not None,
+            "records": login_alias.records(), "attention": login_alias.attention()}
+
+
+class _MindwikiHost:
+    """MindWiki 자동 점검이 요청 밖에서 쓰는 붙이기 공장(스펙 2026-11-14-012 3-1). 2단계 attach 는 요청 안에서 만들었다."""
+
+    @staticmethod
+    def _find(sub: str, email: str, pod_id: str):
+        pod = next((p for p in registry().pods if p.id == pod_id), None)
+        if pod is None or not pod.owned_by({"sub": sub, "email": email}):   # 주인이 바뀌었으면 예전 주인의 토큰을 다시 받지 않는다
+            return None
+        return pod
+
+    def attach_for(self, sub: str, email: str, pod_id: str, profile: str):
+        pod = self._find(sub, email, pod_id)
+        if pod is None:
+            return None
+        try:
+            known = {r["name"]: r for r in _profile_rows(pod)}
+        except HermesError:
+            raise mindwiki_connect.Failed("hermes_not_ready") from None
+        if profile not in known:
+            # 프로파일을 지우면 행도 지운다(forget). 목록에 없음은 게이트웨이가 다시 뜨는 중이다 — 주인 바뀜(12시간)이 아니라 1시간 뒤 다시(OKE 2026-11-15)
+            raise mindwiki_connect.Failed("hermes_not_ready")
+        api = HermesAPI(hub(pod).auth)
+        prof = None if known[profile]["is_default"] else profile
+        profs = [None if r["is_default"] else r["name"] for r in known.values()]
+        who = f"system:mindwiki-auto({email})"
+        attach = mindwiki_connect.attach_with(api, prof, owner=True, profs=profs, pod=pod.id, by=who, profile=profile,
+                                              after_install=lambda: marketplace.install_companion(pod.id, pod.container, profile, mcp_servers.MINDWIKI_SKILL, who))
+        return {"attach": attach, "detach": lambda: mcp_servers._clear_env(api, prof, [mcp_servers.MINDWIKI_KEY]),
+                "refresh": lambda: mcp_servers.refresh_mindwiki_tools(api, prof, pod=pod.id, by=who)}
+
+    def primary_for(self, sub: str, email: str) -> list:
+        user = {"sub": sub, "email": email}
+        return [(p.id, primary.primary_of(p.id)) for p in list(registry().pods) if p.owned_by(user)]
 
 
 # 사람(이메일)별 마련 잠금. 같은 사람이 동시에 두 번 들어와도 하나만 만들면 된다 — 서버 전체 잠금이면 etcd 가 느릴 때 모든
@@ -171,8 +242,20 @@ def _error_body(exc: Exception) -> dict:
     sessions 가 있으면(지우기를 막는 대화, 스펙 2026-11-07-001 디자인 5C) 그 목록도 싣는다."""
     reason, field = getattr(exc, "reason", ""), getattr(exc, "field", "")
     sessions = getattr(exc, "sessions", None)
+    retry = getattr(exc, "retry_after", None)                     # 다시 시작 잠금(스펙 2026-11-18-016 4-4) — 헤더 Retry-After 와 같은 값
     return {"error": str(exc), **({"reason": reason} if reason else {}), **({"field": field} if field else {}),
-            **({"sessions": sessions} if sessions is not None else {})}
+            **({"sessions": sessions} if sessions is not None else {}), **({"retry_after": retry} if retry else {}), **(getattr(exc, "extra", None) or {}),
+            **({"code": reason} if isinstance(exc, marketplace.GrantError) else {})}   # 제한 스킬·템플릿 설치 허용 400 의 code(스펙 2026-11-18-015 DX 1)
+
+
+def _sidecar_busy(exc: Exception) -> dict:
+    """사이드카에 닿지 못한 채팅 요청의 503 본문. 공유 저장소(NFS)가 잠깐 느려도 시간 초과가 난다(OMAI-1894).
+    예전에는 「SidecarError: …」 500 이 화면 오류 띠로 그대로 나왔다. code 를 보고 화면이 잠깐 뒤 다시 시도하고,
+    그래도 실패하면 이 문장을 보인다. 예외 이름·사이드카 주소는 서버 로그에만 남긴다."""
+    print(f"채팅 요청의 사이드카 실패: {redact(str(exc), 200)}", flush=True)   # i18n-ignore: 로그
+    return {"error": tr("AI 에이전트 작업공간이 잠시 응답하지 않습니다. 잠시 뒤 다시 시도하세요.",
+                        "The AI Agent Workspace is not responding right now. Try again in a moment."),
+            "code": "sidecar_unavailable"}
 
 
 class ProfileBusy(ValueError):
@@ -363,6 +446,15 @@ def inbox_topic(email: str) -> str:
 
 
 INBOX.notify = lambda emails: [topics.invalidate(inbox_topic(e), exact=True) for e in emails]
+INBOX.route_approval = lambda pod_id, by, owner: approval_recipients(pod_id, by, owner)   # 승인 요청 받는 사람(스펙 2026-11-17-008 §3-3)
+
+
+def _notify_inbox_new(item_id: str, item: dict) -> None:
+    from . import notify_hooks
+    notify_hooks.on_inbox_new(item_id, item)
+
+
+INBOX.on_new = _notify_inbox_new                                             # 메신저로도 알림(스펙 2026-11-17-008 §6-2)
 
 
 def _cards_changed() -> None:
@@ -663,12 +755,34 @@ def _skills(pod: Pod):
     return _cached(f"{pod.id}:skills", 300, lambda: skill_graph.build(pod.hermes_home))
 
 
+def _flow_image(pod: Pod) -> dict:
+    """그래프·라이브러리 목록에 넘길 Hermes 이미지 패키지 목록(스펙 2026-11-19-001). 예외를 내지 않고 모르면 unknown(이유)."""
+    try:
+        return image_packages.for_pod(bool(pod.sidecar_url), pod.container)
+    except Exception as exc:                                    # noqa: BLE001 — 목록 읽기 실패가 그래프를 막지 않게(이유를 남긴다)
+        logging.getLogger("aas.web").warning("image packages unavailable pod=%s: %s", pod.id, type(exc).__name__)
+        return image_packages.unknown("error")
+
+
+_flow_sig: dict[str, str] = {}
+
+
 def _flow(pod: Pod):
-    return _cached(f"{pod.id}:flow", 900, lambda: flow.build(pod.hermes_home), per_lang=False)
+    # 이미지 목록의 상태·이유·내용이 바뀌면(오퍼레이터가 ConfigMap 을 채움) 그래프를 만료로 돌려 뒤에서 다시 만든다(스펙 2026-11-19-001 2단계).
+    # 캐시 키는 그대로 둔다 — 다른 곳이 같은 키를 직접 다룬다.
+    sig = image_packages.signature(_flow_image(pod))
+    if _flow_sig.get(pod.id) not in (None, sig):
+        key = _lang_key(f"{pod.id}:flow", per_lang=False)
+        with _lock:
+            hit = _cache.get(key)
+            if hit:
+                _cache[key] = (time.time() - 900 - 1, hit[1])
+    _flow_sig[pod.id] = sig
+    return _cached(f"{pod.id}:flow", 900, lambda: flow.build(pod.hermes_home, _flow_image(pod)), per_lang=False)
 
 
 def _observed(pod: Pod):
-    return _cached(f"{pod.id}:observed", 300, lambda: observed.collect(pod.hermes_home))
+    return _cached(f"{pod.id}:observed", 300, lambda: observed.collect(pod.hermes_home, pod=pod.id))
 
 
 _observed_warming: set[str] = set()
@@ -726,14 +840,84 @@ def _catalog() -> dict:
             return {"ok": False, "items": [], "error": "", "at": time.time()}
         try:
             return {"ok": True, "items": marketplace.catalog(cfg), "error": "", "at": time.time()}
-        except marketplace.MarketError as exc:
-            return {"ok": False, "items": [], "error": str(exc), "at": time.time()}
+        except marketplace.MarketError as exc:                    # reason: 「제한 스킬·템플릿 설치 허용」의 허브 오류 code(스펙 2026-11-18-015 DX 3)
+            reason = exc.reason or ("hub_unreachable" if exc.code == 503 else "hub_error")
+            return {"ok": False, "items": [], "error": str(exc), "reason": reason, "at": time.time()}
     got = _cached("market:catalog", MARKET_CATALOG_TTL, build, per_lang=False)
     if not got["ok"] and time.time() - got["at"] > MARKET_FAIL_TTL:
         with _lock:
             _drop_locked("market:catalog")
         got = _cached("market:catalog", MARKET_CATALOG_TTL, build, per_lang=False)
     return got
+
+
+def _grant_after(pod_id: str) -> None:
+    """허용이 바뀐 작업공간 하나의 뒷일: 목록 토픽을 깨우고 판 비교 캐시(「올릴 수 없음」)를 버린다(R21). 다른 복제본은 cache_epoch 로 버리고,
+    토픽은 이 프로세스만 깨운다 — 다른 복제본에 붙은 화면은 새로 고침 뒤에 바뀐다(스펙 2026-11-18-015 E2)."""
+    topics.invalidate(f"pod:{pod_id}:market")
+    pod = next((p for p in registry().pods if p.id == pod_id), None)
+    if pod is not None:
+        _drop_pod_key(pod, "updates")
+
+
+def _apply_grants(ns: str, target, allow: bool, who: str) -> dict:
+    """허용 쓰기의 한 입구(새 /api/market/grants·옛 /api/market/grant, 스펙 2026-11-18-015 DX 5). 허용이면 그 작업공간들의
+    대기 중인 「허용 요청」(namespace_grant)을 자동으로 닫는다(X2). '*' 는 모든 작업공간."""
+    every = [p.id for p in registry().pods]
+    out = marketplace.apply_grants(ns, target, allow, who, after=_grant_after, every=every)
+    if allow and out["changed"]:
+        closed = admin_requests.close_namespace_grant(every if marketplace.ALL_PODS in out["changed"] else out["changed"], ns)
+        if closed:
+            topics.invalidate("office:inbox:")
+    return out
+
+
+def _grant_request_text(item: dict) -> dict:
+    """받은편지함의 「관리자에게 허용 요청」(namespace_grant, 스펙 2026-11-18-015 X2): 저장된 「ns=<slug> 내용」을 사람이 읽는 문장으로,
+    자동으로 닫힌 결과의 reason 「grant:<slug>」도 문장으로 바꾼다. 화면은 namespace 로 「제한 스킬·템플릿 설치 허용」에 링크한다."""
+    if item.get("req_kind") != "namespace_grant":
+        return item
+    head, _, rest = str(item.get("text") or "").partition(" ")
+    slug = head[3:] if head.startswith("ns=") else ""
+    label = marketplace.ns_label(slug) if slug else ""
+    out = {**item, "namespace": slug, "text": tr(f"'{label}' 스킬·템플릿 설치 허용 요청", f"Request to allow installs from '{label}'") + (f" — {rest}" if rest else "")}
+    if str(item.get("reason") or "").startswith("grant:"):
+        out["reason"] = tr(f"관리자가 '{label}' 을 허용했습니다", f"An admin allowed '{label}'")
+    return out
+
+
+def _market_grants_view() -> dict:
+    """「제한 스킬·템플릿 설치 허용」 표(관리자, 스펙 2026-11-18-015 §3-3): 열(허용이 필요한 네임스페이스)·전체 허용·작업공간별 허용."""
+    cfg, cat = marketplace.settings(), _catalog()
+    cols = marketplace.restricted_namespaces(cfg, cat)
+    rows = marketplace.grants()
+    # 구역마다 그 안의 스킬·템플릿 목록 — 숫자만으로는 무엇을 허용하는지 몰랐다(2026-11-18 사용자). 템플릿 판별은 스킬 허브 카드와 같은
+    # templates.listing(판마다 기억해 둔 값)을 쓴다. 허브를 못 읽은 패키지는 스킬로 센다(목록은 그대로 보인다)
+    paid_items = [p_ for p_ in cat.get("items", []) if p_.get("paid")]
+    try:
+        tpl_ids = {f"{c['namespace']}/{c['name']}" for c in market_templates.listing(paid_items, cfg)["items"]}
+    except marketplace.MarketError:
+        tpl_ids = set()
+    zone_items: dict[str, list[dict]] = {}
+    for p_ in paid_items:
+        kind = "template" if p_["id"] in tpl_ids else "skill"
+        zone_items.setdefault(p_["namespace"], []).append({"name": p_["name"], "kind": kind, "summary": str(p_.get("summary") or "")[:120]})
+    for rows_ in zone_items.values():
+        rows_.sort(key=lambda r: (r["kind"] != "skill", r["name"]))
+    every, per = {}, {}
+    for g in rows:
+        cell = {"by": g["by"] or "", "ts": g["ts"] or ""}
+        if g["pod"] == marketplace.ALL_PODS:
+            every[g["namespace"]] = cell
+        else:
+            per.setdefault(g["pod"], {})[g["namespace"]] = cell
+    names, known = office.agent_names_provider(), office.people()
+    out = {"namespaces": [{"slug": n, "label": marketplace.ns_label(n, cfg), "packages": len(zone_items.get(n, [])), "items": zone_items.get(n, [])} for n in cols["slugs"]],
+           "all": every, "limit": marketplace.GRANT_BATCH_MAX,
+           "pods": [{"id": p_.id, **_pod_label(p_, names, known), "owner": getattr(p_, "owner", "") or "", "grants": per.get(p_.id, {})} for p_ in registry().pods]}
+    if cfg["url"] and not cat["ok"]:
+        out["error"] = {"code": cat.get("reason") or "hub_error", "detail": cat.get("error") or ""}
+    return out
 
 
 def _forget_market_catalog() -> None:
@@ -843,7 +1027,7 @@ def _market_update_list(reg: Registry, current: Pod, user, auth_enabled: bool, s
             elif r["state"] == "update" and last and last["status"] in ("queued", "running"):
                 r["state"] = "installing"
             elif r["state"] == "update" and (a := auto.get((r["profile"], r["package"], r["latest"]))) and a["status"] == "failed":
-                r.update(state="auto_failed", message=a["message"])
+                r.update(state="auto_failed", message=market_updates.cause(a.get("code") or "", a["message"] or ""))
             elif r["state"] == "update" and last and last["status"] == "failed" and last.get("version") == r["latest"]:
                 r.update(state="failed", message=str(last.get("message") or "")[:300], needs=last.get("needs"))
         rows += mine
@@ -877,7 +1061,144 @@ def market_update_cycle(reg: Registry | None = None) -> list[str]:
     for pod in reg.pods:
         if any(d.startswith(pod.id + "/") for d in done):
             _drop_pod_key(pod, "updates")
+    try:
+        for rid in template_post.cycle(_template_post_ops):         # 템플릿 설치 뒤 단계(스펙 2026-11-18-002 §4-2 5) — 주기마다 한 줄
+            row_ = next((r for r in marketplace.requests(None, 400) if r["id"] == rid), None)
+            pod_ = next((p for p in reg.pods if row_ and p.id == row_.get("pod")), None)
+            if pod_ is not None:
+                _forget(pod_)
+    except Exception as exc:                                       # 설치 뒤 단계가 실패해도 배달 주기는 이어 간다
+        print(f"템플릿 설치 뒤 단계 실패: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
     return done
+
+
+def _template_post_ops(row: dict) -> dict:
+    """템플릿 설치 뒤 단계 (a)~(f) 의 함수 표(template_post.run_one 이 부른다). 묶음은 같은 판으로 한 번만 받는다(§4-2 5 (c))."""
+    import tempfile
+
+    import yaml
+
+    from ..hermes import workspace as wsp
+    from ..market import market_stage
+    pod = next(p for p in registry().pods if p.id == row.get("pod"))
+    api, profile = HermesAPI(hub(pod).auth), str(row["profile"])
+    box: dict = {}
+
+    def pkg() -> Path:
+        if "dir" not in box:
+            box["tmp"] = tempfile.TemporaryDirectory(prefix="aas-template-post-")
+            d = Path(box["tmp"].name) / "pkg"
+            d.mkdir()
+            try:
+                market_stage.download({"namespace": row["namespace"], "name": row["name"], "version": row["version"]}, d)
+            except market_stage.Refuse as exc:
+                raise template_post.StepError(str(exc), retryable=isinstance(exc, market_stage.Unavailable)) from None
+            box["dir"] = d
+        return box["dir"]
+
+    def a(_r):
+        cfg = api.call("GET", "/api/config", query={"profile": profile, "include_defaults": "false"})
+        model = cfg.get("model") if isinstance(cfg, dict) else None
+        if not (model.get("default") or model.get("model")) if isinstance(model, dict) else not model:
+            raise template_post.StepError(tr("새 프로파일 설정에 모델이 없습니다", "The new profile has no model set"), retryable=False)
+        return ""
+
+    def b(_r):
+        f = pkg() / "template" / "AGENTS.md"
+        if not f.is_file():
+            return ""
+        _profile_text_io(api, "agents", profile, profile)[1](f.read_text(encoding="utf-8"))
+        return "AGENTS.md"
+
+    def c(_r):
+        from . import files as web_files
+        base = pkg() / "template" / "files"
+        n = 0
+        for f in sorted(base.rglob("*")) if base.is_dir() else []:
+            if not f.is_file():
+                continue
+            rel = f.relative_to(base).as_posix()
+            if template_checks.file_path_problem(rel):
+                raise template_post.StepError(tr(f"받을 수 없는 경로입니다: {rel}", f"Path not allowed: {rel}"), retryable=False)
+            status = web_files.push_bytes(hub(pod).auth, f"{wsp.WORKSPACE}/{profile}/{rel}", f.read_bytes(), overwrite=True)
+            if status != 200:
+                raise template_post.StepError(f"upload {rel}: HTTP {status}")
+            n += 1
+        return f"{n}" if n else ""
+
+    def d(_r):
+        try:
+            man = yaml.safe_load((pkg() / "agent" / "distribution.yaml").read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            man = {}
+        hubs = [h for h in ((man.get("aas") or {}).get("hub_skills") or []) if isinstance(h, dict)]
+        failed = []
+        for h in hubs:
+            why: list = []
+            got = marketplace.install_companion(pod.id, pod.container, profile, f"{h.get('namespace')}/{h.get('name')}", str(row.get("who") or "aas"),
+                                                str(h.get("version") or ""), why)
+            if got == "failed":
+                failed.append(f"{h.get('name')}: {why[0] if why else ''}")
+        if failed:
+            raise template_post.StepError("; ".join(failed)[:300], retryable=False)   # 허용 없음·숨김·없음은 다시 해도 같다 — 사유로 남긴다
+        return f"{len(hubs)}" if hubs else ""
+
+    def e(_r):
+        waiting = [str(n) for n in row.get("waiting_mcp") or []]
+        if not waiting:
+            return ""
+        servers = mcp_servers._raw_servers(api, profile)
+        have = {v["name"] for v in profiles.env_view(api.call("GET", "/api/env", query={"profile": profile})) if v["set"]}
+        loose = [n for n in waiting if isinstance(servers.get(n), dict) and servers[n].get("enabled") is not False
+                 and not template_checks.refs(servers[n]) <= have]
+        if loose:                                                  # KEY 가 비었는데 켜져 있다 — ${KEY} 가 글자 그대로 바깥에 갈 수 있다
+            raise template_post.StepError(tr(f"KEY 없이 켜진 MCP: {', '.join(loose)}", f"MCP servers on without keys: {', '.join(loose)}"), retryable=False)
+        return ""
+
+    def servers_of(version: str) -> dict:
+        import tempfile as _t
+        if not version:
+            return {}
+        with _t.TemporaryDirectory(prefix="aas-template-old-") as tmp:
+            d_ = Path(tmp) / "pkg"
+            d_.mkdir()
+            try:
+                market_stage.download({"namespace": row["namespace"], "name": row["name"], "version": version}, d_)
+                cfg = yaml.safe_load((d_ / "agent" / "config.yaml").read_text(encoding="utf-8")) if (d_ / "agent" / "config.yaml").is_file() else {}
+            except (market_stage.Refuse, OSError, yaml.YAMLError):
+                return {}
+        return template_checks.mcp_servers_of(cfg if isinstance(cfg, dict) else {})
+
+    def m(r):
+        """새 판 MCP 합치기: 더함·바뀜만, 없어진 것은 지우지 않고 알린다. KEY 가 비면 꺼 둔다. 설치 줄의 waiting_mcp 를 새로 적는다."""
+        f = pkg() / "agent" / "config.yaml"
+        try:
+            new = template_checks.mcp_servers_of(yaml.safe_load(f.read_text(encoding="utf-8")) or {}) if f.is_file() else {}
+        except yaml.YAMLError:
+            raise template_post.StepError(tr("새 판 설정을 읽지 못했습니다", "Could not read the new version settings"), retryable=False) from None
+        base = servers_of(str(r.get("from_version") or ""))
+        with mcp_servers._write_lock(pod.id, profile):
+            current = mcp_servers._raw_servers(api, profile)
+            have = {v["name"] for v in profiles.env_view(api.call("GET", "/api/env", query={"profile": profile})) if v["set"]}
+            merged, waiting, gone = template_checks.merge_mcp(current, new, have, base)
+            if merged != current:
+                api.call("PUT", "/api/mcp/servers", {"servers": merged, "profile": profile}, {"profile": profile})
+                files.remember_version(pod.id, f"mcp_servers:{profile}", json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True),
+                                       str(r.get("who") or "aas"), "템플릿 새 판 합치기 전")   # i18n-ignore: 판 메모
+        r["waiting_mcp"] = sorted((set(r.get("waiting_mcp") or []) | set(r.get("prev_waiting") or []) | set(waiting)) & set(merged))
+        if merged != current:
+            _profile_action(pod, {"action": "mcp_apply", "name": profile}, str(r.get("who") or "aas"))
+        diff = template_checks.mcp_diff(current, new)
+        note = tr(f"더함 {len(diff['added'])} · 바뀜 {len(diff['changed'])} · KEY 기다림 {len(waiting)}", f"added {len(diff['added'])} · changed {len(diff['changed'])} · waiting for keys {len(waiting)}")
+        if gone:
+            note += tr(f" · AI 에이전트 템플릿에서 없어졌지만 남겨 둔 MCP: {', '.join(gone)}", f" · kept although removed from the AI Agent template: {', '.join(gone)}")
+        return note
+
+    def close():
+        if "tmp" in box:
+            box["tmp"].cleanup()
+
+    return {"a": a, "b": b, "c": c, "d": d, "e": e, "f": lambda _r: "", "m": m, "close": close}
 
 
 AUTO_UPGRADE_EVERY = 300.0
@@ -891,13 +1212,66 @@ def _market_request_finished(pod_id: str) -> None:
         _forget(pod)
 
 
+def _profile_env_text(pod: Pod, name: str) -> str:
+    """그 프로파일 .env 글(가리기에만 쓴다 — 밖으로 내보내지 않는다). 못 읽으면 빈 글."""
+    try:
+        prof = next((p for p in cron_health.hr.profiles(pod.hermes_home) if p.name == name), None)
+        f = prof.path / ".env" if prof is not None else None
+        return f.read_text(errors="replace") if f is not None and f.is_file() else ""
+    except OSError:
+        return ""
+
+
+def _template_issues(pod: Pod, name: str, templ: dict) -> list[dict]:
+    """템플릿에서 만든 프로파일의 「확인할 것」: 아직 넣지 않은 KEY(스펙 2026-11-18-002 §4-2 3). 남은 KEY 는 따로 저장하지 않고 계산한다 —
+    설치 줄의 env_requires 이름(값 없음)에서 프로파일 .env 에 값이 있는 이름을 뺀다. .env 를 읽지 못하면 붙이지 않는다."""
+    rec = templ.get(name)
+    if not rec:
+        return []
+    out: list[dict] = []
+    busy = [r for r in marketplace.requests(pod.id, 300) if r["profile"] == name and r.get("kind") == "skill" and r["status"] in ("queued", "running")]
+    if busy:                                                       # 「스킬 n개 설치 중」(§4-5 첫 일 안내) — 결과 화면을 닫아도 보인다
+        out.append({"code": "template_skills_installing", "level": "info", "n": len(busy),
+                    "text": tr(f"허브 스킬 {len(busy)}개를 설치하는 중입니다", f"Installing {len(busy)} hub skills")})
+    # 이미 저장된 설치 기록에도 LLM 접속값이 있을 수 있다 — AAS 가 주므로 「넣지 않은 KEY」로 치지 않는다(스펙 2026-11-19-002 §4-2 #9)
+    want = [str(k) for k in rec.get("env_names") or [] if not skill_setup.is_aas_managed(str(k))]
+    if not want:
+        return out
+    try:
+        prof = next((p for p in cron_health.hr.profiles(pod.hermes_home) if p.name == name), None)
+        have = channels._env_names(prof) if prof is not None else None
+    except OSError:
+        have = None
+    if have is None:
+        return out
+    missing = [k for k in want if k not in have]
+    if not missing:
+        return out
+    names = ", ".join(missing[:5]) + (" …" if len(missing) > 5 else "")
+    return out + [{"code": "template_keys", "level": "warn", "n": len(missing), "keys": missing,
+             "text": tr(f"AI 에이전트 템플릿 {rec['template']} 에 필요한 KEY {len(missing)}개를 아직 넣지 않았습니다: {names}",
+                        f"{len(missing)} keys needed by the template {rec['template']} are not set yet: {names}"),
+             "to": {"view": "profiles", "params": {"name": name, "pane": "env", "key": missing[0]}}}]
+
+
 def _with_market_issues(pod: Pod, rows: list[dict]) -> list[dict]:
     """프로파일 줄에 스킬 새 버전(안내)·자동 올리기 실패·안내를 붙인다. 올리기 권한이 있는 사람의 응답에만 부른다(R7). 캐시된 줄은 고치지 않고 복사한다."""
     by = market_updates.by_profile(_market_updates_peek(pod))
+    templ = {r["profile"]: r for r in marketplace.installed(pod.id) if r.get("template")}
+    cat_ = _catalog() if templ else {"items": []}
+    latest = {f"{i['namespace']}/{i['name']}": str(i.get("version") or "") for i in cat_.get("items") or []}
     out = []
     for r in rows:
-        extra = ([market_updates.issue(r["name"], by[r["name"]])] if r["name"] in by else []) + market_updates.auto_issues(pod.id, r["name"]) + bundle_defaults.issues(pod.id, r["name"]) + bundle_local.issues(pod.id, r["name"])
-        out.append({**r, "issues": [*r.get("issues", []), *extra]} if extra else r)
+        extra = ([market_updates.issue(r["name"], by[r["name"]])] if r["name"] in by else []) + market_updates.auto_issues(pod.id, r["name"]) + bundle_defaults.issues(pod.id, r["name"]) + bundle_local.issues(pod.id, r["name"]) \
+            + _template_issues(pod, r["name"], templ) + template_post.issues(pod.id, r["name"], list(templ.values()))
+        row = {**r, "issues": [*r.get("issues", []), *extra]} if extra else r
+        if r["name"] in templ:                                       # 「템플릿 x 1.2 에서 만듦」·「새 판 있음」(스펙 2026-11-18-002 §4-2 7)
+            pkg_ = templ[r["name"]]["template"]
+            latest_ = latest.get(pkg_, "")
+            cur_ = templ[r["name"]].get("template_version") or ""
+            row = {**row, "template": {"package": pkg_, "version": cur_,
+                                       **({"latest": latest_} if latest_ and marketplace._ver(latest_) > marketplace._ver(cur_) else {})}}
+        out.append(row)
     return out
 
 
@@ -1009,18 +1383,109 @@ def _import_profile(pod: Pod, api: HermesAPI, name: str, base: str, imp: tuple, 
     return out
 
 
+def _with_link_names(pod: Pod, profile: str, got: dict) -> dict:
+    """「메신저 연결」 탭 승인 목록에 연결한 AAS 사람 이름을 붙인다(스펙 2026-11-17-008 §5-3). 없으면 aas_name 이 빈 값 — 화면은 「AAS 사용자 아님」."""
+    from ..ops import messenger_links
+    pairing = (got or {}).get("pairing")
+    if not isinstance(pairing, dict) or not isinstance(pairing.get("approved"), list):
+        return got
+    people = office.people()
+    by_id = {(r["platform"], r["platform_user_id"]): r["email"] for r in messenger_links.links(pod.id, profile=profile)}
+    approved = []
+    for r in pairing["approved"]:
+        email = by_id.get((str(r.get("platform") or ""), str(r.get("user_id") or ""))) if isinstance(r, dict) else None
+        approved.append({**r, "aas_name": office.display_name(email, people) if email else ""} if isinstance(r, dict) else r)
+    return {**got, "pairing": {**pairing, "approved": approved}}
+
+
+def _linked_targets(pod_id: str, profile: str) -> list[tuple[str, str]]:
+    """이 프로파일 봇에 이은 사람의 예약 작업 받는 곳: [(이메일, "<메신저>:<대화방>")]. DM id 가 없고 사람 id 로 못 보내는 메신저는 뺀다."""
+    from ..ops import messenger_links
+    return [(t["email"], f"{t['platform']}:{t['chat_id']}") for t in notify_out.targets(messenger_links.links(pod_id, profile=profile))]
+
+
+def _messenger_sync(pod: Pod) -> list[str]:
+    """구성원이 있으면 연결된 메신저의 페어링을 켜고 없으면 끈다(스펙 2026-11-17-008 §5-1). 실패해도 부른 일을 막지 않는다."""
+    from . import messenger_api
+    try:
+        messenger_api.sync_pairing(registry(), pod)
+        return messenger_api._restart_needed(pod.id)
+    except Exception as exc:
+        print(f"페어링 설정을 맞추지 못했습니다({pod.id}): {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        return []
+
+
+def _template_enable_ready(pod: Pod, api: HermesAPI, name: str, prof: str | None, known: dict, who: str) -> list[str]:
+    """템플릿에서 만든 프로파일이면 KEY 가 다 찬 꺼진 MCP 를 켜고 게이트웨이를 다시 시작한다(스펙 2026-11-18-002 §4-2 6, E8·E12).
+    화면은 env_set 만 한다 — 설치 화면·「확인할 것」·환경 변수 칸 어디서 넣어도 같은 결과. MCP 설정 쓰기 잠금 안에서 한다.
+    실패해도 KEY 저장은 성공으로 둔다(사용자가 MCP 탭에서 직접 켤 수 있다)."""
+    rec = next((r for r in marketplace.installed(pod.id) if r["profile"] == name and r.get("waiting_mcp")), None)
+    if not rec:
+        return []
+    try:
+        with mcp_servers._write_lock(pod.id, prof):
+            servers = mcp_servers._raw_servers(api, prof)
+            have = {r["name"] for r in profiles.env_view(api.call("GET", "/api/env", query={"profile": prof})) if r["set"]}
+            ready = template_checks.ready_servers(servers, list(rec["waiting_mcp"]), have)
+            profs = [None if r["is_default"] else r["name"] for r in known.values()]
+            done = []
+            for target in ready:
+                mcp_servers.enable_error(api, prof, target, profs)
+                api.call("PUT", f"/api/mcp/servers/{quote(target, safe='')}/enabled", {"enabled": True}, {"profile": prof})
+                done.append(target)
+        if done:
+            _profile_action(pod, {"action": "mcp_apply", "name": name}, who)
+            store.log_usage("template_mcp_enabled", f"{who} {pod.id}/{name} {','.join(done)}", pod=pod.id)
+        return done
+    except (HermesError, files.FileError, ValueError) as exc:
+        store.log_usage("template_mcp_enable_failed", f"{who} {pod.id}/{name} {redact(str(exc), 200)}", pod=pod.id)
+        return []
+
+
 def _profile_action(pod: Pod, body: dict, who: str) -> dict:
-    """프로파일을 바꾸는 요청을 Hermes 대시보드 API 로 보낸다. 잘못된 요청은 ValueError, Hermes 의 거절은 HermesError."""
+    """프로파일을 바꾸는 요청을 Hermes 대시보드 API 로 보낸다. 잘못된 요청은 ValueError, Hermes 의 거절은 HermesError.
+    이 요청에서 다시 시작이 필요한 변경이 기록되면 응답에 restart_pending([{profile, kind, target}] 또는 "unrecorded")을 싣는다(스펙 2026-11-18-016 4-4)."""
+    with restart_pending.recording(pod.id, str(body.get("name") or ""), who) as rec:
+        out = _profile_action_run(pod, body, who)
+    got = restart_pending.outcome(rec)
+    if got and isinstance(out, dict):
+        out = {**out, "restart_pending": got}
+    return out
+
+
+def _raw_config(api: HermesAPI, prof: str | None) -> dict | None:
+    """원본 config.yaml(include_defaults=false, ${VAR} 를 풀지 않은 값). 읽지 못하면 None."""
+    try:
+        res = api.call("GET", "/api/config", query={"profile": prof, "include_defaults": "false"})
+    except HermesError:
+        return None
+    return res if isinstance(res, dict) else None
+
+
+RESTART_STEP = 40.0                                               # 다시 시작 요청 하나의 잠금 몫(Hermes 요청 시간 제한 30초 + 여유)
+
+
+def _restart_locked_error(exc: restart_pending.Locked) -> files.FileError:
+    err = files.FileError(tr(f"다른 요청이 다시 시작을 처리하는 중입니다. {exc.retry_after}초 뒤 다시 하세요.",
+                             f"Another request is handling the restart. Try again in {exc.retry_after} seconds."), 409, reason="restart_locked")
+    err.retry_after = exc.retry_after
+    return err
+
+
+def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
     action, name = str(body.get("action") or ""), str(body.get("name") or "")
     if action not in profiles.ACTIONS:
         raise ValueError(tr("알 수 없는 요청", "Unknown request"))
+    if action == "create" and not body.get("_create_locked"):     # 프로파일 만들기는 작업공간마다 하나씩 — 에이전트 패키지 설치와 같은 잠금(스펙 2026-11-18-002 E7)
+        with marketplace.create_lock(pod.id):
+            return _profile_action(pod, {**body, "_create_locked": True}, who)
     api = HermesAPI(hub(pod).auth)
     known = {r["name"]: r for r in _profile_rows(pod)}
     q = lambda n: quote(n, safe="")                               # noqa: E731
     if action == "create":
         src = str(body.get("clone_from") or "")
         if body.get("_owner"):                                     # 주인: 주 프로파일 복제만, 스킬 포함, 파드당 상한(스펙 2026-10-15-011 D5)
-            code, refused = owner_guard.create_error(pod.id, src, bool(body.get("no_skills")), list(known))
+            code, refused = owner_guard.create_error(pod.id, src, bool(body.get("no_skills")), marketplace.counted_profiles(pod.id, list(known)))   # 줄에 선 템플릿 설치도 센다(E7)
             if refused:
                 raise files.FileError(refused, code, reason="profile_limit" if code == 409 else "create_not_allowed")
             src = src or primary.primary_of(pod.id)
@@ -1102,8 +1567,11 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
             refused = owner_guard.config_error(current, content)
             if refused:
                 raise files.FileError(refused, 403, reason="config_locked", field=",".join(owner_guard.config_locked_keys(current, content)))
+        raw_before = _raw_config(api, prof) if kind == "config" else None     # 다시 시작 판정은 Hermes 원본을 쓰기 전후로 다시 읽어 비교한다(스펙 2026-11-18-016 4-2)
         after = files.save_text(pod.id, key, current, content, str(body.get("base_sha") or ""), who, write, read,
                                 f"버전 {int(body.get('id') or 0)} 으로 되돌림" if step == "revert" else (str(body.get("note") or "").strip()[:200] or "저장"))   # i18n-ignore: 판 기록에 저장되는 메모
+        if kind == "config":
+            restart_pending.note(restart_pending.needs_restart("config", before=raw_before, after=_raw_config(api, prof)))
         tpl = body.get("template") if kind == "soul" and step == "" else None
         if isinstance(tpl, dict) and soul_templates.get(str(tpl.get("id") or ""), str(tpl.get("lang") or "")):   # 템플릿에서 시작한 저장 — 어느 판을 적용했는지 남긴다(009 D2)
             soul_templates.record_use(pod.id, name, str(tpl["id"]), str(tpl["lang"]), int(tpl.get("rev") or 0), who)
@@ -1118,7 +1586,23 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
         api.call("PUT", f"/api/profiles/{q(name)}/model", {"provider": known[name]["provider"] or "custom", "model": model})
     elif action in ("gateway", "mcp_apply"):                      # 쿠버네티스의 이름 있는 프로파일은 루트 게이트웨이가 함께 돌린다(2026-10-14). mcp_apply 는 다시 시작만
         path, query = profiles.gateway_request("restart" if action == "mcp_apply" else str(body.get("op") or ""), prof, shared=profiles.gateway_shared(in_k8s=bool(pod.sidecar_url), profile=prof))
-        api.call("POST", path, {}, query or None)
+        restart = action == "mcp_apply" or str(body.get("op") or "") == "restart"
+        if not restart:
+            api.call("POST", path, {}, query or None)
+        else:
+            # 쿠버네티스는 어느 프로파일을 다시 시작해도 루트 게이트웨이가 다시 뜬다 — 작업공간 전체(스펙 2026-11-18-016 4-3)
+            k8s = bool(pod.sidecar_url)
+            asked = time.time()
+            try:
+                with restart_pending.restart_gate(pod.id, step=RESTART_STEP):
+                    snap = mindwiki_connect.apply_snapshot(pod.id, None if k8s else [name])   # 「지금 적용」 세대 번호(스펙 2026-11-14-012 A9)
+                    api.call("POST", path, {}, query or None)
+                    if snap:
+                        mindwiki_connect.mark_applied(snap)
+                    restart_pending.clear(pod.id, None if k8s else [name], before=asked)   # 요청 뒤에 생긴 기록은 남긴다
+                    restart_pending.forget_starts(pod.id)
+            except restart_pending.Locked as exc:
+                raise _restart_locked_error(exc) from None
     elif action == "mcp_to_oauth":                                   # 헤더 인증 서버를 OAuth 로 바꾸기(스펙 2026-10-16-010 V15)
         return mcp_servers.to_oauth(api, prof, str(body.get("target") or ""), pod=pod.id, by=who)
     elif action == "mcp_url_check":                                  # 추가 대화 상자의 주소 칸 아래 가능 여부(스펙 2026-10-16-010 V2). 설정과 주소만 보고 요청하지 않는다(R8)
@@ -1127,18 +1611,42 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
         return mcp_servers.set_docmost_write(api, prof, bool(body.get("write")), pod=pod.id, by=who)
     elif action == "mcp_outline_write":                              # Outline 쓰기 도구 켜고 끄기(스펙 2026-10-23-004). 삭제 도구는 켜지 않는다
         return mcp_servers.set_outline_write(api, prof, bool(body.get("write")), pod=pod.id, by=who)
+    elif action == "mcp_mindwiki_write":                             # MindWiki 쓰기 도구 켜고 끄기(스펙 2026-11-14-001). trash_page 는 켜지 않는다
+        return mcp_servers.set_mindwiki_write(api, prof, bool(body.get("write")), pod=pod.id, by=who)
+    elif action == "mcp_mindwiki_ack":                               # 자동 첫 연결 안내의 「그대로 두기」(스펙 2026-11-14-012 3-4)
+        return mindwiki_connect.ack(str(body.get("_sub") or ""), pod.id, name)
+    elif action == "mcp_mindwiki_connect":                           # MindWiki 계정으로 연결(스펙 2026-11-14-001 2단계). 주인 확인은 핸들러가 했다
+        profs = [None if r["is_default"] else r["name"] for r in known.values()]
+        attach = mindwiki_connect.attach_with(api, prof, owner=bool(body.get("_owner")), profs=profs, pod=pod.id, by=who, profile=name,
+                                              after_install=lambda: marketplace.install_companion(pod.id, pod.container, name, mcp_servers.MINDWIKI_SKILL, who))
+        return mindwiki_connect.start(sub=str(body.get("_sub") or ""), pod=pod.id, profile=name, write=bool(body.get("write")),
+                                      workspace=str(body.get("workspace") or "")[:80], cookie=str(body.get("_cookie") or ""),
+                                      access_token=auth().access_token, attach=attach, log=lambda m: print(m, flush=True))
     elif action in ("mcp_add", "mcp_remove", "mcp_catalog", "mcp_install"):         # MCP 서버 추가·삭제·카탈로그(스펙 2026-10-15-025). 검사와 롤백은 mcp_servers
         profs = [None if r["is_default"] else r["name"] for r in known.values()]
         secure = bool(body.get("_secure"))
         if action == "mcp_add":
-            return mcp_servers.add(api, prof, body, owner=owner, secure=secure, profs=profs, pod=pod.id, by=who, profile=name)
+            # tools_include 를 넘긴다 — 전에는 MCP 도구 mcp_add 가 보낸 값이 여기서 버려졌다(OMAI-1863 조사에서 발견)
+            inc = body.get("tools_include")
+            inc = [str(t) for t in inc if isinstance(t, str) and t] if isinstance(inc, list) else None
+            return mcp_servers.add(api, prof, body, owner=owner, secure=secure, profs=profs, pod=pod.id, by=who, profile=name, tools_include=inc or None)
         if action == "mcp_install":
             out = mcp_servers.install(api, prof, body, owner=owner, secure=secure, profs=profs, pod=pod.id, by=who, profile=name)
-            if out.get("skill_package"):                             # Docmost·Outline 은 사용 규칙 스킬도 함께 설치한다(스펙 2026-10-23-002 12-8, 2026-10-23-004)
+            if out.get("skill_package"):                             # Docmost·Outline·MindWiki 는 사용 규칙 스킬도 함께 설치한다(스펙 2026-10-23-002 12-8, 2026-10-23-004, 2026-11-14-001)
                 out["skill"] = marketplace.install_companion(pod.id, pod.container, name, str(out["skill_package"]), who)
+            note = _catalog_instructions(pod, api, name, str(body.get("server") or ""), who, add=True)
+            if note is not None:
+                out["instructions"] = note
+            plug = _catalog_plugin(api, name, prof, str(body.get("server") or ""), add=True)
+            if plug is not None:
+                out["plugin"] = plug
             return out
         if action == "mcp_catalog":
-            return mcp_servers.catalog(api, prof)
+            out = mcp_servers.catalog(api, prof)
+            for entry in out.get("entries") or []:                   # MindWiki 계정으로 연결 상태(스펙 2026-11-14-001 2단계)
+                if entry.get("name") == mcp_servers.MINDWIKI:
+                    entry["account"] = mindwiki_connect.state(str(body.get("_sub") or ""), pod.id, name)
+            return out
         target = str(body.get("target") or "")
         if not target or len(target) > 120 or "/" in target:
             raise ValueError(tr("대상이 없습니다", "Target is missing"))
@@ -1146,7 +1654,16 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
             before = _profile_text_io(api, "config", name, prof)[0]()
         except (HermesError, ValueError):
             before = ""                                                # 설정을 읽지 못하면 서버만 지운다(비밀값 줄은 남는다)
-        return mcp_servers.remove(api, prof, target, before, pod=pod.id, profile=name)
+        out = mcp_servers.remove(api, prof, target, before, pod=pod.id, profile=name)
+        if target == mcp_servers.MINDWIKI:                           # AAS 가 만든 MindWiki 토큰은 지울 일로 남긴다(다음 연결 때 지운다)
+            mindwiki_connect.forget(pod.id, name, opt_out=True)      # 사람이 지웠다 — 자동 첫 연결이 다시 하지 않는다(스펙 2026-11-14-012 A3)
+        note = _catalog_instructions(pod, api, name, target, who, add=False)
+        if note is not None and isinstance(out, dict):
+            out["instructions"] = note
+        plug = _catalog_plugin(api, name, prof, target, add=False)
+        if plug is not None and isinstance(out, dict):
+            out["plugin"] = plug
+        return out
     elif action in ("skill", "toolset", "mcp", "mcp_test"):
         target = str(body.get("target") or "")
         if not target or len(target) > 120 or "/" in target and action != "skill":
@@ -1168,7 +1685,10 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
                     raise
                 return {"ok": True, "test": {"ok": False, "tools": 0, "timeout": True, "error": ""}}
             ok = bool(res.get("ok") or res.get("success"))
-            err = "" if ok else mcp_servers.explain_test_error(redact(res.get("error") or "", 300))   # 401·403·404 는 안내를 앞에(스펙 2026-10-23-004 15절)
+            raw_err = "" if ok else str(res.get("error") or "")
+            if raw_err:                                              # .env 값을 글자 그대로 찾아 가린다 — 주소 경로·쿼리의 ${KEY} 가 펼쳐진 채 실린다(스펙 2026-11-18-002 §4-5)
+                raw_err = template_checks.mask_values(raw_err, _profile_env_text(pod, name))
+            err = "" if ok else mcp_servers.explain_test_error(redact(raw_err, 300))   # 401·403·404 는 안내를 앞에(스펙 2026-10-23-004 15절)
             return {"ok": True, "test": {"ok": ok, "tools": len(res.get("tools") or []), "error": err}}
     elif action in ("env_set", "env_clear"):                     # 비밀값: 넣기·바꾸기·지우기. 값은 기록하지도 돌려주지도 않는다
         key = str(body.get("target") or "")
@@ -1198,9 +1718,17 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
             if str(body.get("confirm") or "") != key:
                 raise ValueError(tr("확인용 이름이 맞지 않습니다", "The confirmation name does not match"))
             api.call("DELETE", "/api/env", {"key": key, "profile": prof}, {"profile": prof})
+        # 채널 관리 변수이거나 MCP·채널 설정이 ${이름} 으로 쓰면 다시 시작해야 읽힌다. 목록·설정을 읽지 못하면 기록한다(스펙 2026-11-18-016 4-2)
+        managed = listing is None or any(r["name"] == key and r["channel"] for r in profiles.env_view(listing))
+        restart_pending.note(restart_pending.needs_restart("env", name=key, before=_raw_config(api, prof), managed=managed))
         from . import pc_import_routes
         pc_import_routes.forget_plan(pod.id)                         # PC 가져오기 확인 화면의 미리 나눈 숫자를 다시 계산하게 한다(2026-10-22-003 OV-8)
-        return {"ok": True, "was_set": was_set}
+        out = {"ok": True, "was_set": was_set}
+        if action == "env_set":
+            enabled = _template_enable_ready(pod, api, name, prof, known, who)
+            if enabled:
+                out["mcp_enabled"] = enabled
+        return out
     elif action in ("channel_save", "channel_test", "pairing_approve", "pairing_revoke"):     # 채널 연결(스펙 2026-10-15-003 단계 2)
         if known[name]["is_default"] and cron_policy.root_hidden(pod.id):
             raise ValueError(tr("숨긴 루트에는 채널을 연결할 수 없습니다. 주 프로파일(main)을 고르세요.", "Channels cannot be connected to the hidden root. Choose the main profile."))
@@ -1220,19 +1748,38 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
                 raise files.FileError(tr("암호화되지 않은 주소(http, 사내 IP)에서는 비밀값을 다룰 수 없습니다. https 주소나 이 맥의 localhost 에서 여세요.",
                    "Secrets cannot be handled over an unencrypted address (http, internal IP). Open this page over https or on localhost of this Mac."), 403)
             res = api.call("PUT", f"/api/messaging/platforms/{plat}", payload, qs)
-            return {"ok": True, "hot_served": bool(res.get("hot_served")) if isinstance(res, dict) else False}
+            restart = _messenger_sync(pod)                           # 구성원이 있는 작업공간에 새 봇을 이으면 페어링도 켠다(스펙 2026-11-17-008 §5-1)
+            hot = bool(res.get("hot_served")) if isinstance(res, dict) else False
+            restart_pending.note(restart_pending.needs_restart("channel", name=plat, hot_served=hot))   # 페어링 뒤에 — 같은 플랫폼이면 channel 한 줄(4-3)
+            return {"ok": True, "hot_served": hot, "restart_needed": restart}
         if action == "channel_test":
             return {"ok": True, "test": channel_admin.test_view(api.call("POST", f"/api/messaging/platforms/{plat}/test", {}, qs))}
         if action == "pairing_approve":
             rid = str(body.get("request_id") or "").strip()[:120]
             if not rid:
                 raise ValueError(tr("승인할 요청을 골라 주세요", "Choose a request to approve"))
-            api.call("POST", "/api/pairing/approve", {"platform": plat, "request_id": rid, "profile": prof}, qs)
+            res = api.call("POST", "/api/pairing/approve", {"platform": plat, "request_id": rid, "profile": prof}, qs)
+            member = str(body.get("member_email") or "").strip().lower()
+            if member:                                              # 메신저만 쓰는 팀원: 소유자가 대기 요청을 승인하며 누구인지 고른다(스펙 2026-11-17-008 §5-3)
+                got = (res or {}).get("user") if isinstance(res, dict) else None
+                if member != (pod.owner or "").lower() and not registry().member_role({"email": member}, pod.id):
+                    raise ValueError(tr("이 AI 에이전트 작업공간의 구성원이 아닙니다", "That person is not a member of this AI Agent Workspace"))
+                if isinstance(got, dict) and got.get("user_id"):
+                    from ..ops import messenger_links
+                    messenger_links.record(pod.id, name, plat, got, member)
+                    store.log_usage("messenger_link", f"{who} {pod.id} {name} {plat} {got['user_id']} for={member}", pod=pod.id)
+            _drop_pod_key(pod, f"chanhermes:{name}:0", f"chanhermes:{name}:1")
         else:
             uid = str(body.get("user_id") or "").strip()[:120]
             if not uid:
                 raise ValueError(tr("해제할 사용자를 골라 주세요", "Choose a user to revoke"))
             api.call("POST", "/api/pairing/revoke", {"platform": plat, "user_id": uid, "profile": prof}, qs)
+    elif action == "pairing_clear":                                 # 연결 대기 비우기(외부인 DM 으로 대기 3개가 찼을 때, 스펙 2026-11-17-008 §5-3)
+        if known[name]["is_default"] and cron_policy.root_hidden(pod.id):
+            raise ValueError(tr("숨긴 루트에는 채널을 연결할 수 없습니다. 주 프로파일(main)을 고르세요.", "Channels cannot be connected to the hidden root. Choose the main profile."))
+        res = api.call("POST", "/api/pairing/clear-pending", {}, {"profile": prof} if prof else None)
+        _drop_pod_key(pod, f"chanhermes:{name}:0", f"chanhermes:{name}:1")
+        return {"ok": True, "cleared": (res or {}).get("cleared") if isinstance(res, dict) else None}
     elif action == "rename":
         new = str(body.get("new_name") or "")
         if known[name]["is_default"] or _is_primary(pod, name):
@@ -1249,6 +1796,7 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
         bundled_repair.move_profile(pod.id, name, new)                 # 기본 스킬 되돌리기 기록도 따라간다(스펙 2026-10-27-011 R13)
         from . import credential_files
         credential_files.move_profile(pod.id, name, new)               # 인증 파일을 마지막으로 바꾼 사람이 따라간다(2026-10-22-004 R13)
+        restart_pending.rename(pod.id, name, new)                      # 다시 시작 필요 기록도(스펙 2026-11-18-016 4-3)
         return {"ok": True, "name": new}
     elif action in ("export", "delete"):
         if action == "delete":
@@ -1293,6 +1841,8 @@ def _profile_action(pod: Pod, body: dict, who: str) -> dict:
             except ChatUnavailable as exc:                             # 닫기 답이 상한(15초) 안에 오지 않았다 — 지우지 않는다(디자인 3D)
                 raise HermesError(str(exc), 503, reason="close_failed") from None
             api.call("DELETE", f"/api/profiles/{q(name)}")
+            mindwiki_connect.forget(pod.id, name)                      # AAS 가 만든 MindWiki 토큰은 지울 일로(스펙 2026-11-14-001)
+            restart_pending.drop(pod.id, name)
         except BaseException:
             h_del.announce_closed(closed, deleted=False)               # 프로파일이 남았다 — 보던 화면은 보통 끊김으로 다시 연다
             raise
@@ -1419,6 +1969,47 @@ def _agents_detail(pod: Pod, api: HermesAPI, name: str) -> tuple[dict, str]:
     return {**out, **files.agent_state(pod.id, key, got["exists"])}, ""
 
 
+def _catalog_instructions(pod: Pod, api: HermesAPI, name: str, server: str, who: str, *, add: bool) -> dict | None:
+    """카탈로그 항목의 작업 지침 블록을 AGENTS.md 에 넣거나(설치) 뺀다(삭제). 블록이 없는 항목이면 None.
+    스킬 목록은 설명 앞 60자만 보여, 모델이 스킬을 건너뛰고 웹 검색 수치로 답했다(OKE 2026-11-08, OMAI-1863).
+    작업 지침은 시스템 프롬프트에 실린다. 저장은 사람이 고칠 때와 같은 판 기록·잠금을 쓰고, 실패해도 설치·삭제는 그대로 둔다."""
+    b = mcp_servers.SIMPLE_BUILTINS.get(server)
+    if b is None or not b.instructions:
+        return None
+    key = f"agents:{name}"
+    read, write = _profile_text_io(api, "agents", name, None)
+    try:
+        with files.text_lock(pod.id, key):
+            if not _agents_marker(api, name)[0]:
+                return {"ok": False, "reason": "unsupported"}
+            got = _agents_fetch(api, _agents_path(api, name)[0])
+            if got["reason"]:
+                return {"ok": False, "reason": got["reason"]}
+            text = got["text"]
+            new = mcp_servers.with_instructions(text, server, b.instructions) if add else mcp_servers.without_instructions(text, server)
+            if new == text:
+                return {"ok": True, "changed": False}
+            note = f"MCP 카탈로그 {'설치' if add else '삭제'}({server}) 지침 블록"   # i18n-ignore: 판 기록에 저장되는 메모
+            files.save_text(pod.id, key, text, new, files.text_sha(text), who, write, read, note, remember_before=got["exists"])
+        return {"ok": True, "changed": True}
+    except (files.FileError, HermesError) as exc:
+        return {"ok": False, "reason": str(exc)[:200]}
+
+
+def _catalog_plugin(api: HermesAPI, name: str, prof: str | None, server: str, *, add: bool) -> dict | None:
+    """카탈로그 항목에 딸린 Hermes 플러그인을 프로파일에 넣고 켜거나(설치) 끄고 지운다(삭제). 플러그인이 없는 항목이면 None.
+    부동산 질문에 「먼저 도구를 부른다」는 안내를 사용자 메시지 뒤에 붙인다 — 작업 지침만으로는 모델이 도구를 건너뛰었다(OMAI-1850).
+    실패해도 설치·삭제는 그대로 두고 이유만 돌려준다."""
+    b = mcp_servers.SIMPLE_BUILTINS.get(server)
+    if b is None or not b.plugin:
+        return None
+    try:
+        profile_dir = posixpath.dirname(_agents_path(api, name)[0])
+    except (files.FileError, HermesError) as exc:
+        return {"ok": False, "reason": str(exc)[:200]}
+    return (catalog_plugins.install if add else catalog_plugins.remove)(api, prof, profile_dir, b.plugin)
+
+
 def _agents_action(pod: Pod, api: HermesAPI, name: str, step: str, body: dict, who: str) -> dict:
     """작업 지침 미리 보기·저장·되돌리기. 기능 꺼짐·잘림·링크면 저장과 되돌리기를 서버가 거절한다(화면 잠금만으로는 API 직접 호출을 못 막는다, §10 M5)."""
     key = f"agents:{name}"
@@ -1484,6 +2075,10 @@ def _bundle_reader(pod: Pod):
         except HermesError as exc:
             if exc.code in (400, 404):
                 return None
+            if "access to sensitive files" in str(exc).lower():      # HermesAPI 는 Hermes 의 403 을 502 로 올린다 — 문구로 가린다
+                # Hermes v0.22.2 파일 API 는 config.yaml·.env 를 민감한 파일로 막는다 — 파일은 있다. 프로파일이 남아 있는지 보는
+                # config.yaml 읽기가 이 오류로 주기 전체를 멈춰 compose 에 기본 스킬이 들어가지 않았다(OMAI-2031, 2026-11-17)
+                return b""
             raise
         return base64.b64decode(str(res.get("data_url") or "").partition(",")[2] or b"")
     return read
@@ -1759,6 +2354,47 @@ def nous_guest_sync_once(reg: Registry) -> list[str]:
     return _each_pod(reg.pods, one, "Nous 익명 로그인 끄기를 넣지 못했습니다")   # i18n-ignore: 로그
 
 
+def _max_live_one(pod, api: HermesAPI, prow: dict, cap: int) -> str:
+    """실행 루트(기본 프로파일)의 config.yaml 에 `max_live_sessions` 를 한 번 넣는다. Hermes 의 세션 정리 스레드는 프로파일과 상관없이
+    실행 루트의 글만 읽으므로 다른 프로파일에는 넣지 않는다. 사람이 정한 값은 그대로 둔다(OMAI-1884)."""
+    if not prow.get("is_default"):
+        return ""
+    return _config_once(pod, api, prow, "maxlive", lambda current, _q: primary.max_live_patch(current, cap),
+                        "메모리에 두는 세션 수 상한", f"max_live_sessions={cap}")   # i18n-ignore: 판 기록에 저장되는 메모
+
+
+def _hermes_max_live() -> int:
+    """Hermes 의 max_live_sessions 로 넣을 값. AAS_HERMES_MAX_LIVE_SESSIONS(기본 32, 0 이면 넣지 않음)."""
+    try:
+        return max(0, int(os.environ.get("AAS_HERMES_MAX_LIVE_SESSIONS", "32")))
+    except ValueError:
+        return 32
+
+
+def max_live_sync_once(reg: Registry) -> list[str]:
+    """에이전트마다 실행 루트 config.yaml 에 `max_live_sessions` 를 한 번 넣는다. 값이 0 이면 아무것도 하지 않고 「봤다」도 남기지 않는다.
+    넣은 「pod/프로파일」 목록을 돌려준다. 한 에이전트가 안 돼도 나머지는 한다."""
+    cap = _hermes_max_live()
+    if not cap:
+        return []
+    def one(pod) -> list[str]:
+        done: list[str] = []
+        try:
+            api = HermesAPI(hub(pod).auth)
+            profiles_ = api.call("GET", "/api/profiles").get("profiles", [])
+        except Exception as exc:
+            print(f"세션 수 상한을 넣지 못했습니다 ({pod.id}): {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+            return done
+        for prow in profiles_:
+            try:
+                if (what := _max_live_one(pod, api, prow, cap)):
+                    done.append(what)
+            except Exception as exc:
+                print(f"세션 수 상한을 넣지 못했습니다 ({pod.id}/{prow.get('name')}): {type(exc).__name__}: {str(exc)[:100]}", flush=True)   # i18n-ignore: 로그
+        return done
+    return _each_pod(reg.pods, one, "세션 수 상한을 넣지 못했습니다")   # i18n-ignore: 로그
+
+
 def _stt_one(pod, api: HermesAPI, prow: dict, model: str) -> str:
     """프로파일 하나의 config.yaml 에 음성 인식(stt) 절을 넣는다 — 프로파일마다 한 번만. 이미 stt 가 있으면 그대로 둔다(스펙 2026-10-22-005 §3-8)."""
     return _config_once(pod, api, prow, "sttcfg", lambda current, _q: stt_config.with_stt(current, model),
@@ -1914,7 +2550,13 @@ def _summary_target(pod, args: dict) -> skill_summary.Target:
     """요약 대상을 서버가 정한다(화면이 키를 보내지 않는다). 마켓은 ns·name, 스킬은 지금 POD 의 스킬 id — 볼 수 있는 POD 의 스킬만 찾아진다."""
     ns, name = str(args.get("ns") or ""), str(args.get("name") or "")
     if ns or name:
-        return skill_summary.market_target(marketplace.package(ns, name))
+        pkg = marketplace.package(ns, name)
+        if pkg.get("kind") == "agent":                      # 템플릿은 SKILL.md 가 한 줄뿐 — 상세(SOUL·작업 지침·MCP·예약 작업·KEY)로 요약한다
+            try:
+                return skill_summary.market_target(pkg, template=market_templates.detail(ns, name, str(pkg.get("version") or "")))
+            except (marketplace.MarketError, OSError, ValueError):
+                pass                                        # 템플릿이 아닌 에이전트 패키지·읽기 실패는 지금처럼
+        return skill_summary.market_target(pkg)
     sid = unquote(str(args.get("id") or ""))
     hit = next((s for s in _skills(pod)["skills"] if s["id"] == sid), None) if sid else None
     if not hit:
@@ -2047,6 +2689,10 @@ def _identity_loop(every: float = 300.0, first: float = 30.0):
         except Exception as exc:
             print(f"음성 인식 설정 실패: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
         try:
+            max_live_sync_once(reg)                     # Hermes 가 주인 잃은 세션을 6시간 붙들지 않게(OMAI-1884)
+        except Exception as exc:
+            print(f"세션 수 상한 설정 실패: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        try:
             agent_edit_sync_once(reg)                   # Hermes 가 대화로 고친 스킬 문서를 판 기록에(스펙 2026-10-14-015 T4)
         except Exception as exc:
             print(f"스킬 고침 버전 기록 실패: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
@@ -2088,11 +2734,16 @@ def _text_problem(kind: str, content: str) -> str:
 # toolset(도구 켜고 끄기)은 OMAI-1193 에서 더했다. MCP·모델·설정 파일은 계속 관리자만
 OWNER_PROFILE_ACTIONS = frozenset({"soul", "soul_preview", "soul_revert", "skill", "toolset",
                                    "agents", "agents_preview", "agents_revert", "agents_ack",   # 작업 지침(AGENTS.md)은 SOUL 과 같은 권한(스펙 2026-10-19-004 D2·§10 H3)
-                                   "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke",   # 비밀값·채널(스펙 2026-10-15-011 D2·D3). 이름·값은 owner_guard 가 가린다
+                                   "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",   # 비밀값·채널(스펙 2026-10-15-011 D2·D3). 이름·값은 owner_guard 가 가린다
                                    "config", "config_preview", "config_revert", "mcp", "mcp_test", "rename",   # 설정 파일·MCP·이름 바꾸기(D4·D10, 단계 1b). 잠글 키는 owner_guard.config_error, main 은 rename 분기가 막는다
-                                   "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_url_check", "mcp_to_oauth",   # MCP 서버 추가·삭제·카탈로그(스펙 2026-10-15-025). YAML 편집으로 이미 할 수 있는 일이라 권한은 넓어지지 않는다. 검사는 mcp_servers
+                                   "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_url_check", "mcp_to_oauth",   # MCP 서버 추가·삭제·카탈로그(스펙 2026-10-15-025). YAML 편집으로 이미 할 수 있는 일이라 권한은 넓어지지 않는다. 검사는 mcp_servers
                                    "mcp_apply",   # 바꾼 MCP 서버를 에이전트에 붙이려는 게이트웨이 다시 시작 하나만(스펙 2026-10-15-025 §12). 시작·멈추기는 관리자 전용 gateway 로 남는다
                                    "create"})   # 프로파일 추가(D5, 단계 2): 주 프로파일 복제·상한은 owner_guard.create_error. 삭제는 owner_delete 가 따로 허용한다
+
+# 「편집」 구성원(workspace_members.role=edit)도 할 수 있는 프로파일 동작(스펙 2026-11-17-008 §3-2): 내용 편집만.
+# 비밀값·메신저 연결·페어링·설정 파일·MCP·이름 바꾸기·프로파일 만들기는 소유자 일(_manages_pod)로 남는다
+EDIT_MEMBER_ACTIONS = frozenset({"soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack",
+                                 "skill", "toolset"})
 
 
 def _owns_pod(pod: Pod | None, user, auth_enabled: bool) -> bool:
@@ -2103,8 +2754,9 @@ def _owns_pod(pod: Pod | None, user, auth_enabled: bool) -> bool:
 
 
 def _chat_manages(a, user, pod: Pod) -> bool:
-    """채팅의 「/」 goal·loop·memory 쓰기 권한(스펙 2026-10-27-002 R12): 로그인을 끈 설치·관리자·주인·팀 관리자. grants 로 들어온 사람은 아니다."""
-    return (not a.enabled) or registry().is_admin(user) or _manages_pod(pod, user, a.enabled)
+    """채팅의 「/」 goal·loop·memory 쓰기 권한(스펙 2026-10-27-002 R12): 로그인을 끈 설치·관리자·주인·팀 관리자·「편집」 구성원.
+    grants 로 들어온 사람과 「대화」 구성원은 아니다."""
+    return (not a.enabled) or registry().is_admin(user) or _edits_pod(pod, user, a.enabled)
 
 
 def _manages_pod(pod: Pod | None, user, auth_enabled: bool) -> bool:
@@ -2112,6 +2764,37 @@ def _manages_pod(pod: Pod | None, user, auth_enabled: bool) -> bool:
     if not auth_enabled:
         return True
     return pod is not None and (Pod.owned_by(pod, user) or pod.id in {p.id for p in registry().team_pods(user)})
+
+
+def _edits_pod(pod: Pod | None, user, auth_enabled: bool) -> bool:
+    """내용(SOUL·작업 지침·스킬 켜기·도구 묶음·크론·스킬 문서)을 고칠 수 있는가: _manages_pod 이거나 「편집」 구성원(스펙 2026-11-17-008 §3-2)."""
+    if not auth_enabled:
+        return True
+    return pod is not None and (_manages_pod(pod, user, auth_enabled) or registry().member_role(user, pod.id) == "edit")
+
+
+def may_approve(pod: Pod | None, user, auth_enabled: bool) -> bool:
+    """위험 명령 승인에 답할 수 있는가(스펙 2026-11-17-008 §3-3): 관리자·주인·팀 관리자·「편집」 구성원.
+    보기만 받은 사람(access_grants)·「대화」 구성원·방 구성원은 자기 대화의 승인도 못 한다 — 승인 요청은 주인에게 간다."""
+    return (not auth_enabled) or registry().is_admin(user) or _edits_pod(pod, user, auth_enabled)
+
+
+def approval_recipients(pod_id: str, by: str, owner: str) -> list[str]:
+    """승인 요청을 받을 사람들(받은편지함 to). 대화를 시작한 사람이 답할 수 있으면 그 사람, 아니면 주인과 「편집」 구성원.
+    시작한 사람이 없으면 주인. 주인이 없거나 지워졌고 편집 구성원도 없으면 시작한 사람에게 두되 답은 관리자만 할 수 있다."""
+    by, owner = (by or "").lower(), (owner or "").lower()
+    a = auth()
+    reg = registry()
+    pod = next((p for p in reg.pods if p.id == pod_id), None)
+    if not a.enabled or pod is None:
+        return [x for x in (by or owner,) if x]
+    if not by:
+        return [owner] if owner else []
+    if may_approve(pod, {"email": by}, True):
+        return [by]
+    owners = [owner] if owner and owner != "*" and "@" in owner else []
+    editors = sorted(e for e, roles in reg.members().items() if roles.get(pod.id) == "edit")
+    return list(dict.fromkeys(owners + editors)) or [by]
 
 
 def _acts_as_team_manager(pod: Pod | None, user, auth_enabled: bool) -> bool:
@@ -2122,12 +2805,15 @@ def _acts_as_team_manager(pod: Pod | None, user, auth_enabled: bool) -> bool:
 
 def _actor_role(pod: Pod | None, user, auth_enabled: bool) -> str:
     """이 사람이 대상 에이전트에서 어떤 자격으로 일하는가(기록의 role, D15). 주인 → "", 관리자 → "admin", 팀 관리자 → "team",
-    그 밖(접근 권한만 받은 사람·TFT 방 구성원 등) → "other". 로그인을 끈 설치는 주인 개념이 없어 표시하지 않는다."""
+    공유 구성원(대화·편집) → "member"(스펙 2026-11-17-008), 그 밖(접근 권한만 받은 사람·TFT 방 구성원 등) → "other".
+    로그인을 끈 설치는 주인 개념이 없어 표시하지 않는다."""
     if not auth_enabled or pod is None or not user or _owns_pod(pod, user, auth_enabled):
         return ""
     if registry().is_admin(user):
         return "admin"
-    return "team" if _manages_pod(pod, user, auth_enabled) else "other"
+    if _manages_pod(pod, user, auth_enabled):
+        return "team"
+    return "member" if registry().member_role(user, pod.id) else "other"
 
 
 def _owner_change_rows(pod: Pod, user, days: int) -> list[dict]:
@@ -2238,16 +2924,20 @@ def _agent_places(pod: Pod, name: str) -> dict:
 
 
 def may_change_profile(action: str, pod: Pod | None, user, auth_enabled: bool, admin: bool) -> bool:
-    """profile/action 을 받아도 되는가. 관리자는 모두, 주인과 팀 관리자는 OWNER_PROFILE_ACTIONS 만."""
-    return (not auth_enabled) or admin or (action in OWNER_PROFILE_ACTIONS and _manages_pod(pod, user, auth_enabled))
+    """profile/action 을 받아도 되는가. 관리자는 모두, 주인과 팀 관리자는 OWNER_PROFILE_ACTIONS 만, 「편집」 구성원은 EDIT_MEMBER_ACTIONS 만."""
+    if (not auth_enabled) or admin:
+        return True
+    if action in EDIT_MEMBER_ACTIONS and _edits_pod(pod, user, auth_enabled):
+        return True
+    return action in OWNER_PROFILE_ACTIONS and _manages_pod(pod, user, auth_enabled)
 
 
 def content_gate(pod: Pod | None, user, auth_enabled: bool, admin: bool, profile: str) -> str:
     """스킬 문서·새 스킬·크론 메모·판 이름·무시를 고쳐도 되는가(스펙 2026-10-15-011 D10). 통과면 빈 문자열, 아니면 403 문구.
-    관리자와 그 파드의 주인·팀 관리자만, 주인과 팀 관리자는 숨긴 루트 default 를 못 만진다(R5)."""
+    관리자와 그 파드의 주인·팀 관리자·「편집」 구성원(스펙 2026-11-17-008 §3-2)만, 이들은 숨긴 루트 default 를 못 만진다(R5)."""
     if (not auth_enabled) or admin:
         return ""
-    if not _manages_pod(pod, user, auth_enabled):
+    if not _edits_pod(pod, user, auth_enabled):
         return tr("관리자나 이 AI 에이전트 작업공간의 소유자만 바꿀 수 있습니다", "Only admins or the AI Agent Workspace's owner can change this")
     return owner_guard.root_error(pod.id, profile or primary.ROOT) if pod is not None else ""
 
@@ -2264,8 +2954,8 @@ def _profile_of_key(key: str) -> str:
 
 
 def may_change_cron(pod: Pod | None, user, auth_enabled: bool, admin: bool) -> bool:
-    """크론을 만들거나 바꿔도 되는가: 관리자와 그 에이전트 묶음(POD)의 주인·팀 관리자(스펙 2026-10-15-003 R1)."""
-    return (not auth_enabled) or admin or _manages_pod(pod, user, auth_enabled)
+    """크론을 만들거나 바꿔도 되는가: 관리자와 그 에이전트 묶음(POD)의 주인·팀 관리자(스펙 2026-10-15-003 R1)·「편집」 구성원(2026-11-17-008 §3-2)."""
+    return (not auth_enabled) or admin or _edits_pod(pod, user, auth_enabled)
 
 
 def may_use_market(path: str, pod: Pod | None, user, auth_enabled: bool, admin: bool) -> bool:
@@ -2402,15 +3092,35 @@ def _profile_detail(pod: Pod, name: str, user=None) -> dict:
     return out
 
 
+_flow_seq: dict[str, int] = {}          # POD 별 흐름 그림 차례. 늦게 끝난 옛 다시 만들기가 새 그림을 덮지 못하게 한다
+
+
 def _rebuild_flow(pod: Pod) -> None:
+    with _lock:
+        seq = _flow_seq[pod.id] = _flow_seq.get(pod.id, 0) + 1
     try:
-        value = flow.build(pod.hermes_home)
+        value = flow.build(pod.hermes_home, _flow_image(pod))
         with _lock:
+            if _flow_seq.get(pod.id) != seq:              # 그사이 다른 다시 만들기가 시작됐거나 작업이 지워졌다 — 이 그림은 옛 것이다
+                return
             _cache[f"{pod.id}:flow"] = (time.time(), value)
             _drop_locked(f"{pod.id}:skills")
         cache_epoch.bump(pod.id)
     except Exception as exc:
         print(f"흐름 그래프를 만들지 못했습니다 ({pod.id}): {type(exc).__name__}")   # i18n-ignore: 로그
+
+
+def _drop_deleted_job(pod: Pod, profile: str, job_id: str) -> None:
+    """지운 크론 작업을 모아 둔 흐름 그림에서 곧바로 뺀다. 그림을 다시 만드는 데 수십 초가 걸리는데(27초, 13개 AI 에이전트)
+    화면은 지운 직후 목록을 다시 받아, 그동안 「전체 작업·일정」에 지운 작업이 남아 있었다.
+    세대와 흐름 차례도 올려, 지우기 전에 시작한 다시 만들기가 옛 그림으로 덮어쓰지 못하게 한다(_store_if_current·_rebuild_flow)."""
+    key = f"{pod.id}:flow"
+    with _lock:
+        _generation[pod.id] = _generation.get(pod.id, 0) + 1
+        _flow_seq[pod.id] = _flow_seq.get(pod.id, 0) + 1          # 지우기 전에 시작한 _rebuild_flow 도 옛 그림이다
+        hit = _cache.get(key)
+        if hit:
+            _cache[key] = (hit[0], flow.without_job(hit[1], profile, job_id))
 
 
 def _maybe_auto_publish(pod: Pod, row: dict, owner: bool, admin: bool) -> dict:
@@ -2457,7 +3167,7 @@ def _note_authored(pod: Pod, who: str, profile: str = "", name: str = "", file_r
 
 
 SKILL_DELETE_ORIGINS = ("local", "agent")                              # 내가 만들거나 올린 스킬만 보관으로 지운다(스펙 2026-10-29-005 §4-1)
-SKILL_DELETE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")          # Hermes 지우기 API 는 id 가 memory: 로 시작하면 메모리를 지운다(R10)
+SKILL_DELETE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\Z")          # Hermes 지우기 API 는 id 가 memory: 로 시작하면 메모리를 지운다(R10)
 SKILL_DELETE_REASONS = {
     "origin": lambda: tr("이 스킬은 화면에서 지울 수 없습니다", "This skill cannot be deleted here"),
     "same_name": lambda: tr("같은 이름의 스킬이 둘 있어 지울 수 없습니다. 하나의 이름을 바꾼 뒤 지우세요", "Two skills have this name. Rename one, then delete"),
@@ -2525,6 +3235,15 @@ def _agents_list(reg: Registry, user, auth_enabled: bool) -> dict:
            "limit": limit, "count": mine, "default_limit": agents.default_limit(),
            "can_create": admin or mine < limit, "admin": admin,
            "agents": [a for a in reg.agents if admin or a["owner"] == email or (sub and a.get("owner_sub") == sub)]}
+    # 공유받은 작업공간도 목록에 둔다 — 서랍의 「공유」 구역에서 구성원 목록·내 메신저 계정 연결을 연다(스펙 2026-11-17-008 §3-4).
+    # shared_role 이 있는 줄은 화면이 수정·지우기 같은 소유자 동작을 그리지 않는다(서버도 막는다)
+    if email and not admin:
+        try:
+            shared = {m["pod"]: m["role"] for m in reg.memberships(email)}
+        except Exception:
+            shared = {}
+        have = {a["name"] for a in out["agents"]}
+        out["agents"] += [{**a, "shared_role": shared[a["name"]]} for a in reg.agents if a["name"] in shared and a["name"] not in have]
     # 「+」 만들기 칸에 미리 넣는 이름. 겹침은 전체 에이전트로 보되 남의 이름은 내보내지 않는다(스펙 2026-10-21-019)
     out["suggested_name"] = agents.default_name(str((user or {}).get("name") or "") or email.split("@", 1)[0], reg.agents) if email else ""
     # 주 프로파일(main)을 아직 만드는 중이면 표의 상태 옆에 「main 준비 중」(스펙 2026-10-19-001 디자인 D11). 판정은 /api/me 의 primary.ready 와 같다
@@ -2694,6 +3413,7 @@ def _add_rollout_fields(out: dict, reg: Registry) -> None:
         if a["name"] in raw:
             a.update(rollouts.agent_fields(raw[a["name"]], items, tgt, names))
     out.update(rollouts.summary(items, list(raw.values())))
+    out["registry"] = rollouts.registry_status(client)          # 쓰는 중 digest 가 지워졌는지(스펙 2026-11-17-001 O4). 롤아웃 요약 밖에 둔다 — 복구 롤아웃이 Failed 여도 보이게
 
 
 # ---- 「사용자·권한」 화면(스펙 2026-10-14-011) -------------------------------------------------
@@ -2805,6 +3525,20 @@ def _pod_public(pod, names: dict | None = None, known: dict | None = None, team_
     if pod is None:
         return None
     return {**pod.public(), **_pod_label(pod, names, known), **({} if team_ids is None else {"team": pod.id in team_ids})}
+
+
+def _me_pod(pod, names, known, team_ids, reg, user, auth_enabled: bool) -> dict | None:
+    """/api/me 의 지금 pod. 다시 시작할 수 있는 사람에게만 restart_pending {items, total, has_members}(스펙 2026-11-18-016 4-4)."""
+    out = _pod_public(pod, names, known, team_ids)
+    if out is None:
+        return None
+    from . import restart_pending_api
+    try:
+        pending = restart_pending_api.view(pod, user, auth_enabled, reg)
+    except Exception as exc:                                     # 장부를 읽지 못해도 /api/me 는 나간다
+        print(f"다시 시작 기록을 읽지 못했습니다({pod.id}): {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        pending = None
+    return {**out, "restart_pending": pending} if pending is not None else out
 
 
 def _pod_rows(reg) -> list[dict]:
@@ -2998,6 +3732,63 @@ def _notices_write(a, me: str, body: dict) -> tuple[dict, int]:
     if action == "save":
         out["reach"] = _notice_reach(a, row["audience"])
     return out, 200
+
+
+EMBED_APPS_PATH = "/api/admin/embed-apps"   # 관리 › 임베드 앱(OMAI-1873) — 채팅 위젯을 붙일 호스트 사이트 등록. 관리자만
+
+
+def _embed_apps_view(a, base: str) -> dict:
+    """GET 임베드 앱 목록. 공개 키(JWK)는 공개 값이라 고치기 화면에 그대로 돌려준다. audiences 는 host-signed 토큰의 aud 로 받는 AAS 주소다.
+    팝업 로그인 클라이언트 비밀은 돌려주지 않는다 — list_apps 가 login_client_secret_set(bool)만 싣는다(OMAI-1911)."""
+    from ..auth import embed
+    urls = [u.rstrip("/") for u in [a.cfg.get("public_url", ""), *a.cfg.get("public_urls", [])] if u]
+    return {"apps": embed.list_apps(), "modes": list(embed.MODES), "auth_enabled": a.enabled, "ws_enabled": ws_enabled(),
+            "aas_url": (base or (urls[0] if urls else "")).rstrip("/"), "audiences": urls, "host_ttl_max": embed.HOST_TTL_MAX,
+            "agents": sorted(p.id for p in registry().pods), **_login_claim_view(a)}
+
+
+def _login_claim_view(a) -> dict:
+    """위젯 로그인 client 에 로그인 제공자 claim 이 오는가(스펙 2026-11-15-005 T6). 로그인 도메인 처리를 켰을 때만 화면이 경고한다.
+    login_claim_clients: 최근 7일 identity_provider claim 이 온 client. 차트는 위젯 client 이름을 몰라 scope 를 붙이지 못한다."""
+    try:
+        cfg, _ = login_alias.load()
+        seen = login_alias.observed()
+    except Exception:
+        return {}
+    return {"login_alias_on": cfg.get("mode") in ("record", "on"), "aas_issuer": a.cfg.get("issuer") or "",
+            "login_claim_clients": sorted({r["client"] for r in seen if r["alias"]})}
+
+
+def _embed_apps_write(me: str, body: dict) -> tuple[dict, int]:
+    """POST {action: save|remove}. save 는 app_id 가 있으면 고치기, 없으면 등록. 검사 실패는 400 {error, field}.
+    keycloak 모드는 「호스트 realm 이 이메일 변경·자가 가입을 막는지 확인했다」(idp_policy_checked: true)가 없으면 저장하지 않는다 —
+    CLI 의 --idp-policy-checked 와 같은 뜻이다. 이메일로 사람을 잇는 규칙이라 두 정책이 열려 있으면 남의 AAS 계정에 들어간다."""
+    from ..auth import embed
+    action, app_id = str(body.get("action") or ""), str(body.get("app_id") or "").strip()
+    if action == "remove":
+        if not embed.remove_app(app_id, by=me):
+            return {"error": tr("없는 앱입니다", "App not found"), "field": "app_id"}, 404
+        return {"ok": True, "app_id": app_id}, 200
+    if action != "save":
+        return {"error": tr("알 수 없는 동작입니다", "Unknown action")}, 400
+    mode = str(body.get("mode") or "")
+    if mode == "keycloak" and body.get("idp_policy_checked") is not True:
+        return {"error": tr("호스트 realm 이 이메일 변경과 자가 가입을 막는지 확인한 뒤 확인 칸을 고르세요",
+                            "Check that the host realm blocks email changes and self sign-up, then tick the confirmation box"),
+                "field": "idp_policy_checked"}, 400
+    raw = body.get("origins")
+    origins = raw.split() if isinstance(raw, str) else [str(o) for o in raw] if isinstance(raw, list) else []
+    agent = str(body.get("default_agent") or "").strip()
+    if agent and agent not in {p.id for p in registry().pods}:
+        return {"error": tr(f"없는 AI 에이전트 작업공간입니다: {agent}", f"No such AI agent workspace: {agent}"), "field": "default_agent"}, 400
+    # 팝업 로그인 클라이언트(OMAI-1911): 비밀은 응답에 싣지 않으므로(login_client_secret_set 만) 비워 보내면 등록된 값을 그대로 둔다
+    fields = {k: str(body.get(k) or "") for k in ("issuer", "jwks_url", "audience", "public_jwk", "login_client_id", "login_client_secret")}
+    try:
+        app = (embed.update_app(app_id, body.get("name") or "", origins, mode, default_agent=agent, by=me, **fields) if app_id
+               else embed.add_app(str(body.get("name") or ""), origins, mode, default_agent=agent, by=me, **fields))
+    except embed.AppError as exc:
+        return _error_body(exc), 404 if app_id and exc.field == "app_id" else 400
+    return {"ok": True, "app": app}, 200
 
 
 def _departments_write(a, user, path: str, body: dict) -> tuple[dict, int]:
@@ -3565,6 +4356,8 @@ def _agent_update(client, reg: Registry, user, admin: bool, body: dict) -> tuple
 
 ROLLOUT_WRITES = ("/api/agents/rollout", "/api/agents/rollout/action")
 SIZE_WRITES = ("/api/agents/size", "/api/agents/size/apply")       # 작업공간 크기(스펙 2026-10-30-003 §4-4), 관리자만
+RESTART_PENDING_WRITES = ("/api/restart-pending/apply", "/api/restart-pending/dismiss")   # 게이트웨이 다시 시작 필요(스펙 2026-11-18-016 4-4)
+SHARING_WRITES = ("/api/agents/members", "/api/settings/sharing", "/api/messenger/links", "/api/notify/prefs")   # 작업공간 공유·메신저 연결(스펙 2026-11-17-008 단계 2·3)
 
 
 def _agents_write(reg: Registry, user, auth_enabled: bool, path: str, body: dict) -> tuple[dict, int]:
@@ -3691,19 +4484,35 @@ def _agents_write(reg: Registry, user, auth_enabled: bool, path: str, body: dict
     raise agents.AgentError(tr("알 수 없는 요청입니다", "Unknown request"), 404)
 
 
+def _safe_memberships(reg, email: str) -> list[dict]:
+    """구성원 표를 못 읽어도 받은편지함의 나머지는 보인다."""
+    try:
+        return [m for m in reg.memberships(email) if isinstance(m, dict) and "pod" in m]
+    except Exception:
+        return []
+
+
 def _office_inbox(reg: Registry, user) -> dict:
     """받은편지함(계획 007 P4): 답하지 않은 승인·되묻기 + 내가 맡긴 검토·막힘 카드 + 내 에이전트의 실패한 크론."""
     me = str((user or {}).get("email") or "").lower()
     items = INBOX.for_person(me)
+    try:                                                                # 메신저로도 보낸 승인·되묻기 표시(§6-2)
+        sent = notify_out.was_sent([f"{i['id']}|{me}" for i in items])
+        items = [{**i, "messenger": True} if f"{i['id']}|{me}" in sent else i for i in items]
+    except Exception:
+        pass
     items += inbox.cards_for(_inbox_cards(), _card_owners(), me)
     by_pod = {(s["pod"], s["profile"]): s["alias"] for s in office.seats()}
     failed = []
+    member_of = {m["pod"] for m in _safe_memberships(reg, me)} if me else set()
     for pod in reg.pods:
-        if not me or (pod.owner or "").lower() != me:
+        mine = bool(me) and (pod.owner or "").lower() == me
+        if not me or not (mine or pod.id in member_of):
             continue
         try:
             for f in _health(pod).get("failed_jobs", []):
-                if not f.get("muted"):
+                # 주인은 모두, 공유받은 사람은 자기가 만든 예약 작업만(스펙 2026-11-17-008 §6-3)
+                if not f.get("muted") and (mine or notify_out.cron_creator(pod.id, f["profile"], f["job_id"]) == me):
                     failed.append({**f, "pod": pod.id, "alias": by_pod.get((pod.id, f["profile"]))})
         except Exception:                                  # 한 설치본을 못 읽어도 나머지는 보인다
             continue
@@ -3732,11 +4541,23 @@ def _office_inbox(reg: Registry, user) -> dict:
     workspace_notices.settle(ws_rollouts, ws_agents)
     items += workspace_notices.oom_items(ws_agents, me) + workspace_notices.failed_items(ws_rollouts, me)
     pod_names = office.agent_names_provider()
+    if me:                                                              # 새로 공유받은 작업공간(스펙 2026-11-17-008 §3-4)
+        try:                                                            # 구성원 표를 못 읽어도 나머지 받은편지함은 보인다
+            by_id = {p.id: p for p in reg.pods}
+            items += workspace_notices.shared_items([{**m, "alias": pod_names.get(m["pod"]) or m["pod"], "owner_name": _pod_owner_name(by_id[m["pod"]])}
+                                                     for m in reg.memberships(me) if m["pod"] in by_id], me)
+        except Exception as exc:
+            print(f"받은편지함: 공유 알림을 읽지 못했습니다: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+        try:                                                            # 다른 사람이 내 작업공간에 메신저를 연결함(§5-2)
+            from . import messenger_api
+            items += messenger_api.owner_items(reg, me)
+        except Exception as exc:
+            print(f"받은편지함: 메신저 연결 알림을 읽지 못했습니다: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
     label = lambda pod_id, prof: (pod_names.get(pod_id) or pod_id) if prof == admin_requests.WORKSPACE else (by_pod.get((pod_id, prof)) or prof)   # noqa: E731
     admin_requests.prune()
     if reg.is_admin(user):                                              # 관리자에게 온 요청(스펙 2026-10-15-011 단계 5)
         known_people = office.people()
-        items += admin_requests.admin_items(label, name_of=lambda email: office.display_name(email, known_people))
+        items += [_grant_request_text(i) for i in admin_requests.admin_items(label, name_of=lambda email: office.display_name(email, known_people))]
         # 허용되지 않은 LLM 경로(OMAI-1857 디자인 D10). 설정 파일만 읽고 30초 둔다 — 10분 정리 기준(tree_cache.touch)은 치지 않는다(재검토 M4)
         routes = _blocked_routes_by_pod(reg)
         workspace_notices.prune_routes(routes)
@@ -3744,7 +4565,7 @@ def _office_inbox(reg: Registry, user) -> dict:
         if config.get("AAS_K8S_NAMESPACE"):                             # 지운 에이전트의 남은 데이터 볼륨(OMAI-1291)
             items += retained_volumes.notice_items(config.get("AAS_K8S_NAMESPACE"))
     if me:                                                              # 내가 낸 요청의 결과
-        items += admin_requests.result_items(me, label)
+        items += [_grant_request_text(i) for i in admin_requests.result_items(me, label)]
     items += pc_import.inbox_items(me, reg.is_admin(user), label)       # PC 에서 가져오기: 대행 알림·끝남·되돌리기 실패(OMAI-1136 D11)
     if "@" in me:                                                      # Claude Code 연결: 만료 예정·남이 끊음(스펙 2026-10-28-001 §3-7 ③). 로그인을 끈 설치(local)는 없다
         from ..auth import tokens
@@ -3951,6 +4772,9 @@ def _office_inbox_answer(reg: Registry, user, auth_enabled: bool, body: dict) ->
     me = str((user or {}).get("email") or "").lower()
     if auth_enabled and me not in item["to"] and not reg.is_admin(user):
         raise office_access.Denied(tr("이 요청에 답할 수 있는 사람이 아닙니다", "You cannot answer this request"))
+    # 승인은 답하는 순간의 역할을 다시 본다 — 요청이 생긴 뒤 역할이 바뀌거나 빠진 사람은 답하지 못한다(스펙 2026-11-17-008 §3-3)
+    if item["kind"] == "approval" and not may_approve(next((p for p in reg.pods if p.id == item["pod"]), None), user, auth_enabled):
+        raise office_access.Denied(APPROVAL_DENIED())
     answer = {"choice": str(body.get("choice") or "deny"), "answer": body.get("answer")}
     if item.get("origin", SHARED.origin) == SHARED.origin:
         return _inbox_apply(reg, item, answer, me)
@@ -3965,6 +4789,11 @@ def _office_inbox_answer(reg: Registry, user, auth_enabled: bool, body: dict) ->
             return result
         time.sleep(0.2)
     return {"ok": True, "queued": True}
+
+
+def APPROVAL_DENIED() -> str:
+    return tr("위험 명령 승인은 이 AI 에이전트 작업공간의 소유자나 편집 권한이 있는 사람만 할 수 있습니다. 승인 요청은 소유자에게 갔습니다",
+              "Only the owner of this AI Agent Workspace or people with edit access can approve risky commands. The request went to the owner")
 
 
 class AlreadyAnswered(Exception):
@@ -4149,6 +4978,12 @@ def _channels(pod: Pod):
 
 def _models(pod: Pod):
     return _cached(f"{pod.id}:models", 60, lambda: models.collect(_health(pod), home=pod.hermes_home))
+
+
+def _models_view(pod: Pod) -> dict:
+    """/api/models 응답: 모델 집계에 어느 에이전트의 것인지(pod·name·owner_name)를 붙인다. 사용자마다 주 프로파일이 main 이라
+    「main」만으로는 누구의 프로파일인지 알 수 없었다(스펙 2026-11-17-002). 집계 캐시와 따로 붙여 이름이 바뀌면 바로 보인다."""
+    return {**_models(pod), "pod": pod.id, **_pod_label(pod)}
 
 
 def _agents(pod: Pod) -> list[dict]:
@@ -4482,8 +5317,13 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
     team_ids = _team_pod_ids(reg, user, auth_enabled)
 
     def one(pod: Pod) -> dict:
+        role = _pod_role(reg, user, auth_enabled, pod)
         base = {"pod": pod.id, "name": names.get(pod.id, ""), "owner_name": _pod_owner_name(pod),
+                # 공유받은 사람에게 채팅 위 시작 안내(스펙 2026-11-17-008 §3-4). 소유자가 적은 한 줄
+                **({"share_note": sharing.info(pod.id)["note"]} if role in ("use", "edit") else {}),
                 "current": pod.id == current.id, "shared": not mine(pod) and pod.id != current.id, "team": pod.id in team_ids,
+                "can_approve": may_approve(pod, user, auth_enabled),                 # 거짓이면 승인 카드에 단추 대신 「소유자 승인을 기다리는 중」(2026-11-17-008 §3-3)
+                "role": role,                                                         # owner·admin·team·edit·use·viewer(MCP agents_list, 2026-11-17-008 §7)
                 "primary_ready": (_primary_view(pod) or {"ready": True})["ready"]}    # 거짓이면 묶음에 「준비 중」(디자인 D7)
         try:
             # 작업공간별 상태는 캐시로 하나만 읽는다(스펙 2026-10-24-002 검토 D3). map_pods 는 한도를 넘긴 작업의 결과만 버리고
@@ -4493,7 +5333,12 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
             return failed(pod, base, str(exc))
 
     def failed(pod: Pod, base: dict, why: str) -> dict:
-        return {**base, "state": "error", "agents": [], "sessions": [], "configured": False,
+        # 주 에이전트 이름은 표 캐시에서 읽어 사이드카를 기다리지 않는다. 빠지면 화면이 main 대신 default 로 열었다(서버를 다시 띄운 직후, OMAI-2056)
+        try:
+            main = primary.primary_of(pod.id)
+        except Exception:                                              # DB 도 못 읽으면 지금처럼 화면이 정한다
+            main = None
+        return {**base, **({"primary": main} if main else {}), "state": "error", "agents": [], "sessions": [], "configured": False,
                 "error": tr(f"AI 에이전트 작업공간에 연결할 수 없습니다: {redact(why, 160)}", f"Cannot reach the AI Agent Workspace: {redact(why, 160)}")}
     # 가장 느린 작업공간을 끝까지 기다리지 않는다 — 넘기면 그 묶음만 오류다(R2, OMAI-1459 에서 목록이 몇 분씩 걸렸다)
     got = collect_all.map_pods(pods, one, workers=max(1, min(8, len(pods))), timeout=CHAT_GROUP_TIMEOUT)
@@ -4504,6 +5349,17 @@ def _chat_groups(reg: Registry, user, auth_enabled: bool, current: Pod) -> list[
                                                     "shared": not mine(pod) and pod.id != current.id, "team": pod.id in team_ids,
                                                     "primary_ready": True}, str(value)))
     return groups + [{**g, "agents": [], "sessions": [], "configured": False} for g in _offline_agent_groups(reg, user)]
+
+
+def _pod_role(reg: Registry, user, auth_enabled: bool, pod: Pod) -> str:
+    """이 사람이 이 작업공간에서 갖는 자격(화면 묶음·MCP agents_list): owner·admin·team·edit·use·viewer(관리자가 준 보기)."""
+    if not auth_enabled or pod.owned_by(user):
+        return "owner"
+    if reg.is_admin(user):
+        return "admin"
+    if pod.id in {p.id for p in reg.team_pods(user)}:
+        return "team"
+    return reg.member_role(user, pod.id) or "viewer"
 
 
 def _chat_session_ttl() -> float:
@@ -4567,12 +5423,27 @@ def _sticky_value(email: str) -> str:
     return hmac.new(key, b"aas-u:" + email.strip().lower().encode(), hashlib.sha256).hexdigest()[:16]
 
 
+def _chat_idle_keep() -> tuple[int, float]:
+    """(사용자마다 남길 쉬는 세션 수, 그보다 오래된 세션을 닫기 전에 기다릴 초). AAS_CHAT_IDLE_KEEP(기본 10, 0 이면 끔)·
+    AAS_CHAT_IDLE_GRACE_MINUTES(기본 10). Hermes 가 세션마다 폴러 스레드를 돌려 열린 세션 수가 곧 파드 CPU 다(OMAI-1884)."""
+    try:
+        keep = max(0, int(os.environ.get("AAS_CHAT_IDLE_KEEP", "10")))
+    except ValueError:
+        keep = 10
+    try:
+        grace = max(0.0, float(os.environ.get("AAS_CHAT_IDLE_GRACE_MINUTES", "10"))) * 60
+    except ValueError:
+        grace = 600.0
+    return keep, grace
+
+
 def _prune_chat_hubs() -> None:
     """이 서버의 채팅 허브마다 오래 쉬던 세션을 걷어내고 Hermes 세션도 닫는다(shared_tick 60초 블록). 한 허브가 실패해도 나머지는 한다."""
     ttl = _chat_session_ttl()
+    keep, grace = _chat_idle_keep()
     for pod_id, h in list(_hubs.items()):
         try:
-            h.prune(ttl)
+            h.prune(ttl, keep=keep, grace=grace)
         except Exception as exc:
             print(f"채팅 세션을 정리하지 못했습니다({pod_id}): {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
 
@@ -4842,6 +5713,7 @@ border-bottom-color:rgba(245,158,11,.35)}
 .aas-nbar-row.low{--nbar-bg:linear-gradient(rgba(255,255,255,.04),rgba(255,255,255,.04)),#0f1011;--nbar-fg:#d0d6e0;--nbar-icon:#60a5fa}
 .aas-nbar-row.feature{--nbar-icon:#27a644}
 .aas-nbar-kind{font-size:11px;font-weight:500;color:var(--nbar-icon)}
+.aas-nbar-body{white-space:pre-line}
 .aas-nbar-title{font-weight:700}
 .aas-nbar-when{font-size:12px;opacity:.85}
 .aas-nbar-row a{color:inherit;text-decoration:underline}
@@ -4880,7 +5752,7 @@ def _notice_band(rows: list[dict]) -> str:
         link = n.get("link") or ""
         go = (f" <a href='{html.escape(link, quote=True)}' target=_blank rel=noopener>{tr('바로 가기', 'Open')}</a>"
               if link.lower().startswith(("http://", "https://")) else "")
-        body = f"<span>{html.escape(n['body'])}</span>" if n.get("body") else ""
+        body = f"<span class=aas-nbar-body>{html.escape(n['body'])}</span>" if n.get("body") else ""
         out.append(f"<div class='aas-nbar-row {cls}'><span class=aas-nbar-kind>{html.escape(name)} ·</span>"
                    f"<span class=aas-nbar-title>{html.escape(n['title'])}</span>{body}"
                    f"<span class=aas-nbar-when>{_nbar_time(n['starts_at'])} ~ {_nbar_time(n['ends_at'])}</span>{go}</div>")
@@ -4921,13 +5793,21 @@ def _page(title: str, body: str, sub: str = "", script: str = "", notices: list[
             f"<footer class=foot>Copyright (c) 2026. OPENMARU, Inc. · {_COMPANY_LINK}</footer>{script}{_NBAR_SCRIPT if band else ''}</body></html>").encode()
 
 
+# 「창 닫기」 단추(data-close). 인라인 onclick= 은 CSP 가 nonce 로 허용할 수 없어 스크립트로 붙인다(스펙 2026-11-14-018)
+_CLOSE_SCRIPT = "<script>document.querySelectorAll('[data-close]').forEach(function(b){b.addEventListener('click',function(){window.close()})})</script>"
+_AUTH_LOG = logging.getLogger("aas.auth")   # 로그인 거부 이유 코드(운영자는 oidc_callback_rejected 로 찾는다, 스펙 2026-11-14-002 4절)
+
+
 # SSO 단추를 누르면 팝업 창에서 로그인한다(COP Console 처럼, 스펙 2026-10-15-019). 팝업이 막히거나 스크립트가 없으면 단추가 링크라 같은 창에서 이동한다.
 # 끝난 것은 팝업이 보내는 메시지(같은 출처만 믿는다)와, 열려 있는 동안 1초마다 /api/me 로 세션이 생겼는지 보는 것 두 가지로 알아챈다
 # (인증 공급자 화면이 창 사이의 연결(opener)을 끊어도 되게).
 _POPUP_SCRIPT = """<script>(function(){var a=document.getElementById('sso');if(!a||!window.open)return;var next=a.getAttribute('data-next')||'/',pop=null,timer=null;
 function done(){if(timer)clearInterval(timer);location.replace(next)}
 function check(){return fetch('/api/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){if(r.ok)done();return r.ok}).catch(function(){return false})}
-addEventListener('message',function(e){if(e.origin===location.origin&&e.data&&e.data.aasLogin==='ok')done()});
+function failed(){if(timer)clearInterval(timer);timer=null;a.removeAttribute('aria-busy');var m=document.getElementById('sso-failed');
+if(!m){m=document.createElement('p');m.id='sso-failed';m.className='notice error';m.setAttribute('role','alert');a.parentNode.insertBefore(m,a.nextSibling)}
+m.textContent=a.getAttribute('data-failed')||''}
+addEventListener('message',function(e){if(e.origin===location.origin&&e.data){if(e.data.aasLogin==='ok')done();else if(e.data.aasLogin==='failed')failed()}});
 a.addEventListener('click',function(ev){if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button)return;ev.preventDefault();
 var w=520,h=700,l=Math.max(0,screenX+(outerWidth-w)/2),t=Math.max(0,screenY+(outerHeight-h)/3);
 pop=window.open(a.href+'&popup=1','aas-login','popup=yes,width='+w+',height='+h+',left='+l+',top='+t);
@@ -5003,7 +5883,7 @@ def _mcp_oauth_error_page(err, row: dict | None) -> bytes:
     """콜백·시작 오류 화면(11-4 V6). 모든 오류에 「창 닫기」, 다시 할 수 있는 오류에는 「다시 로그인」."""
     reason = getattr(err, "reason", "") or ""
     retry = reason not in ("superseded", "other_user", "insecure_authorization_url", "used", "unreachable")
-    links = [f"<button type=button class='btn btn-secondary' onclick='window.close()'>{tr('창 닫기', 'Close window')}</button>"]
+    links = [f"<button type=button class='btn btn-secondary' data-close>{tr('창 닫기', 'Close window')}</button>"]
     if row:
         if retry:
             again = "/oauth/mcp/start?" + urlencode({"pod": row["pod"], "profile": row["profile"], "server": row["server"]})
@@ -5011,7 +5891,7 @@ def _mcp_oauth_error_page(err, row: dict | None) -> bytes:
         links.append(f"<a class='btn btn-secondary' href='{html.escape(_mcp_tab_link(row['profile'], row['server']), quote=True)}'>{tr('MCP 탭으로 돌아가기', 'Back to the MCP tab')}</a>")
     body = (f"<div class='notice error' role=alert>{html.escape(str(err))}</div>"
             f"<div style='{_MCP_OAUTH_BTNS};flex-wrap:wrap'>{''.join(links)}</div>")
-    return _page(tr("로그인하지 못했습니다", "Sign-in failed"), body)
+    return _page(tr("로그인하지 못했습니다", "Sign-in failed"), body, script=_CLOSE_SCRIPT)
 
 
 def _mcp_oauth_waiting_page(row: dict) -> bytes:
@@ -5059,6 +5939,16 @@ def _login_prefs(next_path: str) -> str:
             f"<span class=to-dark>{_ICON_MOON}{tr('다크', 'Dark')}</span></button>"
             f"<select class=pref id=lang aria-label='{tr('언어', 'Language')}'>{opts}</select></div>")
 
+
+# 로그아웃 상태에서 /#/office 같은 주소를 열면 서버는 # 뒤를 받지 못해 / → /auth/login 으로 이동 주소 없이 보낸다. 브라우저는 302 를 따라가도
+# hash 를 남기므로(/auth/login#/office…) 로그인 화면이 그 hash 를 이동 주소로 쓴다(스펙 2026-11-14-015). 서버가 준 이동 주소가 있으면 그대로 둔다.
+# 값은 늘 "/#/" 로 시작해 브라우저 안에서 다른 출처로 갈 수 없고, 서버로 가는 값(SSO 링크·비밀번호 숨은 칸)은 safe_next 가 다시 거른다.
+# 팝업 스크립트가 data-next 를 읽기 전에 돌아야 해서 그 앞에 둔다. hash 는 지우지 않는다(새로 고쳐도 다시 쓴다).
+_HASH_NEXT_SCRIPT = ("<script>(function(){var h=location.hash;if(!h||h.slice(0,2)!=='#/')return;var n='/'+h,"
+                     "a=document.getElementById('sso'),f=document.querySelector('input[name=next]'),p=document.getElementById('prefs');"
+                     "if(((a&&a.getAttribute('data-next'))||(f&&f.value)||'/')!=='/')return;"
+                     "if(a){a.setAttribute('data-next',n);a.setAttribute('href',a.getAttribute('href').split('?')[0]+'?next='+encodeURIComponent(n))}"
+                     "if(f)f.value=n;if(p)p.setAttribute('data-next',n)})();</script>")
 
 _PREFS_SCRIPT = ("<script>(function(){var p=document.getElementById('prefs');if(!p)return;p.hidden=false;var d=document.documentElement;"
                  "document.getElementById('theme').onclick=function(){var t=d.getAttribute('data-theme')==='light'?'dark':'light';d.setAttribute('data-theme',t);"
@@ -5117,7 +6007,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Language", i18n.get_lang())
         self.send_header("Vary", "Accept-Language, Cookie")              # 언어는 고른 언어 쿠키로도 바뀐다
         for k, v in (headers or {}).items():
-            self.send_header(k, v)
+            for one in (v if isinstance(v, list) else [v]):       # Set-Cookie 처럼 같은 머리를 여러 번 보낼 때는 목록으로 준다(세션 쿠키 + state 쿠키 지우기)
+                self.send_header(k, one)
         self._send_sticky()
         self.end_headers()
         self.wfile.write(body)
@@ -5166,6 +6057,12 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
+    def _json_error(self, exc: Exception) -> None:
+        """_error_body 응답. 다시 시작 잠금처럼 retry_after 가 있으면 Retry-After 헤더도 싣는다."""
+        retry = getattr(exc, "retry_after", None)
+        self._send(getattr(exc, "code", 400), json.dumps(_error_body(exc), ensure_ascii=False).encode(), "application/json; charset=utf-8",
+                   {"Retry-After": str(retry)} if retry else None)
+
     def _speech_reply(self, code: int, out, headers: dict):
         """읽어 주기 응답: 성공은 audio/mpeg 바이트, 204 는 빈 본문, 나머지는 JSON. 조각 헤더는 함께 싣는다."""
         if isinstance(out, (bytes, bytearray)):
@@ -5173,14 +6070,14 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(code, json.dumps(out, ensure_ascii=False).encode(), "application/json; charset=utf-8", headers)
 
-    def _redirect(self, location: str, cookie: str | None = None):
+    def _redirect(self, location: str, cookie: str | list[str] | None = None):
         if any(c in location for c in "\r\n"):          # 헤더에 줄바꿈이 섞이지 않게
             location = "/"
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
+        for one in (cookie if isinstance(cookie, list) else [cookie] if cookie else []):   # 목록이면 순서대로(세션 쿠키가 먼저)
+            self.send_header("Set-Cookie", one)
         self._send_sticky()
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -5264,6 +6161,84 @@ class Handler(BaseHTTPRequestHandler):
             return base
         return a.cfg["public_url"] if self._is_local_host() and not self._secure_request() else None
 
+    def _callback_path(self, base: str | None = None) -> str:
+        """state 쿠키의 Path. 등록한 redirect_uri 의 경로라 앞단 프록시가 경로 앞에 무엇을 붙여도 브라우저가 보는 콜백 경로와 같다."""
+        base = base or self._oidc_base() or auth().cfg["public_url"]
+        return urlsplit(base + "/auth/callback").path
+
+    def _oidc_callback(self, query: dict):
+        """OIDC 콜백(스펙 2026-11-14-002 3-1). state 를 로그인을 시작한 브라우저의 쿠키와 맞춘 뒤에만 finish 를 부른다."""
+        a = auth()
+        state = query.get("state", [""])[0]
+        ref = secrets.token_hex(4)
+        secure = self._secure_request()
+        if not state:                                   # 이름을 만들 수 없어 지울 쿠키도 없다. 아무나 만들 수 있어 INFO
+            _AUTH_LOG.info("oidc_callback_rejected reason=empty_state ref=%s", ref)
+            self._signin_failed(ref)
+            return
+        clear = a.clear_state_cookie(state, secure, self._callback_path())
+        if query.get("error"):                          # Keycloak 에서 취소 — 세션을 주지 않으므로 쿠키를 비교하지 않는다
+            self._send(403, _page(tr("로그인하지 못했습니다", "Sign-in failed"), f"<p>{tr('로그인이 취소됐습니다', 'Sign-in was cancelled')}</p>"
+                                  f"<p><a href='/auth/login'>{tr('다시 로그인', 'Sign in again')}</a></p>"), "text/html; charset=utf-8",
+                       {"Set-Cookie": clear})
+            return
+        reason = a.state_reject_reason(self.headers.get("Cookie"), state)
+        if reason:                                      # auth_pending 행은 읽지 않는다 — 공격자가 만든 행의 next 로 도착지를 고르게 된다
+            _AUTH_LOG.warning("oidc_callback_rejected reason=%s ref=%s", reason, ref)
+            self._signin_failed(ref, clear=clear)
+            return
+        try:
+            token, nxt, popup = a.finish(query.get("code", [""])[0], state, with_popup=True)
+        except AuthError as exc:
+            reason = exc.reason or "id_token_invalid"
+            if reason == "token_exchange_failed":       # 예상하지 못한 실패는 원인을 함께 남긴다(토큰·응답 본문은 넣지 않는다)
+                _AUTH_LOG.warning("oidc_callback_rejected reason=%s ref=%s detail=%s", reason, ref, exc)
+            else:
+                _AUTH_LOG.warning("oidc_callback_rejected reason=%s ref=%s", reason, ref)
+            # finish 안의 실패(정책 거부 등)는 지금 문구를 그대로 보인다 — 사용자가 관리자에게 무엇을 요청할지 알려 준다
+            self._signin_failed(ref, clear=clear, message=None if reason == "pending_missing" else str(exc),
+                                next_path=exc.next if reason != "pending_missing" else None, popup=exc.popup,
+                                status=exc.status, code=exc.code)
+            return
+        session = a.set_cookie(token, secure)
+        if popup:                                       # 팝업이면 원래 창에 알리고 닫는다
+            self._send(200, _popup_done(nxt), "text/html; charset=utf-8", {"Set-Cookie": [session, clear]})
+        else:
+            self._redirect(nxt, [session, clear])        # 세션 쿠키가 먼저(시험이 첫 Set-Cookie 를 세션으로 읽는다)
+
+    def _signin_failed(self, ref: str, clear: str | None = None, message: str | None = None,
+                       next_path: str | None = None, popup: bool = False, status: int = 403, code: str = ""):
+        """확인 실패 화면 하나(스펙 2026-11-14-002 3-1, 디자인 리뷰 D1~D5). 원인을 단정하지 않는다 — 보는 사람은 대부분
+        배포 순간에 로그인 중이었거나 Keycloak 화면에서 10분을 넘긴 정상 사용자다."""
+        if message is None:
+            lines = (f"<p>{tr('로그인 확인 정보가 없거나 만료됐습니다. 처음부터 다시 로그인하세요.', 'Sign-in could not be verified or has expired. Start sign-in again.')}</p>"
+                     f"<p class=hint>{tr('다른 사람이 보낸 링크로 왔다면 이 화면을 닫으세요.', 'If someone else sent you this link, close this page.')}</p>")
+        else:
+            lines = f"<p>{html.escape(message)}</p>"
+        relogin = "/auth/login" + ("?next=" + html.escape(quote(safe_next(next_path), safe="/"), quote=True)
+                                   if next_path and safe_next(next_path) != "/" else "")
+        script = ""
+        who = auth().user(self.headers.get("Cookie"))
+        if popup:
+            action = (f"<p>{tr('이 창을 닫고 원래 화면에서 다시 로그인하세요.', 'Close this window and sign in again from the original page.')}</p>"
+                      f"<p><button class='btn btn-primary' type=button data-close>{tr('창 닫기', 'Close window')}</button></p>")
+            note = "{aasLogin:'failed'" + (f",error:'{code}'" if re.fullmatch(r"[A-Z0-9-]{1,40}", code) else "") + "}"   # 로그인 도메인 거절 코드(스펙 2026-11-15-005)
+            script = f"<script>try{{if(window.opener)window.opener.postMessage({note},location.origin)}}catch(e){{}}</script>" + _CLOSE_SCRIPT
+        elif who:                                       # 공격 링크를 연 피해자가 로그아웃된 줄 알고 다시 로그인하지 않게
+            action = (f"<p>{tr('이미 다음 계정으로 로그인돼 있습니다:', 'You are already signed in as:')} {html.escape(who['email'])}</p>"
+                      f"<p><a class='btn btn-primary' href='/'>{tr('AAS 로 돌아가기', 'Back to AAS')}</a> "
+                      f"<a class='btn btn-secondary' href='{relogin}'>{tr('다시 로그인', 'Sign in again')}</a></p>")
+        else:
+            action = f"<p><a class='btn btn-primary' href='{relogin}'>{tr('다시 로그인', 'Sign in again')}</a></p>"
+        body = lines + action + f"<p class=hint data-ref='{ref}'>{tr('참조: ', 'Reference: ')}{ref}</p>"
+        if code:
+            body += f"<p class=hint data-code='{html.escape(code, quote=True)}'>{html.escape(code)}</p>"
+        headers: dict = {"Set-Cookie": clear} if clear else {}
+        if status == 503:                               # 처리 중·잠시 장애(스펙 2026-11-15-005 D-T4)
+            headers["Retry-After"] = "60"
+        self._send(status if status in (403, 503) else 403, _page(tr("로그인하지 못했습니다", "Sign-in failed"), body, script=script),
+                   "text/html; charset=utf-8", headers or None)
+
     def _login_page(self, error: str = "", next_path: str = "/", code: int = 200, logged_out: bool = False):
         a = auth()
         parts = []
@@ -5285,7 +6260,8 @@ class Handler(BaseHTTPRequestHandler):
             # SSO 만 있으면 주 단추(빨강), 비밀번호와 함께면 보조 단추 — 빨강 주 단추는 한 화면에 하나(DESIGN §1-1)
             kind = "btn-secondary" if a.password_enabled else "btn-primary"
             nxt = html.escape(quote(next_path, safe="/"), quote=True)
-            parts.append(f"<a class='btn {kind}' href='/auth/oidc?next=" + nxt + f"' id=sso data-next='{html.escape(next_path, quote=True)}'>"
+            failed = html.escape(tr("로그인하지 못했습니다. 다시 누르세요.", "Sign-in failed. Try again."), quote=True)
+            parts.append(f"<a class='btn {kind}' href='/auth/oidc?next=" + nxt + f"' id=sso data-next='{html.escape(next_path, quote=True)}' data-failed='{failed}'>"
                          + _ICON_KEY + tr("SSO 로 로그인", "Sign in with SSO") + "</a>")
             parts.append(f"<p class=hint>{tr('버튼을 누르면 새 창에서 로그인합니다.', 'A new window opens to sign in.')}</p>")
         elif a.oidc_enabled and not a.password_enabled:
@@ -5300,7 +6276,7 @@ class Handler(BaseHTTPRequestHandler):
         # MCP 로그인 콜백에서 온 로그인(이미 팝업 안이다)은 SSO 를 같은 창에서 연다 — 팝업 안에 팝업을 열지 않는다(스펙 2026-10-16-010 V11).
         # Claude Code 연결 동의 화면에서 온 로그인도 같은 창에서 — 끝나면 동의 화면으로 돌아가야 한다(스펙 2026-10-28-001 디자인 D12)
         popup_ok = sso and not next_path.startswith((mcp_oauth_relay.CALLBACK_PATH, "/oauth/connect/"))
-        self._send(code, _page(tr("로그인", "Sign in"), "".join(parts), sub, (_POPUP_SCRIPT if popup_ok else "") + _PREFS_SCRIPT,
+        self._send(code, _page(tr("로그인", "Sign in"), "".join(parts), sub, _HASH_NEXT_SCRIPT + (_POPUP_SCRIPT if popup_ok else "") + _PREFS_SCRIPT,
                                heading=tr("AAS 에 오신 것을 환영합니다", "Welcome to AAS")),
                    "text/html; charset=utf-8")
 
@@ -5331,30 +6307,36 @@ class Handler(BaseHTTPRequestHandler):
             if not a.enabled:
                 self._redirect("/")
             else:                          # SSO 만 있어도 로그인 화면을 먼저 보인다. 단추가 팝업을 연다(스펙 2026-10-15-019, COP Console 처럼)
-                self._login_page(next_path=query.get("next", ["/"])[0], logged_out="out" in query)
+                # 팝업 로그인의 원래 창은 finish 를 거치지 않고 data-next 로 바로 이동한다 — 화면에 넣기 전에 거른다(스펙 2026-11-14-002 F1)
+                self._login_page(next_path=safe_next(query.get("next", ["/"])[0]), logged_out="out" in query)
             return True
         if path == "/auth/oidc":
             base = self._oidc_base()
             if not base:
                 self._redirect("/auth/login")
                 return True
+            want = (urlsplit(base).hostname or "").lower()
+            if (urlsplit("//" + self._effective_host()).hostname or "").lower() != want:
+                # 등록되지 않은 localhost 로 열면 _oidc_base 가 public_url 로 대체한다. 쿠키는 이 호스트에 붙어 콜백 호스트로 따라가지 않으므로
+                # 먼저 등록된 주소로 옮긴다(스펙 2026-11-14-002 3-1). hop=1 로 다시 오면(프록시가 Host 를 바꿈) 쿠키를 주어도 403 이 되므로 멈춘다
+                if query.get("hop"):
+                    _AUTH_LOG.warning("oidc_host_mismatch_after_hop")
+                    self._send(503, _page(tr("로그인할 수 없습니다", "Cannot sign in"),
+                                          f"<p>{html.escape(tr(f'이 주소로는 SSO 로그인을 할 수 없습니다. 등록된 접속 주소({base})로 여세요.', f'SSO sign-in is not available on this address. Open the registered address ({base}).'))}</p>"),
+                               "text/html; charset=utf-8")
+                else:
+                    self._redirect(base + "/auth/oidc?" + urlencode({**{k: v[0] for k, v in query.items()}, "hop": "1"}))
+                return True
             try:
-                self._redirect(a.begin(query.get("next", ["/"])[0], base, popup=query.get("popup", [""])[0] == "1"))
+                url, state = a.begin(query.get("next", ["/"])[0], base, popup=query.get("popup", [""])[0] == "1", with_state=True)
             except AuthError as exc:
                 self._send(503, _page(tr("로그인할 수 없습니다", "Cannot sign in"), f"<p>{html.escape(str(exc))}</p>"), "text/html; charset=utf-8")
+                return True
+            # 이 브라우저가 시작한 로그인임을 콜백이 확인한다(로그인 CSRF, F2). Secure 판정은 세션 쿠키와 같은 _secure_request()
+            self._redirect(url, a.state_cookie(state, self._secure_request(), self._callback_path(base)))
             return True
         if path == "/auth/callback":
-            try:
-                if query.get("error"):
-                    raise AuthError(tr("로그인이 취소됐습니다", "Sign-in was cancelled"))
-                token, nxt, popup = a.finish(query.get("code", [""])[0], query.get("state", [""])[0], with_popup=True)
-                if popup:                  # 팝업이면 원래 창에 알리고 닫는다
-                    self._send(200, _popup_done(nxt), "text/html; charset=utf-8", {"Set-Cookie": a.set_cookie(token, self._secure_request())})
-                else:
-                    self._redirect(nxt, a.set_cookie(token, self._secure_request()))
-            except AuthError as exc:
-                self._send(403, _page(tr("로그인하지 못했습니다", "Sign-in failed"), f"<p>{html.escape(str(exc))}</p>"
-                                      f"<p><a href='/auth/login'>{tr('다시 로그인', 'Sign in again')}</a></p>"), "text/html; charset=utf-8")
+            self._oidc_callback(query)
             return True
         if path == "/auth/logout":
             who = a.user(self.headers.get("Cookie")) if a.enabled else None
@@ -5497,6 +6479,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = settings.company_name()
                 self._json({"company_name": name, "default_company": settings.DEFAULT_COMPANY, "effective_company": name or settings.DEFAULT_COMPANY,
                             "identity_sentence": settings.identity_sentence(), "max": settings.COMPANY_MAX,
+                            "owner_sharing": sharing.enabled(),       # 설치 전체 「소유자 공유 허용」(스펙 2026-11-17-008 §3-6)
                             "goal_max": settings.GOAL_MAX,
                             # 부서별 슬로건·목표(스펙 2026-10-15-018): 관리자는 로그인으로 안 부서와 오피스 팀을 합친 모든 부서(scope all),
                             # 일반 사용자는 자기 부서 한 줄만(scope own, 부서가 없으면 빈 목록). can_edit 은 회사 이름·소개 문장, can_edit_goal 은 문구
@@ -5505,6 +6488,22 @@ class Handler(BaseHTTPRequestHandler):
                             "goal_scope": "all" if (not a.enabled) or registry().is_admin(user) else "own",
                             "can_edit_goal": (not a.enabled) or registry().is_admin(user) or bool(settings.own_department((user or {}).get("email"))),
                             "can_edit": (not a.enabled) or registry().is_admin(user)})
+                return
+            if path in ("/api/settings/login", "/api/settings/login/preview"):   # 설정 › 로그인(관리자만, 스펙 2026-11-15-005)
+                if a.enabled and not registry().is_admin(user):
+                    self._json({"error": tr("관리자만 볼 수 있습니다", "Only admins can view this")}, 403)
+                    return
+                if path == "/api/settings/login":
+                    self._json(_login_alias_view())
+                    return
+                kc = keycloak.admin_from_config()
+                if kc is None:
+                    self._json({"error": tr("Keycloak 관리 설정이 없습니다", "The Keycloak admin client is not configured"), "reason": "no_keycloak"}, 501)
+                    return
+                try:
+                    self._json({"people": login_alias.preview(kc)})
+                except keycloak.KeycloakError as exc:
+                    self._json({"error": str(exc), "reason": "keycloak_failed"}, 502)
                 return
             if path == "/api/tts/voices":                 # 설정 › 내 화면의 목소리 줄(chat-reply-tts R11). 로그인한 누구나, 연결된 POD 가 없어도 된다
                 self._json(tts.info())
@@ -5527,6 +6526,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"notices": [_notice_admin(r, at, known) for r in rows[:notices.LIST_LIMIT]], "limited": len(rows) > notices.LIST_LIMIT,
                             "limit": notices.LIST_LIMIT, "reach_enabled": a.enabled})
                 return
+            if path == EMBED_APPS_PATH:                   # 관리 › 임베드 앱 목록(관리자만, OMAI-1873)
+                if a.enabled and not registry().is_admin(user):
+                    self._json({"error": tr("관리자만 볼 수 있습니다", "Only admins can view this")}, 403)
+                    return
+                self._json(_embed_apps_view(a, a.base_for(self._effective_host(), self._secure_request()) or ""))
+                return
+            if path in ("/api/agents/members", "/api/agents/members/search", "/api/admin/sharing", "/api/messenger/links", "/api/notify/prefs"):   # 작업공간 공유·메신저 연결(스펙 2026-11-17-008)
+                self._sharing_get(path, query, a, user)
+                return
             if path == "/api/departments":                # 부서 목록(관리자만, 스펙 2026-10-15-026). 사용자 폼의 후보와 부서 탭이 쓴다
                 if a.enabled and not registry().is_admin(user):
                     self._json({"error": tr("관리자만 볼 수 있습니다", "Only admins can view this")}, 403)
@@ -5547,7 +6555,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"auth_enabled": a.enabled, "user": user, "admin": reg.is_admin(user), **_me_team_flags(reg, pod, user, a.enabled),
                                 # 지금 POD 의 주인인가 — 운영 메뉴의 「내 에이전트 변경 기록」 입구(디자인 결정 2A)
                                 "owner": bool(a.enabled and pod is not None and pod.owned_by(user)),   # 주인 표시라 그대로
-                                "pod": _pod_public(pod, names, known, team_ids), "registry_error": reg.error,
+                                "pod": _me_pod(pod, names, known, team_ids, reg, user, a.enabled), "registry_error": reg.error,
                                 "pods": [_pod_public(p, names, known, team_ids) for p in reg.allowed(user, a.enabled)],
                                 # 내 정보 서랍의 「내 에이전트」: 내가 주인인 에이전트만(관리자의 pods 는 전체라 쓰지 않는다, OMAI-1159)
                                 "own_pods": [p.id for p in reg.pods if p.owned_by(user)], "ws": ws_enabled(),   # 주인 표시라 그대로
@@ -5567,6 +6575,12 @@ class Handler(BaseHTTPRequestHandler):
                                 "notices": _user_notices(a, user),
                                 # 「Claude Code 연결」 메뉴 배지·계정 서랍 한 줄(스펙 2026-10-28-001 §3-7 ②). 로그인을 끈 설치는 없다
                                 "connections": _connections_summary(a, user)})
+                return
+            if path == "/api/market/grants":                # 「제한 스킬·템플릿 설치 허용」 표(관리자만, 스펙 2026-11-18-015). 본문의 작업공간을 다뤄 쿠키 작업공간이 없어도 된다
+                if a.enabled and not registry().is_admin(user):     # may_use_market 는 쓰지 않는다 — 경로 이름이 /api/market/grant 일 때만 관리자 전용이다
+                    self._json({"error": tr("관리자만 볼 수 있습니다", "Only admins can see this")}, 403)
+                else:
+                    self._json(_market_grants_view())
                 return
             if pod is None and _preparing(user):
                 # 첫 로그인은 HermesAgent 를 만들고, 파드가 Ready 가 되기 전에는 등록부에 오르지 않는다. 오류 대신 기다리게 한다.
@@ -5605,8 +6619,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({**health_payload(pod), "dashboard_url": dashboard_url(self.headers.get("Host", "localhost"))})
             elif path == "/api/skills":
                 g = _skills(pod)
-                tag_table = market_tags.load()                 # 스킬 태그(OMAI-1283): 표를 한 번만 읽어 행마다 붙인다
-                slim = [{**skill_graph.list_row(s), "tags": market_tags.skill_tags(tag_table, s["name"], s.get("description") or "", s.get("origin") or ""),
+                tag_table, tag_rules = market_tags.load(), market_tags.work_prefixes()   # 스킬 태그(OMAI-1283): 표·접두어 규칙을 한 번만 읽어 행마다 붙인다
+                slim = [{**skill_graph.list_row(s), "tags": market_tags.skill_tags(tag_table, s["name"], s.get("description") or "", s.get("origin") or "", tag_rules),
                          "delete_block": skill_delete_block(s, g["skills"])}     # 화면의 지우기 비활성 이유 — 서버 지우기와 같은 규칙(2026-10-29-005 DD3)
                         for s in g["skills"]]
                 slim = skill_desc.apply(slim, 240)              # 태그는 원문으로 찾은 뒤에 번역을 붙인다(스펙 2026-10-19-017 P5)
@@ -5631,13 +6645,16 @@ class Handler(BaseHTTPRequestHandler):
                             "can_upload": _may_upload(a, user, pod)})
             elif path == "/api/skill/download":               # 스킬 폴더를 zip 으로(OMAI-1195). 보기 권한이 있으면 받을 수 있다
                 try:
-                    name, blob, excluded = skill_files.build_download(pod.hermes_home, query.get("profile", [""])[0], query.get("path", [""])[0])
+                    dirs: list[str] = []
+                    name, blob, excluded = skill_files.build_download(pod.hermes_home, query.get("profile", [""])[0], query.get("path", [""])[0], skipped_dirs=dirs)
                 except marketplace.MarketError as exc:
                     self._json(_error_body(exc), exc.code)
                 else:
                     extra = {"Content-Disposition": _attachment(f"{name}.zip")}
                     if excluded:
                         extra["X-AAS-Excluded"] = json.dumps(excluded, ensure_ascii=True)     # 헤더는 ASCII 로(화면이 JSON 으로 읽는다)
+                    if dirs:                                     # 담지 않은 의존성·실행 기록 폴더 수(스펙 2026-11-18-019 R7) — 비밀값 경고와 섞지 않는다
+                        extra["X-AAS-Excluded-Dirs"] = str(len(dirs))
                     store.log_usage("skill_download", f"{(user or {}).get('email', 'local')} {query.get('profile', [''])[0]}/{name}", pod=pod.id)
                     self._send(200, blob, "application/zip", extra)
             elif path == "/api/skill":
@@ -5646,8 +6663,16 @@ class Handler(BaseHTTPRequestHandler):
                 if hit and hit.get("required_env"):              # 설정됐는지는 그때그때 .env 이름만 읽어 붙인다(스킬 묶음은 300초 캐시, 스펙 2026-10-16-010 2단계)
                     root = pod.hermes_home
                     home = root if hit["profile"] == "default" else root / "profiles" / hit["profile"]
-                    have = skill_setup.set_names(home / ".env")        # 멀티플렉스는 프로파일마다 비밀값 범위가 따로다 — 그 프로파일의 .env 만 본다
-                    hit = {**hit, "required_env": [{**e, "set": e["name"] in have} for e in hit["required_env"]]}
+                    # 멀티플렉스는 프로파일마다 비밀값 범위가 따로다 — 그 프로파일의 .env 만 본다. AAS 가 주는 LLM 접속값(managed)은
+                    # set 을 늘 True 로 두고 출처(managed_source)와 출처 갈림(managed_mixed)을 붙인다(스펙 2026-11-19-002 §4-2 #3)
+                    env_rows, mixed = skill_setup.with_status(hit["required_env"], home / ".env")
+                    # 프로파일 값이 AAS 값을 덮는 줄: 주인이 지울 수 없는 이름(owner_guard 의 이름 규칙 — _BASE_URL·HERMES_ 등)이면
+                    # 화면이 링크 대신 「관리자가 지우면 AAS 값을 씁니다」를 보인다(스펙 2026-11-19-002 §4-3)
+                    env_rows = [{**e, "owner_locked": True} if e.get("managed_source") == "profile" and owner_guard.env_key_check(e["name"], {})[0] else e
+                                for e in env_rows]
+                    hit = {**hit, "required_env": env_rows}
+                    if mixed:
+                        hit["managed_mixed"] = True
                 if hit:
                     hit = {k: v for k, v in hit.items() if k != "_md"}      # AAS 기본 스킬 본문은 요약 원문으로만(스펙 2026-10-27-007 R2)
                     hit = {**hit, "tags": market_tags.skill_tags(market_tags.load(), hit["name"], hit.get("description") or "", hit.get("origin") or "")}
@@ -5667,7 +6692,9 @@ class Handler(BaseHTTPRequestHandler):
                 sub = flow.subgraph(_flow(pod), unquote(query.get("root", [""])[0]), mentions=query.get("mentions", [""])[0] == "1")
                 if sub:
                     try:
-                        sub = flow.overlay(_flow(pod), sub, _observed(pod))
+                        obs = _observed_ready(pod)        # 처음 집계(90일)를 기다리지 않는다 — 준비 전이면 실행 기록 없이 그린다(스펙 2026-11-19-005)
+                        if obs is not None:
+                            sub = flow.overlay(_flow(pod), sub, obs)
                     except Exception as exc:              # 실행 기록을 못 읽어도 그림은 보여 준다
                         sub = {**sub, "observed": {"error": type(exc).__name__}}
                 self._json(sub or {"error": tr("없는 시작점입니다", "Start point not found")}, 200 if sub else 404)
@@ -5756,6 +6783,9 @@ class Handler(BaseHTTPRequestHandler):
                         hidden = bool(detail["profile"].get("hidden_root"))
                         caps = {t: {"can": may and not hidden, "reason": "" if may and not hidden else ("hidden_root" if hidden else "not_owner")}
                                 for t in ("soul", "agents", "config", "skills", "tools", "mcp", "cron")}
+                        if not may and _edits_pod(pod, user, a.enabled):     # 「편집」 구성원: 내용 탭만 열린다(스펙 2026-11-17-008 §3-2)
+                            for t in ("soul", "agents", "skills", "tools", "cron"):
+                                caps[t] = {"can": not hidden, "reason": "hidden_root" if hidden else ""}
                         for t in ("env", "channels"):                       # 비밀값·채널은 암호화된 연결에서만
                             ok_ = may and not hidden and secure
                             caps[t] = {"can": ok_, "reason": "" if ok_ else ("hidden_root" if hidden else "not_owner" if not may else "insecure")}
@@ -5812,8 +6842,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:                                 # 사이드카를 못 읽으면 설치 기록 판으로 「새 버전」을 정한다
                     found = None
                 out = marketplace.overview(pod.id, cat=cat, rows=found)
+                out.update(pod=pod.id, **_pod_label(pod))          # 「설치된 곳」의 main 이 누구의 것인지(OMAI-2086, 모델 화면 2026-11-17-002 와 같음)
                 out["admin"] = not a.enabled or registry().is_admin(user)
                 out["can_install"] = out["admin"] or _manages_pod(pod, user, a.enabled)     # 주인도 설치·지우기(OMAI-1126)
+                out["work_prefixes"] = market_tags.work_prefixes()                       # 이름 접두어 → 업무(관리자 설정, 스펙 2026-11-17-003)
                 out["packages"] = skill_desc.apply(out["packages"], 400, field="summary")   # 패키지 요약 번역(스펙 2026-10-19-017 §9). 저장값은 그대로
                 autos = market_publish.auto_versions()                 # 관리자 검토 없이 게시된 판(스펙 2026-10-28-001 D6) — 설치하는 사람에게 보인다
                 for pkg_ in out["packages"]:
@@ -5821,6 +6853,84 @@ class Handler(BaseHTTPRequestHandler):
                     if hit_:
                         pkg_["auto_versions"] = hit_
                 self._json(out)
+            elif path == "/api/market/request":                # 설치 요청 하나의 상태(템플릿 설치 화면이 3초마다 읽는다, 스펙 2026-11-18-002 §4-2 3). 이 작업공간 것만
+                rid = query.get("id", [""])[0]
+                row = next((r for r in marketplace.requests(pod.id, 400) if r["id"] == rid), None) if re.match(r"^\d{20}-[0-9a-f]{6}\Z", rid or "") else None
+                if row is None or not may_use_market("/api/market/install", pod, user, a.enabled, registry().is_admin(user)):
+                    self._json({"error": tr("요청을 찾을 수 없습니다", "Request not found")}, 404)
+                else:
+                    self._json({k: row.get(k) for k in ("id", "status", "message", "code", "needs", "profile", "package", "version", "template", "env_names", "waiting_mcp", "post")})
+            elif path == "/api/market/template/examples":       # 템플릿에서 만든 프로파일의 첫 일 예시(채팅 빈 화면, 스펙 2026-11-18-002 §4-5). 설치 기록에 적힌 글만
+                prof_ = query.get("profile", [""])[0]
+                rec = next((r for r in marketplace.installed(pod.id) if r["profile"] == prof_ and r.get("template")), None)
+                self._json({"profile": prof_, "template": (rec or {}).get("template") or "", "examples": [str(x)[:200] for x in (rec or {}).get("examples") or []][:5]})
+            elif path == "/api/market/template/diff":           # 템플릿 새 판 합치기 미리 보기(스펙 2026-11-18-002 「템플릿 새 판」): MCP 더함·바뀜·남김, 새 KEY, stdio 동의
+                if not may_use_market("/api/market/install", pod, user, a.enabled, registry().is_admin(user)):
+                    self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 올릴 수 있습니다", "Only admins or the owner of this AI Agent Workspace can upgrade")}, 403)
+                else:
+                    prof_ = query.get("profile", [""])[0]
+                    rec = next((r for r in marketplace.installed(pod.id) if r["profile"] == prof_ and r.get("template")), None)
+                    try:
+                        if rec is None:
+                            raise marketplace.MarketError(tr("AI 에이전트 템플릿에서 만든 프로파일이 아닙니다", "This profile was not created from an AI Agent template"), 404, reason="not_template")
+                        new_ = market_templates.detail(rec["namespace"], rec["name"], query.get("version", [""])[0])
+                        if marketplace._ver(new_["version"]) <= marketplace._ver(str(rec.get("version") or "")):
+                            raise marketplace.MarketError(tr(f"이미 {rec.get('version')} 판입니다", f"Already at version {rec.get('version')}"), 409, reason="up_to_date")
+                        api_ = HermesAPI(hub(pod).auth)
+                        current_ = mcp_servers._raw_servers(api_, prof_)
+                        have_ = {v["name"] for v in profiles.env_view(api_.call("GET", "/api/env", query={"profile": prof_})) if v["set"]}
+                        diff_ = template_checks.mcp_diff(current_, new_["mcp_servers"])
+                        by_ = {m["name"]: m for m in new_["mcp"]}
+                        self._json({"profile": prof_, "package": rec["package"], "namespace": rec["namespace"], "name": rec["name"],
+                                    "from": rec.get("version"), "to": new_["version"],
+                                    "added": [by_[n] for n in diff_["added"] if n in by_], "changed": [by_[n] for n in diff_["changed"] if n in by_],
+                                    "kept": diff_["kept"], "new_keys": [e for e in new_["env_requires"] if e["name"] not in have_ and not skill_setup.is_aas_managed(e["name"])],
+                                    "stdio": [m for m in new_["mcp"] if m.get("stdio")], "hub_skills": new_["hub_skills"]})
+                    except (marketplace.MarketError, files.FileError) as exc:
+                        self._json(_error_body(exc), getattr(exc, "code", 400))
+                    except HermesError as exc:
+                        self._json(_error_body(exc), 502)
+            elif path == "/api/market/template/files":          # 참고 파일 고르기: 작업 폴더의 파일 목록(스펙 2026-11-18-002 §4-4 5). 올릴 수 있는 사람에게만
+                if not (not a.enabled or registry().is_admin(user) or _owns_pod(pod, user, a.enabled)):
+                    self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 볼 수 있습니다", "Only admins or the owner of this AI Agent Workspace can see this")}, 403)
+                else:
+                    self._json({"items": profile_template.workspace_files(pod.hermes_home), "max_files": template_checks.MAX_TEMPLATE_FILES,
+                                "max_bytes": template_checks.MAX_TEMPLATE_BYTES})
+            elif path == "/api/market/templates/mine":         # 내가 올린 템플릿(게시 기록의 요청한 사람 기준, 스펙 2026-11-18-002 §4-4)
+                who_ = str((user or {}).get("email") or "local").lower()
+                spaces_ = marketplace.settings()["namespaces"]
+                self._json({"items": profile_template.mine(who_), "limit": profile_template.daily_limit(), "used": len(profile_template.used_today(who_)),
+                            "namespaces": spaces_, "namespace_labels": marketplace.ns_labels(), "public": [n for n in spaces_ if n in template_checks.PUBLIC_NAMESPACES]})
+            elif path in ("/api/market/templates", "/api/market/template"):   # 프로파일 템플릿 목록·상세(스펙 2026-11-18-002 §4-2 1·2). 설치할 수 있는 사람에게만
+                if not may_use_market("/api/market/install", pod, user, a.enabled, registry().is_admin(user)):
+                    self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 AI 에이전트 템플릿으로 프로파일을 만들 수 있습니다",
+                                            "Only admins or the owner of this AI Agent Workspace can create a profile from a template")}, 403)
+                elif path == "/api/market/templates":
+                    cat = _catalog()
+                    try:
+                        out = market_templates.listing(cat["items"]) if cat["ok"] else {"items": [], "failed": 0}
+                    except marketplace.MarketError as exc:
+                        out = {"items": [], "failed": 0, "error": str(exc)}
+                    out.setdefault("error", "" if cat["ok"] else cat.get("error") or "")
+                    out["limit"] = owner_guard.profile_limit()
+                    try:
+                        names = [str(p.get("name")) for p in HermesAPI(hub(pod).auth).call("GET", "/api/profiles").get("profiles", [])]
+                        out["used"] = owner_guard.profile_count(marketplace.counted_profiles(pod.id, names), cron_policy.root_hidden(pod.id))
+                        out["profiles"] = names
+                    except (HermesError, ChatUnavailable):
+                        out["used"], out["profiles"] = None, []
+                    live = [p.id for p in registry().pods]
+                    for it in out["items"]:
+                        it["installs"] = hub_admin.installed_count(it["namespace"], it["name"], live)   # 「이 AAS 설치 수」(살아 있는 작업공간만)
+                        # 허용이 필요한 구역인데 이 작업공간에 허용이 없으면 카드에서 미리 알린다 — 「만들기」 뒤에야 403 이던 것(OKE 시험 2026-11-18)
+                        it["allowed"] = marketplace.allowed(pod.id, {"paid": bool(it.get("restricted")), "namespace": it["namespace"]})
+                        it["namespace_label"] = marketplace.ns_label(it["namespace"])   # 카드 아래 줄 안내(「'제한' 허용을 요청하세요」, 스펙 2026-11-18-015 §3-4)
+                    self._json(out)
+                else:
+                    try:
+                        self._json(market_templates.detail(query.get("ns", [""])[0], query.get("name", [""])[0], query.get("version", [""])[0]))
+                    except marketplace.MarketError as exc:
+                        self._json(_error_body(exc), exc.code)
             elif path == "/api/market/updates":                # 「새 버전 있음」 목록(스펙 2026-10-24-003 D3-1·R5)
                 out = _market_update_list(registry(), pod, user, a.enabled, query.get("scope", ["pod"])[0])
                 out["affected"] = market_updates.affected(out["rows"]) if out["admin"] else 0
@@ -5863,6 +6973,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:                                          # ns 는 표시 이름(shared)도 받는다 — package() 가 slug 로 바꾼다(스펙 2026-10-28-010 D7)
                     pkg = marketplace.package(query.get("ns", [""])[0], query.get("name", [""])[0])
                     pkg["allowed"] = marketplace.allowed(pod.id, pkg)
+                    pkg["allowed_by"] = marketplace.allowed_by(pod.id, pkg["namespace"]) if pkg["paid"] else ""   # 서랍 자물쇠: all 이면 끄고 「제한 스킬·템플릿 설치 허용」으로(§3-4)
                     self._json(skill_desc.apply([pkg], 400, field="summary")[0])
                 except marketplace.MarketError as exc:
                     self._json(_error_body(exc), exc.code)
@@ -5883,7 +6994,7 @@ class Handler(BaseHTTPRequestHandler):
                 chan = next((r for r in _channels(pod)["profiles"] if r["name"] == prof), None)
                 gw = {"running": chan["running"], "channels": [{"name": p["name"], "state": p.get("state"), "stale": p.get("stale")} for p in chan["platforms"]]} if chan else None
                 try:
-                    obs = _observed(pod)
+                    obs = _observed_ready(pod)                # 처음 집계를 기다리지 않는다(스펙 2026-11-19-005)
                 except Exception:
                     obs = None
                 self._json(explain.build(_flow(pod), pod.hermes_home, prof, query.get("skill", [""])[0], query.get("job", [""])[0],
@@ -5967,9 +7078,19 @@ class Handler(BaseHTTPRequestHandler):
                 # 프로파일 이름 옆 「내 전용」·「<이름>님 전용」(프로파일 목록과 같은 규칙, 2026-10-18). 모은 값은 함께 쓰므로 사람별 값은 캐시 밖에서 붙인다
                 self._json({**_cached(f"{pod.id}:activity{days}", 60, lambda: activity.collect(days, home=pod.hermes_home)),
                             **_owner_badge(pod, _owns_pod(pod, user, a.enabled), admin)})   # 주인 표시라 그대로
-            elif path in ("/api/credentials", "/api/tools", "/api/libraries"):
+            elif path == "/api/credentials":
+                # 숨긴 루트의 AAS 기본 값 행은 뺀다(스펙 2026-11-18-007 R9). 캐시 밖에서 걸러 primary 대상이 바뀌면 바로 따른다 —
+                # primary.adopt 는 다른 프로세스(관리자 명령)라 이 캐시를 비울 수 없다(E2). 거르기는 새 dict 를 만든다(E1)
+                d = _cached(f"{pod.id}:credentials", 120, lambda: inventory.credentials(pod.hermes_home))
+                try:
+                    hide = primary.hide_root(pod.id, True) != "show"
+                except Exception:                                   # 판정 실패면 거르지 않는다 — 값은 어차피 싣지 않는다
+                    logging.getLogger("aas.web").warning("credentials hide_root failed pod=%s", pod.id, exc_info=True)
+                    hide = False
+                self._json(inventory.without_hidden_root_defaults(d) if hide else d)
+            elif path in ("/api/tools", "/api/libraries"):
                 kind = path.rsplit("/", 1)[1]
-                fn = getattr(inventory, kind)
+                fn = (lambda h: inventory.libraries(h, _flow_image(pod))) if kind == "libraries" else getattr(inventory, kind)
                 self._json(_cached(f"{pod.id}:{kind}", 120, lambda: fn(pod.hermes_home)))
             elif path == "/api/channels":
                 self._json({**_channels(pod), "owner_name": _pod_owner_name(pod)})
@@ -5983,11 +7104,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     try:
                         scoped = None if next((r for r in _profile_rows(pod) if r["name"] == prof), {}).get("is_default") else prof
-                        self._json(_cached(f"{pod.id}:chanhermes:{prof}:{int(admin)}", 20, lambda: channel_admin.read(HermesAPI(hub(pod).auth), scoped, True)))
+                        got = _cached(f"{pod.id}:chanhermes:{prof}:{int(admin)}", 20, lambda: channel_admin.read(HermesAPI(hub(pod).auth), scoped, True))
+                        self._json(_with_link_names(pod, prof, got))
                     except HermesError as exc:
                         self._json(_error_body(exc), exc.code)
             elif path == "/api/models":
-                self._json(_models(pod))
+                self._json(_models_view(pod))
             elif path == "/api/chat/status":
                 if query.get("all", [""])[0] == "1":            # 채팅 목록의 에이전트별 묶음(2026-10-19-001 R2). 기본 응답 모양은 그대로 둔다(스킬 허브 useAgents)
                     self._json({"pod": pod.id, "groups": _chat_groups(registry(), user, a.enabled, pod)})
@@ -6011,13 +7133,25 @@ class Handler(BaseHTTPRequestHandler):
                     want = max(1, min(200, int(query.get("limit", ["80"])[0] or 80)))
                 except ValueError:
                     want = 80
-                rows = [r for r in hub(pod).history(profile, limit=max(200, want)) if r.get("id") not in hidden][:want]
+                rows = [r for r in hub(pod).history(profile, limit=max(200, want)) if r.get("id") not in hidden]
+                # 공유 이전 대화 숨기기(스펙 2026-11-17-008 §4): 주인·관리자·팀 관리자가 아니면 공유를 시작하기 전 대화를 뺀다
+                cut = sharing.hide_before_epoch(pod.id) if (a.enabled and not _manages_pod(pod, user, True) and not registry().is_admin(user)) else 0.0
+                if cut:
+                    rows = [r for r in rows if float(r.get("started_at") or 0) >= cut]
+                rows = rows[:want]
+                # 이 서버에서 연 화면 대화의 시작한 사람을 적어 둔다(목록의 「누가」, 1년). 메모리의 열린 대화만이라 비용이 적다
+                hh = hub(pod)
+                chat_session_meta.note_starters(pod.id, [(sid, str(m.get("stored_id") or ""), str(m.get("profile") or ""), str(m.get("by") or ""))
+                                                         for sid, m in list(getattr(hh, "sessions", {}).items()) if not m.get("relay")])
                 # Claude Code 가 연 대화: 목록 Tag·「스킬 시험」 거름·쓰는 중 띠(스펙 2026-10-28-001 §3-7 ⑤)
                 meta = chat_session_meta.for_stored(pod.id, [str(r.get("id") or "") for r in rows])
+                people = office.people()
                 for r in rows:
                     m = meta.get(str(r.get("id") or ""))
                     if m and m["via"] == "token":
                         r["claude"] = {"purpose": m["purpose"], "active": m["active"]}
+                    if m and "@" in (m.get("by") or ""):          # 누가 시작했나(공유한 작업공간의 지난 대화, 스펙 2026-11-17-008 §4)
+                        r["by_name"] = office.display_name(m["by"], people)
                 self._json({"profile": profile, "sessions": rows})
             elif path == "/api/chat/skills":                   # 입력창 / 목록(스펙 2026-10-19-012 P1). 고른 에이전트(pod)·프로파일 기준, 60초 저장
                 profile = _chat_profile(pod, query.get("profile", [""])[0])
@@ -6029,11 +7163,18 @@ class Handler(BaseHTTPRequestHandler):
                             "skills": skill_desc.apply(got.get("skills"), skill_commands.DESC_MAX),
                             **chat_commands.view(got, manages=_chat_manages(a, user, pod))})   # 명령 목록(스펙 2026-10-26-010). goal·loop 는 주인·관리자만(2026-10-27-002 R12)
             elif path == "/api/chat/events":
-                self._chat_events(query, pod)
+                # 공유에서 빠지거나 관리자가 공유를 끄면 열린 스트림도 다음 확인(20초 안)에 끝난다(스펙 2026-11-17-008 §3-5)
+                self._chat_events(query, pod, (lambda: True) if not a.enabled else
+                                  (lambda: pod.id in {p.id for p in registry().allowed(user, True, restarting=True)}))
             else:
                 self._json({"error": "not found"}, 404)
         except ChatUnavailable as exc:
             self._json({"error": str(exc)}, 503)
+        except hermes_remote.SidecarError as exc:   # 채팅만 다시 시도할 503 이다. 다른 화면은 이유가 적힌 500 그대로(ADR-0008)
+            if path.startswith("/api/chat/"):
+                self._json(_sidecar_busy(exc), 503)
+            else:
+                self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:
@@ -6124,7 +7265,78 @@ class Handler(BaseHTTPRequestHandler):
         after = int(raw) if str(raw).isdigit() else None
         self.start_stream(_office_events(after, a, user))
 
-    def _chat_events(self, query: dict, pod: Pod):
+    def _sharing_get(self, path: str, query: dict, a, user) -> None:
+        from . import messenger_api, sharing_api
+        reg = registry()
+        try:
+            if path == "/api/messenger/links":            # 내 메신저 계정 연결(스펙 2026-11-17-008 §5-2)
+                self._json(messenger_api.view(reg, user, a.enabled, query.get("pod", [""])[0]))
+                return
+            if path == "/api/notify/prefs":               # 메신저 알림 받기(사람마다, §6-2). 설치에서 켜졌는지와 내가 이은 메신저 수도 준다
+                me = str((user or {}).get("email") or "").lower()
+                from ..ops import messenger_links
+                self._json({"installed": notify_out.installed(), "enabled": notify_out.enabled(), "off": notify_out.person_off(me) if me else False,
+                            "links": len(messenger_links.links_of(me)) if me else 0})
+                return
+            if path == "/api/agents/members":
+                self._json(sharing_api.view(reg, user, a.enabled, query.get("pod", [""])[0]))
+            elif path == "/api/agents/members/search":
+                if a.enabled and not user:
+                    raise sharing_api.ShareError(tr("로그인이 필요합니다", "Sign-in required"), 401)
+                self._json(sharing_api.search(a, reg, query.get("q", [""])[0]))
+            else:                                        # 관리자 공유 현황(§3-6)
+                if a.enabled and not reg.is_admin(user):
+                    raise sharing_api.ShareError(tr("관리자만 볼 수 있습니다", "Only admins can view this"), 403)
+                rows = sharing_api.overview(reg)
+                if query.get("format", [""])[0] == "csv":
+                    self._send(200, sharing_api.overview_csv(rows).encode("utf-8"), "text/csv; charset=utf-8",
+                               {"Content-Disposition": _attachment("aas-sharing.csv")})
+                    return
+                self._json({"enabled": sharing.enabled(), "rows": rows,
+                            "notify": {"installed": notify_out.installed(), "enabled": notify_out.admin_enabled(), "counters": dict(notify_out.counters)}})
+        except sharing_api.ShareError as exc:
+            self._json({"error": str(exc)}, exc.code)
+        except messenger_api.MessengerError as exc:
+            self._json({"error": str(exc), "reason": exc.reason}, exc.code)
+
+    def _sharing_post(self, path: str, body: dict, a, user) -> None:
+        from . import messenger_api, sharing_api
+        reg = registry()
+        try:
+            if path == "/api/notify/prefs":
+                me = str((user or {}).get("email") or "").lower()
+                if not me:
+                    raise messenger_api.MessengerError(tr("로그인이 필요합니다", "Sign-in required"), 401)
+                notify_out.set_person_off(me, bool(body.get("off")))
+                self._json({"ok": True, "off": bool(body.get("off"))})
+                return
+            if path == "/api/messenger/links":
+                op = str(body.get("op") or "")
+                fn = {"link": messenger_api.link, "unlink": messenger_api.unlink, "apply": messenger_api.apply}.get(op)
+                if fn is None:
+                    raise messenger_api.MessengerError(tr("잘못된 요청", "Invalid request"))
+                self._json(fn(reg, user, a.enabled, body))
+                return
+            if path == "/api/settings/sharing":
+                if a.enabled and not reg.is_admin(user):
+                    raise sharing_api.ShareError(tr("관리자만 할 수 있습니다", "Only admins can do this"), 403)
+                if "notify" in body:                     # 「메신저 알림 전달」(설치 전체, §6-2)
+                    on = notify_out.set_admin_enabled(bool(body.get("notify")))
+                    store.log_usage("settings_messenger_notify", f"{(user or {}).get('email') or 'local'} {'on' if on else 'off'}")
+                    self._json({"ok": True, "notify": on})
+                    return
+                on = sharing.set_enabled(bool(body.get("enabled")), str((user or {}).get("email") or "local"))
+                store.log_usage("settings_sharing", f"{(user or {}).get('email') or 'local'} {'on' if on else 'off'}")
+                _scene_scope_changed()                   # 끄면 구성원의 보기 권한이 바로 사라진다
+                self._json({"ok": True, "enabled": on})
+                return
+            self._json(sharing_api.write(reg, user, a.enabled, body))
+        except sharing_api.ShareError as exc:
+            self._json({"error": str(exc)}, exc.code)
+        except messenger_api.MessengerError as exc:
+            self._json({"error": str(exc), "reason": exc.reason}, exc.code)
+
+    def _chat_events(self, query: dict, pod: Pod, still_allowed=lambda: True):
         """SSE. 브라우저가 Last-Event-ID 로 이어 받는다."""
         if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
             self._json({"error": "forbidden"}, 403)
@@ -6133,7 +7345,7 @@ class Handler(BaseHTTPRequestHandler):
         after = int(self.headers.get("Last-Event-ID") or query.get("after", ["0"])[0] or 0)
         h = hub(pod)
         h.events_after(sid, 10**12, wait=0)          # 모르는 세션이면 여기서 ChatUnavailable
-        self.start_stream(_chat_event_stream(h, sid, after))
+        self.start_stream(_chat_event_stream(h, sid, after, still_allowed))
 
     def start_stream(self, gen) -> None:
         """SSE 응답 본문(바이트 조각을 내는 동기 생성기)을 넘긴다. 실제 전송은 ASGI 어댑터(legacy.py)가 전용 실행기에서 한다(OMAI-1100)."""
@@ -6190,12 +7402,18 @@ class Handler(BaseHTTPRequestHandler):
         if pod is None or not (registry().is_admin(user) or _manages_pod(pod, user, a.enabled)):
             return refuse(tr("이 AI 에이전트 작업공간의 소유자나 관리자만 요청할 수 있습니다", "Only the AI Agent Workspace's owner or an admin can send a request"), 403)
         profile = str(body.get("profile") or "")
-        if str(body.get("kind") or "") == "workspace_size":           # 작업공간 단위(스펙 2026-11-06-005 O2) — 다시 시작 중이어도 받는다(재검토 C1)
+        if str(body.get("kind") or "") in ("workspace_size", "namespace_grant"):   # 작업공간 단위(스펙 2026-11-06-005 O2·2026-11-18-015 X2) — 프로파일이 없는 곳에서도 보낸다
             profile = admin_requests.WORKSPACE
         elif profile not in {x.name for x in cron_health.hr.profiles(pod.hermes_home)} or cron_policy.root_hidden(pod.id) and profile == primary.ROOT:
             return refuse(tr("없는 프로파일입니다", "Profile not found"))
+        detail = str(body.get("detail") or "")
+        if str(body.get("kind") or "") == "namespace_grant":           # 요청한 구역을 앞머리에 — 관리자가 그 구역을 허용하면 자동으로 닫힌다(스펙 2026-11-18-015 X2)
+            ns = marketplace.ns_slug(str(body.get("namespace") or "")[:63])
+            if not marketplace.NAME.match(ns):
+                return refuse(tr("네임스페이스 이름이 올바르지 않습니다", "The namespace name is not valid"))
+            detail = f"ns={ns} {detail}".strip()
         try:
-            rid = admin_requests.create(pod.id, profile, str((user or {}).get("email") or ""), str(body.get("kind") or ""), str(body.get("detail") or ""))
+            rid = admin_requests.create(pod.id, profile, str((user or {}).get("email") or ""), str(body.get("kind") or ""), detail)
         except admin_requests.RequestError as exc:
             return refuse(str(exc), exc.code)
         store.log_usage("admin_request", f"{(user or {}).get('email', 'local')} {profile} {str(body.get('kind'))[:40]}", pod=pod.id)
@@ -6348,7 +7566,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/auth/password":
                 self._password_login()
                 return
-            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, "/api/market/install", "/api/market/grant", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/check", "/api/market/publish/decide", "/api/market/publish/auto", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel")):
+            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/settings/login", "/api/settings/login/bulk", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, *SHARING_WRITES, "/api/market/install", "/api/market/grant", "/api/market/grants", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/check", "/api/market/publish/decide", "/api/market/publish/auto", "/api/market/template/publish", "/api/market/template/unpublish", "/api/market/template/post-retry", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/market/work-prefixes", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel", EMBED_APPS_PATH, *RESTART_PENDING_WRITES)):
                 self._json({"error": "not found"}, 404)
                 return
             if not self._same_origin():
@@ -6382,6 +7600,23 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._json(out)
                 return
+            if path in SHARING_WRITES:                       # 작업공간 공유·설치 스위치(스펙 2026-11-17-008 단계 2)
+                self._sharing_post(path, body, a, user)
+                return
+            if path == "/api/market/grants":                 # 「제한 스킬·템플릿 설치 허용」 쓰기(관리자만, 스펙 2026-11-18-015 §3-3). 본문의 작업공간에 쓴다 — 쿠키 작업공간이 없어도 된다
+                if a.enabled and not registry().is_admin(user):
+                    self._json({"error": tr("관리자만 할 수 있습니다", "Only admins can do this")}, 403)
+                    return
+                who = (user or {}).get("email", "local")
+                try:
+                    cols = marketplace.restricted_namespaces(marketplace.settings(), _catalog())   # 기억한 목록만 — POST 마다 허브를 부르지 않는다(E3)
+                    ns, target = marketplace.check_grants(body.get("namespace"), body.get("pods"), body.get("allow"), {p_.id for p_ in registry().pods}, cols)
+                    out = _apply_grants(ns, target, body["allow"], who)
+                except marketplace.MarketError as exc:
+                    self._json(_error_body(exc), exc.code)
+                    return
+                self._json(out)
+                return
             if path == "/api/settings":                      # 회사 이름 저장(관리자만). 연결된 POD 가 없어도 된다(계획 2026-10-13-008)
                 me = (user or {}).get("email", "local")
                 if a.enabled and not registry().is_admin(user):
@@ -6395,6 +7630,40 @@ class Handler(BaseHTTPRequestHandler):
                 store.log_usage("settings_company", f"{me} {name or settings.DEFAULT_COMPANY}")
                 _IDENTITY_WAKE.set()                         # 리더가 SOUL 첫 문장을 바로 맞춘다(리더가 아니면 리더의 다음 주기)
                 self._json({"ok": True, "company_name": name, "identity_sentence": settings.identity_sentence()})
+                return
+            if path in ("/api/settings/login", "/api/settings/login/bulk"):   # 설정 › 로그인 저장·되돌리기·전원 바꾸기(관리자만, 스펙 2026-11-15-005)
+                me = (user or {}).get("email", "local")
+                if a.enabled and not registry().is_admin(user):
+                    self._json({"error": tr("관리자만 할 수 있습니다", "Only admins can do this")}, 403)
+                    return
+                try:
+                    if path == "/api/settings/login":
+                        if body.get("action") == "reset":
+                            login_alias.reset(me)
+                        else:
+                            login_alias.save(body, me)
+                        self._json({"ok": True, **_login_alias_view()})
+                        return
+                    action = str(body.get("action") or "")
+                    if action not in ("record", "run"):
+                        self._json({"error": tr("동작은 record 또는 run 입니다", "Action must be record or run"), "reason": "bad_action"}, 400)
+                        return
+                    kc = keycloak.admin_from_config()
+                    if kc is None:
+                        self._json({"error": tr("Keycloak 관리 설정이 없습니다", "The Keycloak admin client is not configured"), "reason": "no_keycloak"}, 501)
+                        return
+                    out = login_alias.bulk(kc, action, me)
+                    self._json({"ok": True, "result": {k: v for k, v in out.items() if k != "rows"}, **_login_alias_view()})
+                except login_alias.ConfigError as exc:
+                    self._json(exc.body(), 400)
+                except keycloak.KeycloakError as exc:
+                    self._json({"error": str(exc), "reason": "keycloak_failed"}, 502)
+                return
+            if path == EMBED_APPS_PATH:                      # 관리 › 임베드 앱 등록·고치기·지우기(관리자만, OMAI-1873)
+                if a.enabled and not registry().is_admin(user):
+                    self._json({"error": tr("관리자만 할 수 있습니다", "Only admins can do this")}, 403)
+                    return
+                self._json(*_embed_apps_write((user or {}).get("email", "local"), body))
                 return
             if path == "/api/notices":                       # 공지 저장·내림·연장·대상 사람 수(관리자만, 스펙 2026-10-24-007)
                 if a.enabled and not registry().is_admin(user):
@@ -6749,6 +8018,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json({"ok": True, "n": made})
                 return
+            if path == "/api/market/work-prefixes":                 # 스킬 이름 접두어 → 업무(관리자만, 스펙 2026-11-17-003)
+                if not market_tags.may_refresh(a.enabled, registry().is_admin(user)):
+                    self._json({"error": tr("관리자만 할 수 있습니다", "Only admins can do this")}, 403)
+                    return
+                try:
+                    rules = market_tags.set_work_prefixes(body.get("rules"), (user or {}).get("email", "local"))
+                except ValueError as exc:
+                    self._json({"error": tr("접두어 규칙이 올바르지 않습니다", "Invalid prefix rules") + f": {exc}"}, 400)
+                    return
+                _forget_market_catalog()                               # 허브 목록에 붙은 태그도 새로
+                store.log_usage("market_work_prefixes", f"{(user or {}).get('email', 'local')} {len(rules)}", pod=pod.id)
+                self._json({"ok": True, "rules": rules})
+                return
             if path == "/api/market/tags/refresh":                  # 스킬 태그를 모두 다시 매긴다(관리자만, OMAI-1275)
                 if not market_tags.may_refresh(a.enabled, registry().is_admin(user)):
                     self._json({"error": tr("관리자만 할 수 있습니다", "Only admins can do this")}, 403)
@@ -6801,12 +8083,75 @@ class Handler(BaseHTTPRequestHandler):
                 _forget_market_catalog()                         # 게시·숨기기가 허브 목록을 바꾼다(R15)
                 self._json(out)
                 return
+            if path in ("/api/market/template/publish", "/api/market/template/unpublish", "/api/market/template/post-retry"):   # 프로파일 템플릿 올리기·미리 보기·내리기·설치 뒤 단계 다시 하기(스펙 2026-11-18-002)
+                is_admin = not a.enabled or registry().is_admin(user)
+                who = str((user or {}).get("email") or "local").lower()
+                if path == "/api/market/template/post-retry":      # 「확인할 것」의 다시 하기 — 설치할 수 있는 사람(주인·관리자·팀 관리자)
+                    rid = str(body.get("request") or "")
+                    row_ = next((r for r in marketplace.requests(pod.id, 400) if r["id"] == rid), None)
+                    if row_ is None or not may_use_market("/api/market/install", pod, user, a.enabled, is_admin):
+                        self._json({"error": tr("요청을 찾을 수 없습니다", "Request not found")}, 404)
+                        return
+                    ok = template_post.retry(rid)
+                    store.log_usage("template_post_retry", f"{who} {pod.id}/{row_.get('profile')} req={rid}", pod=pod.id)
+                    _forget(pod)
+                    self._json({"ok": ok})
+                    return
+                try:
+                    if path == "/api/market/template/unpublish":    # 올린 사람(게시 기록의 요청한 사람)과 관리자만(E17)
+                        out = profile_template.unpublish(str(body.get("name") or "")[:63], who, is_admin)
+                        store.log_usage("template_unpublish", f"{who} {out['namespace']}/{out['name']}", pod=pod.id)
+                        _forget_market_catalog()
+                        self._json(out)
+                        return
+                    # 게시는 그 작업공간의 주인과 관리자만. 팀 관리자·편집 구성원은 남의 프로파일을 공개하는 일이 되어 하지 않는다(A2)
+                    if not (is_admin or _owns_pod(pod, user, a.enabled)):
+                        self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 AI 에이전트 템플릿을 올릴 수 있습니다",
+                                                "Only admins or the owner of this AI Agent Workspace can publish a template"), "reason": "not_owner"}, 403)
+                        return
+                    prof = str(body.get("profile") or "")
+                    if not (marketplace.PROFILE.match(prof) or prof == "default"):
+                        raise marketplace.MarketError(tr("프로파일 이름이 올바르지 않습니다", "The profile name is not valid"))
+                    author = office.person_name(who, office.people()) or who.split("@", 1)[0]
+                    choices = body.get("choices") if isinstance(body.get("choices"), dict) else None
+                    soul = body.get("soul_override")
+                    out = profile_template.publish(pod.id, pod.hermes_home, prof, who, admin=is_admin and a.enabled, name=str(body.get("name") or "")[:63],
+                                                   description=str(body.get("description") or "")[:400], namespace=str(body.get("namespace") or ""),
+                                                   author=author, choices={k: [str(x) for x in v][:200] for k, v in (choices or {}).items() if isinstance(v, list) and k in ("skills", "mcp", "cron")} if choices else None,
+                                                   tags=[str(x) for x in body.get("tags") or []][:5] if isinstance(body.get("tags"), list) else None,
+                                                   soul_override=soul[:20000] if isinstance(soul, str) and soul.strip() else None, dry_run=bool(body.get("dry_run")),
+                                                   agents=body.get("agents") if isinstance(body.get("agents"), bool) else None,
+                                                   examples=[str(x)[:200] for x in body.get("examples") or []][:5] if isinstance(body.get("examples"), list) else None,
+                                                   key_notes={str(k)[:64]: str(v)[:400] for k, v in list(body["key_notes"].items())[:50]} if isinstance(body.get("key_notes"), dict) else None,
+                                                   allow_internal=body.get("allow_internal") is True,   # 공용 구역 사내 주소를 사람이 확인(스펙 2026-11-18-010)
+                                                   ref_files=[{"path": str(f.get("path") or "")[:500], "confirmed": bool(f.get("confirmed"))}
+                                                              for f in body.get("files") or [] if isinstance(f, dict)][:40] if isinstance(body.get("files"), list) else None)
+                except profile_template.TemplateError as exc:
+                    body_ = {**_error_body(exc), **profile_template.problem(exc)}    # error·reason 은 화면용, type·code·fix 는 RFC 9457 꼴(§4-5)
+                    headers = {"Retry-After": "3600"} if exc.code == 429 else None
+                    if exc.code == 429:
+                        body_.update(limit=profile_template.daily_limit(), used=len(profile_template.used_today(who)), setting="AAS_TEMPLATE_DAILY_LIMIT")
+                    if headers:                                 # 429 는 Retry-After 와 한도·쓴 수·설정 이름을 함께(§4-5)
+                        self._send(exc.code, json.dumps(body_, ensure_ascii=False).encode(), "application/json; charset=utf-8", headers)
+                    else:
+                        self._json(body_, exc.code)
+                    return
+                except (marketplace.MarketError, OSError) as exc:
+                    self._json(_error_body(exc), getattr(exc, "code", 400))
+                    return
+                if out.get("status") != "preview":
+                    store.log_usage("template_publish", f"{who} {out['namespace']}/{out['name']}@{out['version']} {out['status']} ← {pod.id}/{prof}", pod=pod.id)
+                    _forget_market_catalog()
+                self._json(out)
+                return
             if path == "/api/market/publish/check":            # 게시 전 점검 — 쓰지 않는다. 요청할 수 있는 사람에게만(같은 권한)
                 is_admin = not a.enabled or registry().is_admin(user)
                 if not may_use_market("/api/market/install", pod, user, a.enabled, is_admin):
                     self._json({"error": tr("관리자나 이 AI 에이전트 작업공간의 소유자만 게시를 요청할 수 있습니다", "Only admins or the owner of this AI Agent Workspace can publish")}, 403)
                     return
                 prof, rel = str(body.get("profile") or ""), str(body.get("path") or "")
+                if not prof and ":" in str(body.get("id") or ""):     # 옛 화면은 전용 스킬에 profile "" 를 보냈다 — 줄 id 의 <profile>: 로 채운다
+                    prof = str(body.get("id")).split(":", 1)[0]
                 sid = str(body.get("id") or "") or f"{prof}:{rel if prof == 'default' else f'profiles/{prof}/{rel}'}"   # id: 공용 스킬은 쓰는 에이전트의 줄로 사용 기록을 본다
                 row = next((s for s in _skills(pod)["skills"] if s["id"] == sid), None)
                 try:
@@ -6860,11 +8205,10 @@ class Handler(BaseHTTPRequestHandler):
                 ns, name = marketplace.ns_slug(str(body.get("namespace") or "")[:63]), str(body.get("name") or "")[:63]   # 표시 이름(restricted)도 받아 slug 로 — 기록·저장은 slug(스펙 2026-10-28-010 D7·D10)
                 label = f"{who} {ns}/{name}@{str(body.get('version') or '')[:20]} → {pod.id}/{str(body.get('profile') or '')[:41]}"
                 try:
-                    if path == "/api/market/grant":
-                        marketplace.set_grant(pod.id, ns, bool(body.get("allow")), who)
-                        topics.invalidate(f"pod:{pod.id}:market")
-                        _drop_pod_key(pod, "updates")                   # 허용이 바뀌면 「올릴 수 없음」 줄이 달라진다(R21)
-                        store.log_usage("market_grant", f"{who} {pod.id} {ns} → {'허용' if body.get('allow') else '해제'}", pod=pod.id)   # i18n-ignore: 사용 기록에 저장되는 문장
+                    if path == "/api/market/grant":               # 지금 작업공간 하나 — 새 경로와 같은 검사·쓰기(apply_grants). bool() 로 "false" 가 허용되던 것을 막는다(스펙 2026-11-18-015 DX 4)
+                        cols = marketplace.restricted_namespaces(marketplace.settings(), _catalog())
+                        ns_, target = marketplace.check_grants(body.get("namespace"), [pod.id], body.get("allow"), {pod.id}, cols)
+                        _apply_grants(ns_, target, body["allow"], who)
                         self._json({"ok": True})
                         return
                     if path == "/api/market/restore":
@@ -6881,8 +8225,10 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     pkg = marketplace.package(ns, name)
                     have = [str(p.get("name")) for p in HermesAPI(hub(pod).auth).call("GET", "/api/profiles").get("profiles", [])]
+                    consents = body.get("consents") if isinstance(body.get("consents"), list) else None   # stdio MCP 동의 해시(스펙 2026-11-18-002 §4-2 2)
                     row = marketplace.request_install(pod.id, pod.container, pkg, str(body.get("version") or ""), str(body.get("profile") or ""),
-                                                      str(body.get("mode") or "install"), who, have, str(body.get("on_modified") or ""))
+                                                      str(body.get("mode") or "install"), who, have, str(body.get("on_modified") or ""),
+                                                      consents=[str(c) for c in consents or []][:50], owner_limit=a.enabled and not registry().is_admin(user))
                 except (marketplace.MarketError, HermesError) as exc:
                     if path != "/api/market/grant":
                         store.log_usage("market_install_failed" if path.endswith("install") else "market_remove_failed", label, pod=pod.id)
@@ -6909,6 +8255,16 @@ class Handler(BaseHTTPRequestHandler):
                 store.log_usage("cron_mute" if body.get("mute") else "cron_unmute", f"{who} {prof}/{jid}", pod=pod.id)
                 topics.invalidate(f"pod:{pod.id}:health")      # 무시 표시는 읽을 때 붙는다 — 열린 화면에 곧바로 다시 보낸다
                 self._json({"ok": True, "muted": mutes.get(prof, jid)})
+                return
+            if path in RESTART_PENDING_WRITES:              # 게이트웨이 다시 시작 필요 — 다시 시작·반영됨으로 표시(스펙 2026-11-18-016 4-4)
+                from . import restart_pending_api as rpa
+                try:
+                    out = (rpa.apply if path.endswith("/apply") else rpa.dismiss)(registry(), user, a.enabled, body)
+                except rpa.RestartError as exc:
+                    self._send(exc.code, json.dumps(rpa.error_body(exc), ensure_ascii=False).encode(), "application/json; charset=utf-8",
+                               {"Retry-After": str(exc.retry_after)} if exc.retry_after else None)
+                    return
+                self._json(out)
                 return
             if path == "/api/profile/action":                # 프로파일을 바꾸는 일 — 전부 Hermes 대시보드 API 로 보낸다
                 # 화면이 보던 에이전트와 쿠키의 에이전트가 다르면 거절한다(스펙 2026-10-19-011 R1 ③). 다른 탭에서 에이전트를 바꾼 뒤
@@ -6950,17 +8306,33 @@ class Handler(BaseHTTPRequestHandler):
                     + (f" keys={','.join(sorted(str(k)[:64] for k in (body.get('env') or {})))[:200]}" if isinstance(body.get("env"), dict) and body["env"] else "")
                 body["_secure"] = self._secrets_ok()          # 비밀값은 암호화된 연결이나 로컬 시험 환경의 localhost 에서만(A3)
                 body["_owner"] = bool(a.enabled and not admin)                              # 관리자가 아닌 주인 — owner_guard 검사 대상(클라이언트가 보낸 값은 덮어쓴다)
+                body["_sub"] = str((user or {}).get("sub") or "")                          # MindWiki 계정으로 연결 상태는 사람마다(스펙 2026-11-14-001)
+                body.pop("_cookie", None)
+                if action == "mcp_mindwiki_connect":
+                    # 그 사람의 MindWiki 계정으로 토큰을 만든다 — 관리자라도 남의 AI 에이전트 작업공간에는 하지 않는다(스펙 4절 흐름 1)
+                    if a.enabled and not _owns_pod(pod, user, a.enabled):
+                        self._json({"error": tr("내 AI 에이전트 작업공간에서만 MindWiki 계정으로 연결할 수 있습니다", "You can connect your MindWiki account only in your own AI Agent Workspace"),
+                                    "reason": "forbidden"}, 403)
+                        return
+                    body["_cookie"] = self.headers.get("Cookie") or ""                     # refresh 토큰을 푸는 열쇠. 뒤 작업이 쓰고 버린다(로그에 남기지 않는다)
                 try:
                     out = _profile_action(pod, body, who)
                 except (HermesError, files.FileError, ValueError) as exc:
                     if not action.endswith("_preview"):
                         store.log_usage(f"profile_{action}_failed"[:60], label, pod=pod.id)
-                    self._json(_error_body(exc), getattr(exc, "code", 400))
+                    self._json_error(exc)
                     return
                 if action not in ("soul_preview", "config_preview", "agents_preview", "mcp_test", "mcp_catalog", "mcp_url_check", "export"):
                     store.log_usage("profile_" + action, label + (f" was_set={out['was_set']}" if isinstance(out, dict) and "was_set" in out else ""), pod=pod.id)
                     if action in ("delete", "rename"):           # 마켓 설치 기록이 프로파일을 따라가게
                         marketplace.note_profile(pod.id, str(body.get("name") or ""), "forget" if action == "delete" else "rename", who, str(out.get("name") or ""))
+                        try:                                     # 사용 집계 칸도 따라가게(스펙 2026-11-19-005 엔지니어링 리뷰 M2) — 안 옮기면 새 이름이 90일을 다시 채운다
+                            if action == "delete":
+                                usage_hours.delete_profile(pod.id, str(body.get("name") or ""))
+                            else:
+                                usage_hours.rename_profile(pod.id, str(body.get("name") or ""), str(out.get("name") or ""))
+                        except Exception as exc:                 # noqa: BLE001 — 프로파일은 이미 바뀌었다
+                            print(f"사용 집계 칸 정리 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
                     # 프로파일이 생기거나 없어질 때만 전부 새로 읽는다. 그 밖에는 프로파일 상태에 딸린 것만 버린다(다음 화면이 빨리 뜨게).
                     # 비밀값을 넣거나 지우고(.env 줄) 설정 파일을 고치거나 되돌리고(providers 의 api_key, mcp_servers 의 env·headers)
                     # 모델을 바꾸면(Hermes 가 config.yaml 을 다시 써 providers 의 base_url 등이 바뀐다) 자격증명 표가 바뀌므로 그 캐시(120초)는 남기지 않는다(OMAI-1175)
@@ -7030,11 +8402,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("주기를 적어 주세요", "Enter a schedule")}, 400)
                     return
                 deliver = str(body.get("deliver") or "").strip()
+                linked = _linked_targets(pod.id, prof)               # 이 프로파일 봇에 이은 사람들의 대화방(스펙 2026-11-17-008 §6-3)
+                me_ = str((user or {}).get("email") or "").lower()
+                if str(body.get("deliver_to") or "") == "me":       # 「나에게(메신저)」 — 내 연결 줄에서 고른다
+                    mine = [t for e, t in linked if e == me_]
+                    if not mine:
+                        self._json({"error": tr("이 프로파일의 봇에 내 메신저 계정을 연결하지 않았습니다", "You have not linked your messenger account to this profile's bot")}, 400)
+                        return
+                    deliver = mine[0]
+                elif "@" in str(body.get("deliver_to") or ""):       # 「다른 구성원」
+                    theirs = [t for e, t in linked if e == str(body.get("deliver_to")).lower()]
+                    if not theirs:
+                        self._json({"error": tr("그 사람은 이 프로파일의 봇에 메신저를 연결하지 않았습니다", "That person has not linked a messenger to this profile's bot")}, 400)
+                        return
+                    deliver = theirs[0]
                 if action == "deliver" and not (0 < len(deliver) <= 120):
                     self._json({"error": tr("전달 대상을 골라 주세요", "Choose a delivery target")}, 400)
                     return
                 refused = (cron_policy.profile_error(pod.id, prof) if action == "create" else "") or \
-                    (cron_policy.deliver_error(pod.id, deliver, admin) if action in ("create", "deliver") else "")
+                    (cron_policy.deliver_error(pod.id, deliver, admin, {t for _, t in linked}) if action in ("create", "deliver") else "")
                 if refused:
                     self._json({"error": refused}, 400 if admin else 403)
                     return
@@ -7074,6 +8460,8 @@ class Handler(BaseHTTPRequestHandler):
                             raise HermesError(tr("없는 프로파일입니다", "Profile not found"), 400)
                         res = api.call("POST", "/api/cron/jobs", {"name": name, "schedule": sched, "prompt": prompt, "skills": [skill] if skill else None,
                                                                   "deliver": deliver or "local"}, {"profile": prof})
+                        made = res.get("job", res) if isinstance(res, dict) else {}
+                        notify_out.note_cron_creator(pod.id, prof, str((made or {}).get("id") or ""), me_)   # 결과·실패는 만든 사람에게(§6-3)
                     else:
                         res = api.call("POST", f"{base}/{action}", {}, {"profile": prof})
                 except (HermesError, files.FileError) as exc:
@@ -7082,6 +8470,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 store.log_usage("cron_" + action, f"{(user or {}).get('email', 'local')} {prof}/{str(body.get('job_name') or jid)[:80]}"
                                 + (f" → {sched}" if action in ("schedule", "create") else f" → {deliver}" if action == "deliver" else ""), pod=pod.id)
+                if action == "delete":
+                    _drop_deleted_job(pod, prof, jid)
                 if action in ("create", "delete"):
                     _drop_pod_key(pod, "profiles")
                     threading.Thread(target=_rebuild_flow, args=(pod,), daemon=True).start()
@@ -7189,6 +8579,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # 보내기가 성공한 뒤에만 남긴다(바쁨 409·실패는 세지 않는다). 누가 어느 에이전트에 보냈는지만, 글 내용은 남기지 않는다(스펙 2026-10-22-001 §5-4)
                 store.log_usage("chat_send", f"{(user or {}).get('email') or 'local'} {(h.sessions.get(sid) or {}).get('profile') or 'default'}", pod=pod.id)
+                ctx_page = page_context.page_id(text)      # MindWiki 위젯의 페이지 맥락이 붙은 메시지(스펙 2026-11-15-002 A1·X4). page_id·프로파일만 남긴다
+                if ctx_page is not None:
+                    store.log_usage("mindwiki_widget_context", f"{(h.sessions.get(sid) or {}).get('profile') or 'default'} {ctx_page or '-'}", pod=pod.id)
                 if pod.sidecar_url:                        # 쿠버네티스의 사용자 Hermes: 롤아웃이 대화 중인 에이전트를 맨 뒤로 미루게 표시한다(스펙 2026-10-28-015 리뷰 D4)
                     rollouts.mark_busy_later(pod.id)
                 self._json({"ok": True, "result": sent})
@@ -7208,6 +8601,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._json({"ok": True, "result": h.queue_op(sid, op, str(body.get("id") or ""))})
             elif path == "/api/chat/approval":                # 먼저 답한 쪽만(Claude Code·받은편지함과 겹칠 수 있다, 스펙 2026-10-28-001 §3-7 ④)
+                if not may_approve(pod, user, a.enabled):     # 보기만 받은 사람·「대화」 구성원은 자기 대화의 승인도 못 한다(스펙 2026-11-17-008 §3-3)
+                    self._json({"error": APPROVAL_DENIED(), "reason": "approval_owner_only"}, 403)
+                    return
                 choice, rid, who = str(body.get("choice") or "deny"), body.get("request_id"), str((user or {}).get("email") or "")
                 self._json({"ok": True, "result": _answer_once(pod, sid, "approval", rid, None, choice, who, lambda: h.approve(sid, choice, rid))})
             elif path == "/api/chat/clarify":
@@ -7235,6 +8631,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(exc.body, 409)
         except ChatUnavailable as exc:
             self._json({"error": str(exc)}, 503)
+        except hermes_remote.SidecarError as exc:   # 채팅만 다시 시도할 503 이다. 다른 화면은 이유가 적힌 500 그대로(ADR-0008)
+            if path.startswith("/api/chat/"):
+                self._json(_sidecar_busy(exc), 503)
+            else:
+                self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
         except ValueError:
             self._json({"error": tr("잘못된 요청", "Invalid request")}, 400)
         except Exception as exc:
@@ -7250,9 +8651,7 @@ class Handler(BaseHTTPRequestHandler):
             self._login_page(tr("잘못된 요청입니다.", "Invalid request."), code=413)
             return
         form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
-        nxt = form.get("next", ["/"])[0]
-        if not nxt.startswith("/") or nxt.startswith("//"):
-            nxt = "/"
+        nxt = safe_next(form.get("next", ["/"])[0])
         try:
             token = auth().password_login(form.get("email", [""])[0], form.get("password", [""])[0],
                                           self.client_address[0])
@@ -7293,11 +8692,18 @@ def _office_events(after: int | None, a, user):
         yield b"".join(out)
 
 
-def _chat_event_stream(h: ChatHub, sid: str, after: int):
-    """채팅 SSE 본문. 브라우저가 Last-Event-ID 로 이어 받는다."""
+def _chat_event_stream(h: ChatHub, sid: str, after: int, still_allowed=lambda: True):
+    """채팅 SSE 본문. 브라우저가 Last-Event-ID 로 이어 받는다. 쉬는 사이(20초)마다 아직 볼 수 있는 작업공간인지 다시 보고,
+    아니면 끝낸다 — 공유에서 빠진 사람이 열어 둔 대화를 계속 받지 않게(스펙 2026-11-17-008 §3-5). 다시 이으면 권한 검사에서 막힌다."""
     while True:
         events = h.events_after(sid, after, wait=20)
         if not events:
+            try:
+                ok = still_allowed()
+            except Exception:                    # 권한을 못 읽으면(DB 순간 오류) 끊지 않는다 — 다음 확인에서 다시 본다
+                ok = True
+            if not ok:
+                return
             yield b": keepalive\n\n"
             continue
         out = []
@@ -7635,7 +9041,24 @@ def shared_tick() -> None:
         PRESENCE.expire()                                     # 걸음 읽기는 만료 행을 거르기만 한다 — 지우기는 여기서(리뷰 C2)
         _sweep_meetings()
         _prune_chat_hubs()                                    # 오래 쉬던 채팅 세션(스펙 2026-11-05-005 D4)
+        if leader.is_leader():                                # 구성원을 뺄 때 파드가 꺼져 실패한 메신저 철회(스펙 2026-11-17-008 §3-5). Hermes 를 부르므로 따로 돈다
+            threading.Thread(target=_retry_messenger_revokes, daemon=True, name="messenger-revoke").start()
+            from . import notify_hooks                        # 실패 예약 작업·칸반을 메신저로도(§6-2). 이벤트가 없어 리더가 1분마다 훑는다
+            notify_hooks.scan_in_background(registry())
+        if leader.is_leader():                                # 끝난 지 1시간 지난 임베드 토큰·지난 jti(OMAI-1873). DB 전역 정리라 리더만
+            try:
+                embed.prune()
+            except Exception as exc:                          # 다음 주기에 다시 한다
+                print(f"임베드 토큰을 정리하지 못했습니다: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
         _shared_at["clean"] = now
+
+
+def _retry_messenger_revokes() -> None:
+    from . import messenger_api
+    try:
+        messenger_api.retry_revokes(registry())
+    except Exception as exc:                                  # 다음 주기에 다시 한다
+        print(f"메신저 연결 철회를 다시 시도하지 못했습니다: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
 
 
 def _sweep_meetings() -> None:
@@ -7734,6 +9157,10 @@ def _office_chat(acc: office_access.Access, method: str, path: str, one, body: d
         if not text:
             raise meeting.MeetingError(tr("말을 적어 주세요", "Enter a message"))
         skill = str(body.get("skill") or "").strip().lstrip("/")[:120]
+        if not skill and text.startswith("/") and not acc.manages(alias):   # 플러그인 명령은 글로 보내 Hermes 플러그인이 실행한다 — 명령 권한이 없는 사람이 쳐 보내는 것도 막는다(스펙 2026-11-19-003 §3-1 #15)
+            plugins = chat_commands.plugin_names(skill_commands.cached(bridge.hub(seat["pod"]), seat["profile"]))
+            if chat_commands.names_plugin(text, plugins):
+                raise office_access.Denied(tr("이 명령은 AI 에이전트를 관리하는 사람만 쓸 수 있습니다", "Only people who manage this AI Agent can use this command"), 403)
         row, _ = office.session_create(alias, _office_chat_title(who, alias))
         try:
             # 주인·관리자·팀 관리자가 아니면 주인의 위키 계정으로 쓰지 못하게 그 턴의 쓰기 도구를 막는다(스펙 2026-10-23-004 15-9)
@@ -8038,6 +9465,7 @@ def serve(host: str = "127.0.0.1", port: int = 17900):
 
 def start_background() -> None:
     """서버가 도는 동안 함께 도는 반복 작업. ASGI 앱의 lifespan 시작 단계에서 한 번 부른다(시험 하네스는 부르지 않는다)."""
+    restart_pending.migrate_meta()                   # 옛 메신저 다시 시작 장부(meta)를 표로(스펙 2026-11-18-016 4-3). 실패해도 시작을 막지 않는다
     threading.Thread(target=_office_loop, daemon=True, name="aas-office").start()
     threading.Thread(target=_presence_loop, daemon=True, name="aas-presence").start()
     threading.Thread(target=_identity_loop, daemon=True, name="aas-identity").start()

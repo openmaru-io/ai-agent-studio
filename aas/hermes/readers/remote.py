@@ -44,6 +44,10 @@ TREE_SKIP_DIRS = ["logs", "sessions", "cache", ".cache", "home", "node_modules",
 DEPENDENCY_DIRS = [
     ".npm", ".pnpm-store", ".yarn", "bower_components", ".next", ".nuxt", ".turbo", ".parcel-cache",          # Node.js
     "site-packages", "dist-packages", ".venv", "venv", ".venvs", "lazy-packages",                           # Python
+    # .deps: 스킬·플러그인이 `pip install --target <스킬>/.deps` 로 깐 패키지(COP share-marketing 6만여 개로 묶음이 끊겨 사이드카
+    # OOMKilled), .python: uv 가 받은 파이썬 해석기. 스펙 2026-11-18-018 R1. backup·backups 는 넣지 않는다 — 스킬 안 state/backup
+    # 같은 폴더가 묶음에서 partial 이 되면 그 프로파일의 찾기 전체가 사이드카로 간다(사용자 최종 승인)
+    ".deps", ".python",
     ".tox", ".nox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".ipynb_checkpoints",
     ".gradle", ".m2", ".cargo", ".rustup", ".bundle", ".dart_tool", ".pub-cache", ".stack-work", "dist-newstyle",
     "renv", ".terraform",
@@ -74,12 +78,59 @@ def search_skip_dirs(environ=None) -> frozenset[str]:
     """찾기·집계용 재귀 목록이 건너뛰는 이름(D11). 환경변수로 더한 이름도 의존성 폴더로 보고 함께 건너뛴다."""
     import os
     return frozenset(_SEARCH_BASE + DEPENDENCY_DIRS + _extra_skip_dirs(os.environ if environ is None else environ))
+
+
+# 끊김·잘림 경고(스펙 2026-11-18-018 R5). 운영자가 README 문제 해결 표를 이 태그로 찾는다 — 문장이 바뀌어도 태그는 그대로 둔다.
+# 조치는 건너뛰기 먼저: 상한을 올리면 사이드카가 더 큰 목록을 만들어 메모리가 모자란 경우(COP 2026-11-18 OOMKilled)를 더 나쁘게 한다
+CUT_TAG = "[AAS-TREE-CUT]"
+_CUT_FIX = ("많은 폴더가 의존성·백업 폴더면 서버의 AAS_TREE_SKIP_DIRS_EXTRA 에 그 이름을 더하세요(스킬 이름은 넣지 않음). "  # i18n-ignore: 로그
+            "그래도 끊기면 사이드카의 AAS_SIDECAR_MAX_ENTRIES(기본 50000)를 올리세요(사이드카 메모리가 늘어남)")  # i18n-ignore: 로그
+_STRUCT_NAMES = frozenset({"profiles", "skills", "plugins"})
+
+
+def _extra_note() -> str:
+    import os
+    extra = _extra_skip_dirs(os.environ)
+    return "EXTRA=" + (",".join(extra) if extra else "(비움)")  # i18n-ignore: 로그
+
+
+def _clean_name(name: str) -> str:
+    """로그에 찍는 사용자 폴더 이름: 제어 문자를 빼고 64자로 자른다(로그 줄 꾸밈 방지)."""
+    return "".join(ch for ch in name if ch.isprintable())[:64]
+
+
+def _top_folder_names(entries, limit: int = 3) -> list[tuple[str, int]]:
+    """받은 항목을 부모 경로 조각 이름별로 세어 많은 순 limit 개. 항목 자신의 이름(파일 이름)은 세지 않는다.
+    어느 항목에나 붙는 구조 이름(profiles·skills·plugins, 프로파일 이름, 스킬 카테고리)은 뺀다. 하나를 고르면 그 이름이 경로에 든
+    항목(그 폴더 안과 그 폴더를 품은 위 폴더 몫)을 빼고 다시 세어, 같은 줄기(.deps 와 그 안 googleapiclient, .deps 를 가진 스킬
+    폴더)가 자리를 채우지 않게 한다. 같은 수면 이름순. 스펙 2026-11-18-018 R5."""
+    from collections import Counter
+    paths = []
+    for e in entries:
+        parts = str(e.get("path") or "").split("/")[:-1]
+        names = {part for i, part in enumerate(parts)
+                 if part not in _STRUCT_NAMES and not (i and parts[i - 1] in ("profiles", "skills"))}
+        if names:
+            paths.append(names)
+    picked: list[tuple[str, int]] = []
+    for _ in range(limit):
+        counts: Counter = Counter()
+        for names in paths:
+            counts.update(names)
+        if not counts:
+            break
+        name, n = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        picked.append((name, n))
+        paths = [names for names in paths if name not in names]
+    return [(_clean_name(n), c) for n, c in picked]
 # 게이트웨이가 수시로 고쳐 쓰는 상태 파일 두 개는 내용을 묶음에 넣지 않는다 — 읽을 때마다 사이드카에서 새로 받는다.
 # 묶음(60초)의 내용으로 답하면 MCP 로그인 뒤 게이트웨이가 붙은 것을 60초 늦게 보고, 로그인 직후의 유예가 끝나 「확인 전」이 된다
 # (OKE 2026-10-17, 스펙 2026-10-16-010 14-15). 둘 다 작은 파일이라 왕복 한 번이다.
 # 묶음은 있음·없음도 들고 있으므로 내용만 빼서는 모자란다: 새 파드는 MCP 서버를 처음 더할 때 상태 파일이 생기는데, 묶음이 「없음」을
 # 들고 있으면 60초 동안 없다고 답했다(14-17). 그래서 stat·read 도 이 이름은 묶음을 거치지 않는다(LIVE_FILES).
-LIVE_FILES = frozenset({"aas-mcp-status.json", "gateway_state.json"})
+# gateway-starts.log 는 게이트웨이가 시작할 때마다 한 줄 쓴다. 바깥 다시 시작 판별(스펙 2026-11-18-016 4-3)이 마지막 시각을 읽으므로
+# 묶음이 들고 있는 있음·없음으로 답하지 않는다
+LIVE_FILES = frozenset({"aas-mcp-status.json", "gateway_state.json", "gateway-starts.log"})
 TREE_NO_CONTENT = [".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3", ".log", ".jsonl", ".gz", ".zip", ".tar", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".so", ".whl",
                    *sorted(LIVE_FILES)]
 TREE_MAX_FILE = 262_144
@@ -179,10 +230,11 @@ class _Tree:
             return self.entries[rel]
         return {"exists": False} if self.covers(rel) else None
 
-    def descendants(self, rel: str, recursive: bool, skip: frozenset = frozenset()) -> list[str] | None:
+    def descendants(self, rel: str, recursive: bool, skip: frozenset = frozenset(), skipped: set | None = None) -> list[str] | None:
         """rel 아래 항목들. 안을 보지 않은 폴더가 걸리면 None(사이드카에 묻는다).
         skip 이름의 항목(폴더면 그 안까지)은 결과에서 빼므로, 안을 보지 않은 폴더여도 사이드카에 묻지 않는다(스펙 2026-11-03-003 D11).
-        로컬 `search_rglob` 과 같은 규칙이다: 경로 조각 하나라도 skip 에 있으면 뺀다."""
+        로컬 `search_rglob` 과 같은 규칙이다: 경로 조각 하나라도 skip 에 있으면 뺀다. skipped 를 주면 뺀 항목의 경로를 담는다
+        (스킬 덮기 판정이 깊은 .deps 를 알아야 한다, 스펙 2026-11-18-018 R6)."""
         if rel in self.partial or not self.covers(rel) or rel not in self.children:
             return None
         out, stack = [], [rel]
@@ -190,6 +242,8 @@ class _Tree:
             cur = stack.pop()
             for child in self.children.get(cur, []):
                 if skip and posixpath.basename(child) in skip:
+                    if skipped is not None:
+                        skipped.add(child)
                     continue
                 out.append(child)
                 if recursive and self.entries[child]["type"] == "dir":
@@ -244,6 +298,21 @@ def call_report_line(st: dict) -> str | None:
 class SidecarError(OSError):
     """사이드카가 응답하지 않거나 이상한 답을 줬다. 호출한 쪽은 OSError 로 받아 「수집 실패」로 다룬다."""
     timed_out = False                                         # 시간 초과로 실패했는가(응답 없음 기억에 쓴다)
+    status = 0                                                # 사이드카가 돌려준 HTTP 상태(답이 없었으면 0)
+
+
+# 원격 sqlite 의 실패 종류. 모두 sqlite3.OperationalError 의 하위 종류라 except sqlite3.Error 로 받던 호출부는 그대로 동작하고,
+# 사용 집계처럼 실패마다 다르게 할 호출부는 문장 비교 없이 가른다(스펙 2026-11-19-005 U1)
+class SqlTruncated(sqlite3.OperationalError):
+    """결과가 행 상한이나 바이트 상한을 넘어 잘렸다. 범위를 줄여 다시 물으면 된다."""
+
+
+class SqlTimeout(sqlite3.OperationalError):
+    """사이드카의 SQL 시간 한도(408)나 소켓 한도를 넘었다."""
+
+
+class SqlBusy(sqlite3.OperationalError):
+    """DB 가 잠겨 지금 읽을 수 없다(사이드카 503)."""
 
 
 # 시간 초과가 나면 「응답 없음」으로 기억하는 가벼운 연산(스펙 2026-10-24-002 R4·검토 D4). tree·scan 은 데이터가 커서
@@ -255,6 +324,12 @@ def _batch_read(path: str, body: dict | None) -> bool:
     """여러 파일을 묶은 read. 합계가 256KB 를 넘으면 사이드카에서 tree 와 같은 무거운 잠금 뒤에 줄 서므로(R20), 늦어도 사이드카가
     죽은 것이 아니다 — 「응답 없음」 기억을 켜지 않는다(스펙 2026-10-24-002 외부 검토 4)."""
     return path == "/v1/read" and len((body or {}).get("paths") or ()) > 1
+
+
+def _long_sql(path: str, body: dict | None) -> bool:
+    """시간 한도를 늘려 물은 sqlite(사용 집계의 긴 읽기). 늦어도 사이드카가 죽은 것이 아니다 — 「응답 없음」 기억을 켜지 않는다
+    (스펙 2026-11-19-005 U1, _batch_read 와 같은 예외)."""
+    return path == "/v1/sqlite" and bool((body or {}).get("max_seconds"))
 
 
 class RemoteBackend:
@@ -301,7 +376,7 @@ class RemoteBackend:
             with self._lock:
                 if trial:
                     self._trial = False
-                if exc.timed_out and path in LIGHT_OPS and not _batch_read(path, body):
+                if exc.timed_out and path in LIGHT_OPS and not _batch_read(path, body) and not _long_sql(path, body):
                     self._down_at = time.monotonic()
             raise
         _count(self.label, path, time.monotonic() - began, len(raw))
@@ -319,7 +394,9 @@ class RemoteBackend:
                 raise PermissionError(tr(f"사이드카가 토큰을 거절했습니다 ({self.label})", f"The sidecar rejected the token ({self.label})"))
             if status == 404:
                 raise FileNotFoundError(detail or tr("없습니다", "Not found"))
-            raise SidecarError(tr(f"사이드카 오류 HTTP {status}: {detail}", f"Sidecar error HTTP {status}: {detail}"))
+            err = SidecarError(tr(f"사이드카 오류 HTTP {status}: {detail}", f"Sidecar error HTTP {status}: {detail}"))
+            err.status = status
+            raise err
         try:
             return json.loads(raw)
         except ValueError:
@@ -457,14 +534,15 @@ class RemoteBackend:
             if listing.get("truncated"):
                 self._mark_truncated(listing.get("entry_count") or len(listing.get("entries") or ()))
                 return False
-            if listing.get("cut"):
-                self._warn_cut(len(listing.get("entries") or ()))
+            cut = listing if listing.get("cut") and not self._cut_warned else None
             self._has_tree = True
             self._tree = self._build_tree(listing, base)
             self._last_tree = None                        # 견주기가 끝났다 — 에이전트마다 묶음 하나만 둔다
             self._tree_failed_at = 0.0
             self._tree_truncated_at = 0.0
-            return True
+        if cut is not None:
+            self._warn_cut(cut)                           # 이름 세기(5만 개)는 묶음 잠금 밖에서(스펙 2026-11-18-018 R5)
+        return True
 
     def _truncated_recently(self) -> bool:
         return bool(self._tree_truncated_at) and time.monotonic() - self._tree_truncated_at < TRUNCATED_MEMO
@@ -474,18 +552,21 @@ class RemoteBackend:
         self._tree_truncated_at = time.monotonic()
         if not self._truncated_warned:
             self._truncated_warned = True
-            print(f"사이드카 묶음이 항목 상한에서 잘렸습니다({self.label}, 받은 항목 {count}개). "   # i18n-ignore: 로그
-                  f"{TRUNCATED_MEMO:.0f}초 동안 묶음 없이 파일마다 묻습니다. 사이드카의 AAS_SIDECAR_MAX_ENTRIES 를 올리거나 "
-                  f"서버의 AAS_TREE_SKIP_DIRS_EXTRA 로 큰 폴더를 건너뛰세요", flush=True)
+            print(f"{CUT_TAG} 사이드카 묶음이 항목 상한에서 잘렸습니다({self.label}, 받은 항목 {count}개, {_extra_note()}). "   # i18n-ignore: 로그
+                  f"{TRUNCATED_MEMO:.0f}초 동안 묶음 없이 파일마다 묻습니다. {_CUT_FIX}", flush=True)
 
-    def _warn_cut(self, count: int) -> None:
+    def _warn_cut(self, listing: dict) -> None:
         """사이드카가 상한에서 폴더 몇 개를 끊고 나머지를 보냈다(후속 F1, 2026-11-03 판부터). 묶음은 그대로 쓰고, 끊긴 폴더 안만
-        파일마다 묻는다 — 잘림 기억(TRUNCATED_MEMO)은 두지 않는다. 원인과 고칠 길을 에이전트마다 한 번 남긴다."""
-        if not self._cut_warned:
-            self._cut_warned = True
-            print(f"사이드카가 항목 상한에서 폴더 일부를 끊었습니다({self.label}, 받은 항목 {count}개). "   # i18n-ignore: 로그
-                  f"끊긴 폴더 안은 파일마다 묻습니다. 사이드카의 AAS_SIDECAR_MAX_ENTRIES 를 올리거나 "
-                  f"서버의 AAS_TREE_SKIP_DIRS_EXTRA 로 큰 폴더를 건너뛰세요", flush=True)
+        파일마다 묻는다 — 잘림 기억(TRUNCATED_MEMO)은 두지 않는다. 원인과 고칠 길을 에이전트마다 한 번 남긴다.
+        받은 항목을 이름별로 세어 많은 폴더 이름을 붙인다 — 끊긴 폴더(partial)는 이름순이라 원인이 아니다(스펙 2026-11-18-018 R5)."""
+        if self._cut_warned:
+            return
+        self._cut_warned = True
+        entries = (listing or {}).get("entries") or []
+        top = " · ".join(f"{n} {c}" for n, c in _top_folder_names(entries))
+        names = f", 받은 항목 기준 많은 폴더 이름: {top}" if top else ""  # i18n-ignore: 로그
+        print(f"{CUT_TAG} 사이드카가 항목 상한에서 폴더 일부를 끊었습니다({self.label}, 받은 항목 {len(entries)}개{names}, "   # i18n-ignore: 로그
+              f"{_extra_note()}). 끊긴 폴더 안은 파일마다 묻습니다. {_CUT_FIX}", flush=True)
 
     def _listing_body(self) -> dict:
         # "" 는 모든 파일 — 목록만. hashes·cursor 는 사이드카 1.5 부터(파일 해시·변경 커서, R7·R10). 옛 사이드카는 모르는 키를 무시한다
@@ -664,26 +745,39 @@ class RemoteBackend:
             out = [o if o is not None else next(got) for o in out]
         return out  # type: ignore[return-value]
 
-    def list(self, rel: str, pattern: str, skip: frozenset = frozenset()) -> list[dict]:
+    def list(self, rel: str, pattern: str, skip: frozenset = frozenset(), skipped: set | None = None, *,
+             skipped_probe: bool = True, incomplete: list | None = None, fallback_skip: frozenset | None = None) -> list[dict]:
         """skip: 결과에서 빼고 들어가지 않을 폴더 이름(찾기·집계용, 스펙 2026-11-03-003 D11). 묶음이 있으면 그 이름의 폴더는
-        안을 보지 않았어도 사이드카에 묻지 않는다. 사이드카에 물을 때는 skip_dirs 를 싣고, 그 키를 모르는 옛 사이드카가 무시해도 같게 받은 결과를 거른다."""
+        안을 보지 않았어도 사이드카에 묻지 않는다. 사이드카에 물을 때는 skip_dirs 를 싣고, 그 키를 모르는 옛 사이드카가 무시해도 같게 받은 결과를 거른다.
+        묶음이 답하지 못해 사이드카에 물을 때(대체 길, 스펙 2026-11-18-019 R7):
+        - skipped_probe=False 면 건너뛴 이름을 찾으려고 폴더마다 다시 묻지 않는다(스킬 묶음은 클릭 한 번에 수백 번이 될 수 있다).
+        - incomplete 를 주면 대체 길로 간 rel 을 담는다 — skipped 가 덜 찼다는 표지를 skipped 에 섞지 않는다.
+        - fallback_skip 을 주면 사이드카에는 skip 대신 이것을 싣고 거른다(스킬 묶음이 깊이 규칙을 직접 적용할 이름을 빼고 묻는다)."""
         tree = self._fresh_tree()
         pat = [p for p in pattern.split("/") if p] if pattern else []
         # 끝이 ** 인 패턴은 파이썬 판마다 뜻이 달라(3.13 부터 파일도 낸다) 사이드카에 그대로 묻는다
         if tree is not None and pat and pat[-1] != "**" and not pattern.startswith("/") and ".." not in pat:
-            found = tree.descendants(rel, recursive=len(pat) > 1 or "**" in pat, skip=skip)
+            found = tree.descendants(rel, recursive=len(pat) > 1 or "**" in pat, skip=skip, skipped=skipped)
             if found is not None:
                 if rel and rel not in tree.entries:
                     raise FileNotFoundError(rel)
                 base = len(rel) + 1 if rel else 0
                 hits = sorted(p for p in found if _match(p[base:].split("/"), pat))
                 return [{"path": p, **{k: tree.entries[p][k] for k in ("type", "size", "mtime", "mode")}} for p in hits]
+        if incomplete is not None:
+            incomplete.append(rel)
+        skip = skip if fallback_skip is None else fallback_skip
         body = {"path": rel, "pattern": pattern, **({"skip_dirs": sorted(skip)} if skip else {})}
         out = self._call("POST", "/v1/list", body)
         entries = out["entries"]
         if skip:
             base = len(rel) + 1 if rel else 0
             entries = [e for e in entries if not skip.intersection(e["path"][base:].split("/"))]
+            if skipped is not None and skipped_probe:                   # 사이드카는 skip 폴더를 내지 않는다 — 폴더마다 얕게 물어 건너뛴 이름을 찾는다
+                for d in [rel] + [e["path"] for e in entries if e.get("type") == "dir"]:
+                    for e in self._call("POST", "/v1/list", {"path": d, "pattern": "*"}).get("entries") or ():
+                        if posixpath.basename(e["path"]) in skip:
+                            skipped.add(e["path"])
         now = time.monotonic()
         with self._lock:                              # 목록이 준 종류·크기를 stat 캐시에 넣어 is_file() 왕복을 없앤다
             for e in entries:
@@ -734,8 +828,29 @@ class RemoteBackend:
             return resp.status, code, None, None
         return 200, "", resp, conn
 
-    def sqlite(self, rel: str, sql: str, params: list) -> dict:
-        return self._call("POST", "/v1/sqlite", {"path": rel, "sql": sql, "params": params})
+    def sqlite(self, rel: str, sql: str, params: list, max_seconds: float | None = None, max_bytes: int | None = None) -> dict:
+        """max_seconds·max_bytes 는 사이드카가 그 질의에 쓸 한도다(옛 사이드카는 모르는 키라 무시한다). 시간 한도를 늘리면
+        소켓도 그만큼(+5초) 기다린다(스펙 2026-11-19-005 U1)."""
+        body = {"path": rel, "sql": sql, "params": params}
+        if max_seconds:
+            body["max_seconds"] = max_seconds
+        if max_bytes:
+            body["max_bytes"] = max_bytes
+        if max_seconds:
+            return self._call("POST", "/v1/sqlite", body, max_seconds + 5)
+        return self._call("POST", "/v1/sqlite", body)
+
+    def has_sql_limits(self) -> bool:
+        """사이드카가 sqlite 의 요청별 시간·바이트 한도를 아는가. 모르면(옛 판) 부른 쪽이 행 수를 낮춰 묻는다."""
+        known = getattr(self, "_has_sql_limits", None)       # has_file_ops 와 같이 — 아는 것은 계속, 모르는 것은 60초 동안 기억
+        if known and (known[0] or time.monotonic() - known[1] < 60):
+            return known[0]
+        try:
+            ok = "sqlite_limits" in (self.version().get("ops") or [])
+        except (OSError, ValueError):
+            ok = False
+        self._has_sql_limits = (ok, time.monotonic())
+        return ok
 
     def sqlite_batch(self, queries: list[tuple[str, str, list]]) -> list[dict]:
         """여러 쿼리를 요청 하나로(사이드카 1.3.0). 옛 사이드카는 하나씩 묻는다. 결과는 쿼리마다 sqlite() 응답이거나 {error, code}."""
@@ -901,32 +1016,50 @@ class RemotePath:
     def read_text(self, encoding: str = "utf-8", errors: str = "strict") -> str:
         return self.read_bytes().decode(encoding, errors)
 
-    def _list(self, pattern: str, skip: frozenset = frozenset()) -> list["RemotePath"]:
+    def _list(self, pattern: str, skip: frozenset = frozenset(), skipped: set | None = None, **opts) -> list["RemotePath"]:
         if self._outside:
             raise PermissionError(tr("root 밖입니다", "Outside the root"))
-        return [RemotePath(self._b, e["path"]) for e in self._b.list(self._rel, pattern, skip)]
+        return [RemotePath(self._b, e["path"]) for e in self._b.list(self._rel, pattern, skip, skipped, **opts)]
 
     def iterdir(self):
         return iter(self._list("*"))
 
-    def glob(self, pattern: str, skip: frozenset = frozenset()):
+    def glob(self, pattern: str, skip: frozenset = frozenset(), skipped: set | None = None, **opts):
         try:
-            return iter(self._list(pattern, skip))
+            return iter(self._list(pattern, skip, skipped, **opts))
         except FileNotFoundError:
             return iter(())                            # pathlib 처럼 없는 폴더의 glob 은 빈 결과
 
-    def rglob(self, pattern: str, skip: frozenset = frozenset()):
-        return self.glob("**/" + pattern, skip)
+    def rglob(self, pattern: str, skip: frozenset = frozenset(), skipped: set | None = None, **opts):
+        return self.glob("**/" + pattern, skip, skipped, **opts)
 
 
-def search_rglob(path, pattern: str, skip: frozenset | None = None):
+def search_rglob(path, pattern: str, skip: frozenset | None = None, skipped: set | None = None, **opts):
     """찾기·집계용 재귀 목록: `path.rglob(pattern)` 에서 skip 이름의 폴더(기본 `search_skip_dirs()`)와 그 안을 뺀다.
     로컬 Path 와 RemotePath 가 같은 결과를 낸다(스펙 2026-11-03-003 D11·D9). 원격이면 그 폴더 안을 사이드카에 묻지 않는다.
-    모든 파일이 필요한 호출(라이브러리 목록·Hermes 와 같은 해시)은 이것을 쓰지 않는다."""
+    모든 파일이 필요한 호출(라이브러리 목록·Hermes 와 같은 해시)은 이것을 쓰지 않는다.
+    skipped 를 주면 건너뛴 폴더의 path 기준 상대 경로("a/.deps")를 담는다(스펙 2026-11-18-018 R6, 로컬·묶음·사이드카 같은 결과).
+    opts(skipped_probe·incomplete·fallback_skip)는 원격 대체 길에만 쓴다 — `RemoteBackend.list` 참고(스펙 2026-11-18-019). 로컬은 무시한다."""
     skip = search_skip_dirs() if skip is None else frozenset(skip)
     if isinstance(path, RemotePath):
-        return list(path.rglob(pattern, skip))
-    return [p for p in path.rglob(pattern) if not skip.intersection(p.relative_to(path).parts)]
+        found: set | None = set() if skipped is not None else None
+        out = list(path.rglob(pattern, skip, found, **opts))
+        if skipped is not None:
+            base = len(path._rel) + 1 if path._rel else 0
+            skipped.update(p[base:] for p in found or ())
+        return out
+    if skipped is None:
+        return [p for p in path.rglob(pattern) if not skip.intersection(p.relative_to(path).parts)]
+    out = []
+    for p in path.rglob("*"):                          # 건너뛴 폴더를 찾으려면 패턴과 관계없이 모든 경로를 본다(로컬이라 싸다)
+        parts = p.relative_to(path).parts
+        hit = next((i for i, part in enumerate(parts) if part in skip), None)
+        if hit is not None:
+            skipped.add("/".join(parts[:hit + 1]))
+    for p in path.rglob(pattern):
+        if not skip.intersection(p.relative_to(path).parts):
+            out.append(p)
+    return out
 
 
 def read_texts(paths: list[RemotePath], batch: int = 200, strict: bool = False) -> list[str]:
@@ -1002,19 +1135,26 @@ class RemoteConnection:
     def __init__(self, path: RemotePath):
         self._path = path
 
-    def execute(self, sql: str, params=()) -> RemoteCursor:
+    def execute(self, sql: str, params=(), *, max_seconds: float | None = None, max_bytes: int | None = None) -> RemoteCursor:
         try:
-            out = self._path.backend.sqlite(self._path.rel, sql, list(params))
+            if max_seconds or max_bytes:
+                out = self._path.backend.sqlite(self._path.rel, sql, list(params), max_seconds=max_seconds, max_bytes=max_bytes)
+            else:
+                out = self._path.backend.sqlite(self._path.rel, sql, list(params))
         except PermissionError as exc:
             raise sqlite3.OperationalError(str(exc)) from None
         except FileNotFoundError:
             raise sqlite3.OperationalError("unable to open database file") from None
         except SidecarError as exc:
+            if exc.timed_out or exc.status == 408:
+                raise SqlTimeout(str(exc)) from None
+            if exc.status == 503:
+                raise SqlBusy(str(exc)) from None
             raise sqlite3.OperationalError(str(exc)) from None
         cols = tuple(out["columns"])
         rows = [RemoteRow(cols, [self._cell(c) for c in r]) for r in out["rows"]]
         if out.get("truncated"):
-            raise sqlite3.OperationalError(tr("결과가 너무 많아 잘렸습니다", "Result truncated: too many rows"))
+            raise SqlTruncated(tr("결과가 너무 많아 잘렸습니다", "Result truncated: too many rows"))
         return RemoteCursor(rows)
 
     @staticmethod

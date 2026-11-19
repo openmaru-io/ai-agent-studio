@@ -45,11 +45,20 @@ GIT_COMMIT_DATE ?= $(shell git log -1 --format=%cd --date=iso 2>/dev/null)
 BUILD_INFO = --build-arg AAS_VERSION=$(VERSION) --build-arg AAS_GIT_COMMIT=$(GIT_COMMIT) --build-arg "AAS_GIT_COMMIT_DATE=$(GIT_COMMIT_DATE)"
 PLATFORMS ?= linux/amd64,linux/arm64
 PY_IMAGE ?= python:3.12-slim
-push: ## 서버·읽기 사이드카 이미지를 여러 아키텍처로 빌드해 REGISTRY 에 VERSION 태그로 푸시(docker login 이 되어 있어야 한다)
+# 고유 태그 <VERSION>-b<AAS_BUILD_NUM>-<커밋 앞 7자>(스펙 2026-11-17-001 R1). Jenkins 가 AAS_BUILD_NUM=$BUILD_NUMBER 를 넘긴다.
+# 비우면 고유 태그를 붙이지 않는다 — 단 이미 있는 VERSION 태그는 덮지 않고 멈춘다(ALLOW_NO_UNIQUE_TAG=1 로만 덮어쓴다)
+AAS_BUILD_NUM ?=
+ALLOW_NO_UNIQUE_TAG ?=
+GIT_SHA7 ?= $(shell printf '%s' '$(GIT_COMMIT)' | cut -c1-7)
+PUSH_ENV = REGISTRY=$(REGISTRY) VERSION=$(VERSION) PLATFORMS=$(PLATFORMS) AAS_BUILD_NUM=$(AAS_BUILD_NUM) GIT_SHA7=$(GIT_SHA7) \
+	ALLOW_NO_UNIQUE_TAG=$(ALLOW_NO_UNIQUE_TAG) AAS_IMAGE_FILE=$(CURDIR)/.aas-images
+push: ## 서버·읽기 사이드카 이미지를 여러 아키텍처로 빌드해 REGISTRY 에 고유 태그와 VERSION 태그로 푸시(docker login 이 되어 있어야 한다). 끝 줄이 AAS_IMAGE <이름>=<저장소>:<고유 태그>@<digest>
 	@[ -n "$(REGISTRY)" ] || { echo "REGISTRY 를 정하세요. 예: make push REGISTRY=ghcr.io/<조직> VERSION=$(VERSION)" >&2; exit 2; }
 	docker buildx inspect aas-multi >/dev/null 2>&1 || docker buildx create --name aas-multi >/dev/null
-	docker buildx build --builder aas-multi --platform $(PLATFORMS) $(BUILD_INFO) -t $(REGISTRY)/cogentai-aas-server:$(VERSION) --push .
-	docker buildx build --builder aas-multi --platform $(PLATFORMS) --build-arg AAS_VERSION=$(VERSION) -t $(REGISTRY)/cogentai-aas-sidecar:$(VERSION) --push sidecar
+	@rm -f .aas-images
+	$(PUSH_ENV) bin/push-image.sh cogentai-aas-server . $(BUILD_INFO)
+	$(PUSH_ENV) bin/push-image.sh cogentai-aas-sidecar sidecar --build-arg AAS_VERSION=$(VERSION)
+	@cat .aas-images 2>/dev/null; rm -f .aas-images
 
 lint-ui: ## 화면 린트와 타입 검사
 	cd ui && npm ci --silent && npm run lint && npm run tsc

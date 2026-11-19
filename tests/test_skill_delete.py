@@ -75,6 +75,7 @@ class SkillDeleteTest(unittest.TestCase):
         cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
         threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
         (HOME / "profiles" / "ma").mkdir(parents=True)
+        (HOME / "profiles" / "ma" / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
         reg = root / "del-pods.json"
         reg.write_text(json.dumps({"pods": [{"id": "p", "owner": "t@example.com", "hermes_home": str(HOME),
                                               "dashboard_url": f"http://127.0.0.1:{cls.fake.server_port}"}]}))

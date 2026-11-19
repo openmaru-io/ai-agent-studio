@@ -204,6 +204,30 @@ class AgentsMdTest(unittest.TestCase):
         self.addCleanup(lambda: (setattr(server, "_auth", old[0]), setattr(reg, "is_admin", old[1])))
 
     # ---- 읽기·경로 ----
+    def test_catalog_install_adds_an_instructions_block_and_remove_takes_it_out(self):
+        # OKE 2026-11-08: the skill index shows 60 chars of a description, so the model skipped the skill and answered
+        # real-estate prices from web search. The catalog puts the rule in AGENTS.md (the system prompt) instead (OMAI-1863).
+        from aas.hermes.hermes_api import HermesAPI
+        from aas.ops import mcp_servers
+        api = HermesAPI(server.hub(self.pod).auth)
+        self.put_file("main", "# 내 지침\n- 사람이 쓴 줄\n")
+        out = server._catalog_instructions(self.pod, api, "main", "cogentai-database-reb", "t@example.com", add=True)
+        self.assertEqual(out, {"ok": True, "changed": True})
+        text = self.file("main")
+        self.assertTrue(text.startswith("# 내 지침\n- 사람이 쓴 줄\n\n<!-- aas:mcp:cogentai-database-reb:begin"), text)
+        self.assertIn("ask_subscription_statistics", text)
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "cogentai-database-reb", "t@example.com", add=True),
+                         {"ok": True, "changed": False})                     # 두 번 넣지 않는다
+        self.assertIsNone(server._catalog_instructions(self.pod, api, "main", "cogentai-chart", "t@example.com", add=True))  # 블록 없는 항목
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "cogentai-database-reb", "t@example.com", add=False),
+                         {"ok": True, "changed": True})
+        self.assertEqual(self.file("main"), "# 내 지침\n- 사람이 쓴 줄\n")       # 사람이 쓴 줄은 그대로
+        self.assertGreaterEqual(len(files.versions(POD, "agents:main")), 2)     # 사람이 고칠 때와 같은 판 기록
+        Fake.state["marker"]["main"] = (404, {"detail": "Not Found"})           # 작업 지침을 읽지 않는 Hermes 면 쓰지 않는다
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "cogentai-database-reb", "t@example.com", add=True),
+                         {"ok": False, "reason": "unsupported"})
+        self.assertFalse(mcp_servers.instruction_block_present(self.file("main"), "cogentai-database-reb"))
+
     def test_detail_shape_path_limit_chars_and_size_warning(self):
         self.put_file("ma", "  " + "가" * 120 + "\n\n")
         a = self.detail()["agents"]

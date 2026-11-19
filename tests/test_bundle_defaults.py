@@ -22,7 +22,7 @@ from aas.common import store  # noqa: E402
 from aas.market import bundle_defaults, marketplace, skill_bundle, updates  # noqa: E402
 from aas.market.marketplace import MarketError  # noqa: E402
 
-NAMES = skill_bundle.names()
+NAMES = skill_bundle.enabled_names()
 VER = {n: skill_bundle.front(n)["version"] for n in NAMES}
 
 
@@ -49,10 +49,12 @@ class Fake:
         self.busy.add((pod_id, profile))
         return row
 
-    def finish(self, status="done", message=""):
+    def finish(self, status="done", message="", transient=False):
         for r in self.requests:
             if r["status"] == "queued":
                 r.update(status=status, message=message)
+                if transient:
+                    r["transient"] = True
         self.busy.clear()
 
     def reqs(self, pod_id, limit=200):
@@ -121,6 +123,104 @@ class DeliverTest(unittest.TestCase):
             fake.hub[name] = "99.0.0"
             self._run(fake, profiles=("main",))
         self.assertEqual(sum(1 for r in fake.requests if r["package"] == pkg), 2)
+
+    # ── 일시적 오류는 간격을 늘려 다시 시도한다(OMAI-2085) ──────────────────────────────────────
+    # 2026-11-17 운영 COP 업그레이드 중 스킬 허브가 다시 시작하는 동안 배달 24건이 「스킬 허브에 연결할 수 없습니다」로
+    # 영구 실패가 되어 「확인할 것」에 남았다. 손으로 배달 기록을 지워야 다시 배달됐다.
+
+    HUB_DOWN = "스킬 허브에 연결할 수 없습니다: URLError"
+
+    def _at(self, seconds):
+        """벽시계를 지금+seconds 로 둔다(배달 간격 판정만 이 시계를 본다)."""
+        p = mock.patch.object(bundle_defaults, "_wall", lambda: self.t0 + seconds)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _one(self):
+        """묶음 패키지 하나만 허브에 있다 — 한 프로파일 한 주기 하나라 다른 패키지가 끼지 않게."""
+        self.t0 = bundle_defaults._wall()
+        return Fake(hub={NAMES[0]: VER[NAMES[0]]}), f"free/{NAMES[0]}"
+
+    def test_transient_failure_retries_after_the_backoff_and_leaves_no_issue(self):
+        fake, pkg = self._one()
+        self._run(fake, profiles=("main",))
+        fake.finish("failed", self.HUB_DOWN, transient=True)
+        self._run(fake, profiles=("main",))                                   # 결과를 적는다 — 간격 전이라 다시 요청하지 않는다
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["status"], "retry")
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(bundle_defaults.issues(POD.id, "main"), [])            # 다시 시도하는 중에는 「확인할 것」에 없다
+        self._at(bundle_defaults.backoff(1) - 5)
+        self._run(fake, profiles=("main",))
+        self.assertEqual(len(fake.requests), 1)
+        self._at(bundle_defaults.backoff(1) + 5)
+        self._run(fake, profiles=("main",))
+        self.assertEqual(len(fake.requests), 2)
+        fake.finish("done")
+        self._run(fake, profiles=("main",))
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["status"], "done")
+        self.assertEqual(bundle_defaults.issues(POD.id, "main"), [])
+
+    def test_gives_up_after_max_attempts_and_shows_the_issue(self):
+        fake, pkg = self._one()
+        later = 0
+        for _ in range(bundle_defaults.MAX_ATTEMPTS + 2):
+            self._run(fake, profiles=("main",))
+            fake.finish("failed", self.HUB_DOWN, transient=True)
+            later += 24 * 3600
+            self._at(later)
+        self._run(fake, profiles=("main",))
+        self.assertEqual(len(fake.requests), bundle_defaults.MAX_ATTEMPTS)
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["status"], "failed")
+        issues = bundle_defaults.issues(POD.id, "main")
+        self.assertEqual([i["code"] for i in issues], ["market_default_failed"])
+        self.assertIn(self.HUB_DOWN, issues[0]["text"])
+
+    def test_backoff_doubles_from_one_minute(self):
+        self.assertEqual([bundle_defaults.backoff(n) for n in range(1, 7)], [60, 120, 240, 480, 960, 1920])
+
+    def test_transient_error_while_making_the_request_retries_but_a_refusal_does_not(self):
+        fake, pkg = self._one()
+
+        def down(*a, **k):
+            raise MarketError(self.HUB_DOWN, 503, transient=True)
+        with mock.patch.object(fake, "request_install", down):
+            self._run(fake, profiles=("main",))
+        row = bundle_defaults.record(POD.id, "main", pkg)
+        self.assertEqual((row["status"], row["attempts"]), ("retry", 1))
+        self._at(bundle_defaults.backoff(1) + 5)
+        self._run(fake, profiles=("main",))
+        self.assertEqual(len(fake.requests), 1)                                # 간격이 지나 다시 요청했다
+
+        fake2, _ = self._one()
+        with store.connect() as conn:
+            conn.execute("DELETE FROM market_bundle_delivery")
+
+        def refused(*a, **k):
+            raise MarketError("스킬 허브가 거절했습니다", 502)
+        with mock.patch.object(fake2, "request_install", refused):
+            self._run(fake2, profiles=("main",))
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["status"], "failed")
+
+    def test_new_bundle_version_starts_the_attempts_again(self):
+        fake, pkg = self._one()
+        self._run(fake, profiles=("main",))
+        fake.finish("failed", self.HUB_DOWN, transient=True)
+        self._run(fake, profiles=("main",))
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["attempts"], 1)
+        with mock.patch.object(skill_bundle, "front", lambda n, root=None: {"version": "99.0.0" if n == NAMES[0] else VER[n]}):
+            fake.hub[NAMES[0]] = "99.0.0"
+            self._run(fake, profiles=("main",))
+        self.assertEqual(len(fake.requests), 2)                               # 새 판은 간격과 상관없이 바로
+        self.assertEqual(bundle_defaults.record(POD.id, "main", pkg)["attempts"], 0)
+
+    def test_old_table_gets_the_attempts_column(self):
+        with store.connect() as conn:
+            conn.execute("DROP TABLE IF EXISTS market_bundle_delivery")
+            conn.execute("CREATE TABLE market_bundle_delivery (pod TEXT NOT NULL, profile TEXT NOT NULL, package TEXT NOT NULL, version TEXT NOT NULL, "
+                         "request TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', ts TEXT, PRIMARY KEY (pod, profile, package))")
+            conn.execute("INSERT INTO market_bundle_delivery (pod, profile, package, version, status, ts) VALUES ('pod-a','main','free/x','1.0.0','done','t')")
+        bundle_defaults._MIGRATED.clear()
+        self.assertEqual(bundle_defaults.record(POD.id, "main", "free/x")["attempts"], 0)
 
     def test_waits_until_the_hub_has_the_bundle_version(self):
         fake = Fake(hub={n: "0.0.1" for n in NAMES[1:]})          # 첫 패키지는 아직 없음, 나머지는 낮은 판
@@ -203,16 +303,17 @@ class DeliverTest(unittest.TestCase):
 
 class DefaultListTest(unittest.TestCase):
     def test_bundle_is_always_default_but_env_list_alone_goes_to_first_main(self):
-        with mock.patch.dict(os.environ, {"AAS_DEFAULT_SKILLS": "free/docmost"}):
-            self.assertEqual(marketplace.env_default_packages(), ["free/docmost"])
-            self.assertEqual(marketplace.default_packages(), ["free/docmost"] + [f"free/{n}" for n in NAMES])
+        # 예는 묶음에 없는 패키지여야 한다 — docmost 는 OMAI-2031 에서 묶음에 들어왔다
+        with mock.patch.dict(os.environ, {"AAS_DEFAULT_SKILLS": "free/team-notes"}):
+            self.assertEqual(marketplace.env_default_packages(), ["free/team-notes"])
+            self.assertEqual(marketplace.default_packages(), ["free/team-notes"] + [f"free/{n}" for n in NAMES])
             with marketplace._conn() as conn:
                 conn.execute("DELETE FROM market_default_pending WHERE pod='pod-q'")
             marketplace.queue_defaults("pod-q", "main")
             with marketplace._conn() as conn:
                 got = [r[0] for r in conn.execute("SELECT package FROM market_default_pending WHERE pod='pod-q'")]
                 conn.execute("DELETE FROM market_default_pending WHERE pod='pod-q'")
-        self.assertEqual(got, ["free/docmost"])
+        self.assertEqual(got, ["free/team-notes"])
 
 
 class AutoDefaultTest(unittest.TestCase):

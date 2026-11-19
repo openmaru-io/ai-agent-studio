@@ -1,8 +1,11 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.10
+version: 1.0.13
 author: OPENMARU, Inc.
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 <!-- 자동 생성: cogentai-aas/ui/src/lib/helpSkill.ts (npm run help-skill). 손으로 고치지 않는다. -->
@@ -13,7 +16,7 @@ author: OPENMARU, Inc.
 화면 맨 위(상단 막대 위) 띠는 관리자가 기간·종류·대상(전체 또는 부서)을 정해 「관리 › 공지」에서 올린 공지다. 점검·장애 공지는 끝 시각을 함께 보인다. 닫은 공지는 계정 메뉴의 「지금 공지」에서 다시 띠에 보이게 할 수 있다. 공지를 올리거나 고치는 일은 관리자에게 요청하라고 안내한다.
 
 이럴 때는(사용자가 겪는 상황과 할 일):
-- 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
+- AI 에이전트 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「AI 에이전트 작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 AI 에이전트 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 AI 에이전트 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
 - 대화의 작업 단계에 「모델 설정 때문에 막힘」이 보이거나 「BLOCKED by CogentAI AAS」가 나오면: 프로파일이나 도구(음성·그림 등)가 AAS LiteLLM 을 거치지 않는 모델 서버를 부르도록 설정되어 막힌 것이다. 같은 줄의 「관리자에게 요청」으로 설정 변경을 요청하라고 안내한다.
 - 프로파일을 지울 때: 그 프로파일로 열린 대화도 함께 닫힌다. 답하는 중이거나 뒤에서 일하는 대화, 진행 중인 스킬 설치가 있으면 지우지 않으니 끝난 뒤 다시 하라고 안내한다. 지워진 프로파일의 대화에는 「이 프로파일이 없어져 대화가 끝났습니다」가 보이고, 「새 대화」로 다른 AI 에이전트를 골라 이어 간다. 터미널의 hermes profile delete 는 그 프로파일로 열린 대화가 있으면 아무것도 지우지 않고 거절하므로 화면에서 지우라고 안내한다.
 
@@ -201,16 +204,16 @@ AI 에이전트가 어떤 말투와 역할로 답할지 정합니다.
 
 #### 스킬 허브에서 스킬 설치하기
 
-필요한 기능을 패키지로 찾아 내 프로파일에 넣습니다.
+필요한 기능을 스킬로 찾아 내 프로파일에 넣습니다.
 
-스킬은 AI 에이전트가 특정 일을 하는 방법을 적어 둔 묶음입니다. 스킬 허브에서 패키지를 설치하면 AI 에이전트가 그 일을 할 수 있게 됩니다.
+스킬은 AI 에이전트가 특정 일을 하는 방법을 적어 둔 묶음입니다. 스킬 허브에서 스킬을 설치하면 AI 에이전트가 그 일을 할 수 있게 됩니다.
 
 언제 쓰나: AI 에이전트가 지금은 못 하는 일(예: 특정 형식의 문서 만들기)을 시키고 싶을 때, 이미 만들어진 방법을 그대로 쓰고 싶을 때 씁니다.
 
 단계:
 
-1. 패키지 찾기 — 「스킬 › 스킬 허브」 화면에서 쓸 패키지를 찾습니다. 행을 누르면 AI 요약과 설명, 「AI 에게 더 묻기」 버튼이 보입니다.
-2. 설치하기 — 패키지 상세 창의 「이 프로파일에 설치」에서 설치할 프로파일을 고릅니다.
+1. 스킬 찾기 — 「스킬 › 스킬 허브」 화면에서 쓸 스킬을 찾습니다. 행을 누르면 AI 요약과 설명, 「AI 에게 더 묻기」 버튼이 보입니다.
+2. 설치하기 — 스킬 상세 창의 「이 프로파일에 설치」에서 설치할 프로파일을 고릅니다.
 3. 설치한 스킬 확인하기 — 내 주 프로파일의 「스킬」 탭에서 설치한 스킬이 켜져 있는지 봅니다.
 
 #### AAS 기본 제공 스킬 사용하기
@@ -363,7 +366,7 @@ When the user asks what to do or where something is in the AAS screens, answer f
 The band at the very top of the screen (above the top bar) shows notices an administrator posted in "Admin › Notices" with a period, type and audience (everyone or departments). Maintenance and outage notices also show their end time. A closed notice can be shown in the band again from "Current notices" in the account menu. Tell the user to ask an administrator to post or edit a notice.
 
 When this happens (situations users run into and what to do):
-- If the workspace list shows "Restarted: out of memory" or a chat shows "The workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the workspace restarts once and a result notice arrives.
+- If the AI Agent Workspace list shows "Restarted: out of memory" or a chat shows "The AI Agent Workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole AI Agent Workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the AI Agent Workspace restarts once and a result notice arrives.
 - If a chat step shows "blocked by model settings" or "BLOCKED by CogentAI AAS": the profile or a tool (voice, images and so on) is set to call a model server that bypasses AAS LiteLLM, so the call was blocked. Tell the user to ask for a settings change with "Ask an admin" on that line.
 - When deleting a profile: chats open with that profile are closed too. If a chat is still answering or working in the background, or a skill is being installed, nothing is deleted, so tell the user to try again after it finishes. A chat whose profile was deleted shows "This profile no longer exists, so the chat has ended"; use "New chat" to pick another AI Agent. hermes profile delete in a terminal refuses without deleting anything while chats are open with that profile, so tell the user to delete it from the screen.
 
@@ -551,16 +554,16 @@ Steps:
 
 #### Install a skill from the skill hub
 
-Find a package with the feature you need and add it to your profile.
+Find a skill with the feature you need and add it to your profile.
 
-A skill is a package that describes how the AI Agent does a specific job. Install a package from the skill hub, and the AI Agent can do that job.
+A skill describes how the AI Agent does a specific job. Install a skill from the skill hub, and the AI Agent can do that job.
 
 When to use: Use it when you want the AI Agent to do something it cannot do yet (for example, create documents in a specific format), or to reuse a method someone has already written.
 
 Steps:
 
-1. Find a package — Find a package on the "Skills › Skill hub" screen. Click a row to see its AI summary, description and the "Ask AI more" button.
-2. Install it — In the package detail panel, pick the profile to install it on under "Install to this profile".
+1. Find a skill — Find a skill on the "Skills › Skill hub" screen. Click a row to see its AI summary, description and the "Ask AI more" button.
+2. Install it — In the skill detail panel, pick the profile to install it on under "Install to this profile".
 3. Check the installed skill — On the "Skills" tab of your main profile, check that the installed skill is turned on.
 
 #### Use the skills AAS provides

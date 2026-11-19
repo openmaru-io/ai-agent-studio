@@ -13,7 +13,7 @@
   "bruteForceProtected": true,
   "passwordPolicy": "length(8)",
   "ssoSessionIdleTimeout": 8100,
-  "ssoSessionMaxLifespan": 86400,
+  "ssoSessionMaxLifespan": 1209600,
   "accessTokenLifespan": 3600,
   "offlineSessionIdleTimeout": 2592000,
   "roles": {"realm": [{"name": "aas-admin", "description": "AAS 관리자: 모든 Hermes 를 보고 바꿀 수 있다"}]},

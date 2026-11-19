@@ -80,6 +80,10 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+
+/** 실시간 이벤트 알림은 다음 화면 갱신 때 간다(스펙 2026-11-06-006 6절) */
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r(undefined)));
+
 describe('ChatStore', () => {
   it('상태를 받아 에이전트 목록을 채운다. 설정이 없으면 안내용 상태를 둔다', async () => {
     api();
@@ -138,6 +142,63 @@ describe('ChatStore', () => {
     expect(a.posted('/api/chat/send')).toHaveLength(1);
   });
 
+  it('보낸 시각을 남기고, 답이 끝나면 지운다(흐르는 시간 표시)', async () => {
+    api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    const before = Date.now();
+    await s.send('첫');
+    FakeES.all[0].emit('aas.status', { text: '준비' }); // 질문 전 이벤트로 지워지지 않는다
+    FakeES.all[0].emit('aas.user', { text: '첫' });
+    expect(s.current()?.sentAt).toBeGreaterThanOrEqual(before);
+    FakeES.all[0].emit('message.complete', { text: '답' });
+    expect(s.current()?.sentAt).toBeUndefined();
+  });
+
+  it('/queue 로 예약한 말처럼 이 화면이 보내지 않은 질문은 받은 때부터 센다', async () => {
+    api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('첫');
+    FakeES.all[0].emit('aas.user', { text: '첫' });
+    FakeES.all[0].emit('message.complete', { text: '답' });
+    expect(s.current()?.sentAt).toBeUndefined();
+    const before = Date.now();
+    FakeES.all[0].emit('aas.user', { text: '예약한 말' }); // Hermes 가 대기열에서 꺼내 시작
+    expect(s.current()?.sentAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('이 화면이 보내지 않은 차례(Hermes 가 스스로 시작)에는 옛 보낸 시각을 쓰지 않는다', async () => {
+    api();
+    const s = new ChatStore();
+    await s.openAgent('ma');
+    await s.send('첫');
+    s.current()!.busy = false; // 다시 연결 중처럼 답하는 중이 아닌 채로 보낸 시각만 남았다
+    FakeES.all[0].emit('aas.turn.auto', { reason: 'cron' });
+    expect(s.current()?.sentAt).toBeUndefined();
+  });
+
+  it('화면 갱신이 걸린 뒤 탭이 숨어도(화면 갱신이 오지 않아도) 타이머로 알린다', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 0);
+    try {
+      api();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      await s.send('첫');
+      const seen = vi.fn();
+      s.subscribe(seen);
+      FakeES.all[0].emit('message.delta', { text: '가' });
+      expect(raf).toHaveBeenCalled();
+      expect(seen).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      expect(seen).toHaveBeenCalledTimes(1);
+    } finally {
+      raf.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('보내기가 실패하면 다시 보내기 글이 달린 오류 줄을 남기고 busy 를 푼다', async () => {
     api({ '/api/chat/send': new Error('연결 거부') });
     const s = new ChatStore();
@@ -149,18 +210,135 @@ describe('ChatStore', () => {
     expect(s.current()!.busy).toBe(false);
   });
 
-  it('이벤트가 들어오면 현재 대화를 갱신하고 구독자에게 알린다', async () => {
-    api();
+  // 이슈 #22: Enter 뒤 서버 왕복 동안 화면이 그대로라 다시 누르면 세션이 또 열리고 같은 글이 또 갔다
+  describe('보내는 중(이슈 #22)', () => {
+    /** api() 위에 덮어 /api/chat/session·/api/chat/send 응답만 늦춘다. release() 로 풀어 준다 */
+    function slow() {
+      const a = api();
+      const inner = a.fn.getMockImplementation()!;
+      const gates: (() => void)[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init?: RequestInit) => {
+          if (url.startsWith('/api/chat/send') || (url.startsWith('/api/chat/session') && !url.startsWith('/api/chat/sessions')))
+            await new Promise<void>((ok) => gates.push(ok));
+          return inner(url, init);
+        })
+      );
+      const release = async () => {
+        while (gates.length) gates.shift()!();
+        await new Promise((r) => setTimeout(r, 0));
+      };
+      /** p 가 끝날 때까지 막힌 응답을 차례로 푼다 */
+      const drain = async <T,>(p: Promise<T>): Promise<T> => {
+        let done = false;
+        void p.finally(() => (done = true));
+        while (!done) await release();
+        return p;
+      };
+      return { ...a, release, drain };
+    }
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    it('기존 대화: 서버가 받기 전에 「보내는 중」 말풍선을 그리고, 두 번째 보내기는 busy 로 막는다', async () => {
+      const a = slow();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      expect(await a.drain(s.send('첫'))).toBe('sent');
+      FakeES.all[0].emit('aas.user', { text: '첫', turn: 1 });
+      FakeES.all[0].emit('message.complete', { text: '답' });
+      expect(s.current()!.busy).toBe(false);
+
+      const p = s.send('둘');
+      await tick();
+      expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'user', text: '둘', pending: true });
+      expect(await s.send('둘')).toBe('busy'); // 왕복 중의 두 번째 Enter
+      expect(await a.drain(p)).toBe('sent');
+      expect(a.posted('/api/chat/send').map((b) => b.text)).toEqual(['첫', '둘']);
+    });
+
+    it('새 대화: 세션을 만드는 동안 두 번째 보내기는 세션을 또 열지 않는다', async () => {
+      const a = slow();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      const p = s.send('안녕');
+      await tick();
+      expect(await s.send('안녕')).toBe('busy');
+      expect(await a.drain(p)).toBe('sent');
+      expect(a.posted('/api/chat/session')).toHaveLength(1);
+      expect(a.posted('/api/chat/send')).toHaveLength(1);
+      expect(s.current()!.items.filter((x) => x.kind === 'user')).toMatchObject([{ text: '안녕', pending: true }]);
+    });
+
+    it('aas.user 가 오면 「보내는 중」 말풍선을 그 자리에서 바꾼다 — 같은 말이 두 번 보이지 않는다', async () => {
+      api();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      await s.send('안녕');
+      FakeES.all[0].emit('aas.user', { text: '안녕', turn: 1 });
+      const mine = s.current()!.items.filter((x) => x.kind === 'user');
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({ text: '안녕', turn: 1 });
+      expect(mine[0].pending).toBeUndefined();
+      expect(mine[0].t).toBeTypeOf('number');
+      expect(s.current()!.busy).toBe(true);
+    });
+
+    it('서버 왕복이 상한을 넘기면 잠금을 풀고 「보내는 중」 말풍선 대신 확인을 권하는 실패 줄을 남긴다(리뷰 F4)', async () => {
+      const a = slow();
+      const keep = ChatStore.sendLockMs;
+      ChatStore.sendLockMs = 20;
+      try {
+        const s = new ChatStore();
+        await s.openAgent('ma');
+        expect(await s.send('처음')).toBe('rejected'); // 새 대화: 세션 만들기 응답이 오지 않으면 화면이 글을 입력칸에 되돌린다
+        await a.release();
+        ChatStore.sendLockMs = keep;
+        expect(await a.drain(s.send('첫'))).toBe('sent');
+        FakeES.all[0].emit('aas.user', { text: '첫', turn: 1 });
+        FakeES.all[0].emit('message.complete', { text: '답' });
+        ChatStore.sendLockMs = 20;
+        expect(await s.send('멈춤')).toBe('failed'); // 기존 대화: 보내기 응답이 오지 않는다
+        const items = s.current()?.items ?? [];
+        expect(items.some((x) => x.kind === 'user' && x.pending && x.text === '멈춤')).toBe(false);
+        expect(items.at(-1)).toMatchObject({ kind: 'error', retry: '멈춤' });
+        expect(await Promise.race([s.send('다시'), new Promise((r) => setTimeout(() => r('timer'), 50))])).not.toBe('busy'); // 잠금이 풀렸다
+      } finally {
+        ChatStore.sendLockMs = keep;
+        await a.release();
+      }
+    });
+
+    it('보내기가 실패하면 「보내는 중」 말풍선을 거두고 오류 줄만 남긴다', async () => {
+      api({ '/api/chat/send': new Error('연결 거부') });
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      expect(await s.send('안녕')).toBe('failed');
+      expect(s.current()!.items.some((x) => x.kind === 'user')).toBe(false);
+      expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'error', retry: '안녕' });
+      expect(await s.send('다시')).toBe('failed'); // 잠금이 풀렸다
+    });
+  });
+
+  // 스펙 2026-11-06-006 6절: 답 조각마다 그리면 긴 답에서 그리기가 밀려 화면이 Hermes 보다 수십 초 늦게 끝났다
+  it('이벤트는 바로 반영하고, 구독자에게는 다음 화면 갱신 때 한 번만 알린다', async () => {    api();
     const s = new ChatStore();
     const seen = vi.fn();
     s.subscribe(seen);
     await s.openAgent('ma');
     await s.send('안녕');
-    seen.mockClear();
-    FakeES.all[0].emit('message.delta', { text: '반' });
-    FakeES.all[0].emit('message.delta', { text: '가워' });
-    expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'assistant', text: '반가워' });
-    expect(seen).toHaveBeenCalled();
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout'] });
+    try {
+      seen.mockClear();
+      FakeES.all[0].emit('message.delta', { text: '반' });
+      FakeES.all[0].emit('message.delta', { text: '가워' });
+      expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'assistant', text: '반가워' });
+      expect(seen).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      expect(seen).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('다른 에이전트의 대화에서 온 완료·요청 이벤트는 안 읽은 수로 센다. 승인 대기 수도 센다', async () => {
@@ -176,6 +354,59 @@ describe('ChatStore', () => {
     expect(s.waiting()).toBe(1);
     await s.openAgent('ma');
     expect(s.sessionOf('ma')!.unread).toBe(0);
+  });
+
+  it('작업공간 상태를 못 읽어 default 로 열었어도 서버가 main 세션을 돌려주면 그 세션을 보인다(OMAI-2056, 다시 띄운 직후 메시지가 사라짐)', async () => {
+    // 서버를 다시 띄운 직후 상태 읽기가 8초를 넘겨 묶음이 오류 → 주 프로파일을 몰라 default 로 연다. 서버는 main 으로 만든다
+    const a = api({
+      '/api/chat/status': { configured: false, state: 'error', error: '시간 초과', agents: [], sessions: [] },
+      '/api/chat/session': { session_id: 's-main', profile: 'main', title: '' },
+    });
+    const s = new ChatStore();
+    await s.openAgent(PRIMARY);
+    expect(s.profile).toBe('default');
+    expect(await s.send('첫 말')).toBe('sent');
+    expect(s.profile).toBe('main');
+    expect(s.current()?.id).toBe('s-main');
+    await s.send('둘째 말');
+    expect(a.posted('/api/chat/session')).toHaveLength(1); // 보낼 때마다 새 세션을 만들지 않는다
+  });
+
+  it('작업공간 상태를 못 읽었어도 서버가 알려 준 주 에이전트(main)로 연다(OMAI-2056 남은 것, 머리줄 「default」)', async () => {
+    api({ '/api/chat/status': { configured: false, state: 'error', error: '시간 초과', primary: 'main', agents: [], sessions: [] } });
+    const s = new ChatStore();
+    await s.openAgent(PRIMARY);
+    expect(s.profile).toBe('main');
+  });
+
+  it('지금 작업공간 상태를 못 읽었으면 잠시 뒤 다시 읽는다 — 세 번까지(OMAI-2056 남은 것, 첫 상태 읽기 한도)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let cold = true;
+      const failed = { configured: false, state: 'error', error: '시간 초과', primary: 'main', agents: [], sessions: [] };
+      const a = api({ '/api/chat/status': () => (cold ? failed : { ...STATUS, state: 'ok', primary: 'main' }) });
+      const statusCalls = () => a.calls.filter((c) => c.url.startsWith('/api/chat/status')).length;
+      const s = new ChatStore();
+      await s.preload();
+      expect(statusCalls()).toBe(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(statusCalls()).toBe(2); // 아직 못 읽음 → 다음 시도를 건다
+      cold = false;
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(statusCalls()).toBe(3);
+      expect(s.status?.agents.map((x) => x.name)).toEqual(['ma', 'ops']);
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(statusCalls()).toBe(3); // 읽은 뒤에는 더 묻지 않는다
+
+      cold = true; // 계속 못 읽으면 세 번에서 멈춘다
+      const t = new ChatStore();
+      const before = statusCalls();
+      await t.preload();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(statusCalls() - before).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('새 대화는 지금 대화를 놓고 새 세션을 연다', async () => {
@@ -926,7 +1157,8 @@ describe('ChatStore — opening a session that already has events (catch-up)', (
     expect(s.version).toBe(v0 + 1); // one redraw with the whole conversation
     expect(S.busy).toBe(false);
     expect(S.items.filter((x) => x.kind === 'assistant').map((x) => x.text)).toEqual(['answer']);
-    es.emit('aas.user', { text: 'next' }); // live events redraw as before
+    es.emit('aas.user', { text: 'next' }); // live events redraw on the next frame (spec 2026-11-06-006 §6)
+    await nextFrame();
     expect(s.version).toBe(v0 + 2);
   });
 
@@ -944,6 +1176,7 @@ describe('ChatStore — opening a session that already has events (catch-up)', (
     expect(s.sessions.x9.catchUp).toBeUndefined();
     const v0 = s.version;
     FakeES.all[0].emit('aas.user', { text: 'question' });
+    await nextFrame();
     expect(s.version).toBe(v0 + 1);
   });
 

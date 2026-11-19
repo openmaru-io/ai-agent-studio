@@ -272,6 +272,30 @@ class ChatHubTest(unittest.TestCase):
         t.join(4)
         self.assertEqual([e["type"] for e in got], ["status.update"])
 
+    # OMAI-1868: 다시 받은 이벤트는 화면에 한꺼번에 들어와 도구 소요 시간이 0초가 됐다 — 도구 이벤트에 서버 시각을 붙인다
+    def test_tool_events_carry_server_time(self):
+        self.hub.create_session("ma")
+        self.hub._push("s1", "tool.start", {"tool_id": "a", "name": "web"})
+        self.hub._push("s1", "status.update", {"text": "hi"})
+        evs = self.hub.events_after("s1", 0, wait=0)
+        tool = next(e for e in evs if e["type"] == "tool.start")
+        self.assertIsInstance(tool["payload"].get("aas_at"), float)
+        self.assertNotIn("aas_at", next(e for e in evs if e["type"] == "status.update")["payload"])
+
+    def test_question_and_complete_carry_server_time(self):
+        """화면의 응답 시간(스펙 2026-11-06-006 R3): 질문·응답 완료에도 도구와 같은 서버 시각 aas_at 을 싣는다. 다시 받아도 같은 값이다."""
+        self.hub.create_session("ma")
+        self.hub._push("s1", "aas.user", {"text": "질문"})
+        self.hub._push("s1", "message.delta", {"text": "답"})
+        self.hub._push("s1", "message.complete", {"text": "답"})
+        evs = self.hub.events_after("s1", 0, wait=1)
+        at = {e["type"]: e["payload"].get("aas_at") for e in evs}
+        self.assertIsInstance(at["aas.user"], float)
+        self.assertIsNone(at["message.delta"])
+        self.assertGreaterEqual(at["message.complete"], at["aas.user"])
+        self.assertFalse(any("at" in e["payload"] for e in evs))                # 옛 키는 쓰지 않는다
+        self.assertEqual(self.hub.events_after("s1", 0, wait=1), evs)
+
     # 화면이 저절로 다시 열 때 지워진 대화를 5분 동안 되풀이하지 않게 Hermes 의 「찾지 못함」(4007)을 따로 낸다(스펙 2026-10-20-030 R9)
     def test_resume_of_missing_session_raises_not_found(self):
         from aas.hermes.hermes_chat import ChatNotFound

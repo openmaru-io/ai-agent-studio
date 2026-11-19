@@ -30,7 +30,12 @@ export const dictionaries: Record<Lang, Dict> = {
 const cookieLang = (): string | undefined =>
   typeof document === 'undefined' ? undefined : document.cookie.match(new RegExp(`(?:^|;\\s*)${LANG_KEY}=(ko|en)`))?.[1];
 
+// 다른 사이트에 붙는 위젯 빌드(vite.config.embed.ts 가 넣는다)는 호스트 페이지의 저장소·쿠키·<html lang> 을 건드리지 않는다.
+// 언어는 위젯 설정(langCode)·setLanguage 로만 정한다(OMAI-1873)
+const EMBED = import.meta.env.VITE_AAS_EMBED === '1';
+
 function readLang(): Lang {
+  if (EMBED) return 'ko';
   let v: string | null | undefined;
   try {
     v = localStorage.getItem(LANG_KEY);
@@ -47,6 +52,7 @@ export const getLang = (): Lang => current;
 /** 언어를 바꾸고 이 브라우저에 기억한다(저장소를 못 쓰면 이번 방문에서만 바뀐다). */
 export function setLang(lang: Lang): void {
   current = lang;
+  if (EMBED) return;
   try {
     localStorage.setItem(LANG_KEY, lang);
   } catch {
@@ -58,7 +64,7 @@ export function setLang(lang: Lang): void {
   }
 }
 
-if (typeof document !== 'undefined') document.documentElement.lang = current;
+if (typeof document !== 'undefined' && !EMBED) document.documentElement.lang = current;
 
 export type Vars = Record<string, string | number | undefined>;
 
