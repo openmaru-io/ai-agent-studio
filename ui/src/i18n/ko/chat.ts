@@ -403,6 +403,7 @@ export default {
   'chat.cmd.queueLost': '예약한 말 {count}개가 사라졌습니다 · 다시 써 주세요',
   'chat.cmd.queueTail': '· 예약 {count}',
   'chat.cmd.retryMark': '다시 답하기',
+  'chat.sending': '보내는 중…',
   'chat.cmd.retryFailed': '다시 답하기를 보내지 못했습니다 · 입력창의 질문을 보내 주세요',
   'chat.cmd.undone': '마지막 턴을 되돌렸습니다',
   'chat.cmd.undoneN': '턴 {count}개를 되돌렸습니다',

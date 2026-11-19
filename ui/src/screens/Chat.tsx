@@ -89,7 +89,8 @@ import { agentLabelOf, SessionList, SessionStrip, StateMark } from './chat/Sessi
 const hhmm = (ts: number) => fmtClock(ts);
 
 /** 내 말풍선 아래: 시각과 /retry 로 다시 보낸 표시(스펙 2026-10-26-010 DC9). 색 배지 없이 회색 글자 */
-function userFoot(ts: number | undefined, retry: boolean | undefined) {
+function userFoot(ts: number | undefined, retry: boolean | undefined, sending?: boolean) {
+  if (sending) return t('chat.sending'); // 서버가 받기 전(이슈 #22)
   if (!retry) return ts ? hhmm(ts) : undefined;
   return (
     <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
@@ -1057,7 +1058,7 @@ function Messages({
             if (it.kind === 'user')
               return (
                 <Box key={i} sx={gap}>
-                  <MessageRow side="mine" enter={!first.current} foot={userFoot(it.t, it.retried)}>
+                  <MessageRow side="mine" enter={!first.current} foot={userFoot(it.t, it.retried, it.pending)}>
                     <UserMessageBody text={it.text ?? ''} files={it.files} store={store} />
                   </MessageRow>
                 </Box>
@@ -1478,11 +1479,12 @@ export function Conversation({
       return;
     }
     const text = input;
+    // Enter 를 누른 그 순간 입력칸을 비운다(이슈 #22). 서버 왕복(최대 몇 초)을 기다려 비우면 눌리지 않은 줄 알고 다시 누른다.
+    // 보내지 못했으면(올리는 중·다시 잇는 중·첨부 거절 등) 글을 되돌린다 — 그사이 새로 친 글이 있으면 덮지 않는다
+    setInput('');
     const r = await store.send(text, undefined, plan.skill);
-    if (r === 'sent' || r === 'failed') {
-      setInput('');
-      refocus(); // 보낸 뒤에도 다음에 쓸 곳은 입력칸이다(디자인 리뷰 3-1)
-    }
+    if (r === 'sent' || r === 'failed') refocus(); // 보낸 뒤에도 다음에 쓸 곳은 입력칸이다(디자인 리뷰 3-1)
+    else setInput((now) => now || text);
   };
   const close = () => setAnchor(null);
   const link = (to: string, label: string) => (

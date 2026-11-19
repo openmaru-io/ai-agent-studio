@@ -81,6 +81,8 @@ export interface Item {
   command?: string;
   /** kind 'user': /retry 로 다시 보낸 원래 질문(DC9) */
   retried?: boolean;
+  /** kind 'user': 보낸 직후 서버 aas.user 를 기다리는 동안 화면이 먼저 그린 말풍선(보내는 중, 이슈 #22). aas.user 가 오면 그 내용으로 바뀐다 */
+  pending?: boolean;
   /** kind 'command': review·refine — 결과는 뒤에서 돌고 나중에 대화에 붙는다(스펙 2026-10-27-002 §4-3) */
   background?: boolean;
   /** kind 'command': 실패한 결과(곁 질문의 error: 답 등) */
@@ -389,7 +391,11 @@ export function applyEvent(S: Session, ev: ChatEvent): boolean {
   } else if (T === 'aas.user') {
     S.streamed = false;
     const files = Array.isArray(p.files) ? (p.files as FileRef[]) : [];
-    push({ kind: 'user', text: p.text, turn: p.turn, ...(files.length ? { files } : {}), ...(p.retry ? { retried: true } : {}) });
+    const echo: Item = { kind: 'user', text: p.text, turn: p.turn, ...(files.length ? { files } : {}), ...(p.retry ? { retried: true } : {}) };
+    // 화면이 먼저 그린 「보내는 중」 말풍선이 있으면 그 자리를 바꾼다 — 같은 말이 두 번 보이지 않게(이슈 #22)
+    const mine = S.items.findIndex((x) => x.kind === 'user' && x.pending);
+    if (mine >= 0) S.items.splice(mine, 1, { ...echo, t: S.items[mine].t });
+    else push(echo);
     if (!S.title) S.title = (str(p.text).split('\n')[0] || files[0]?.name || '').slice(0, 40);
     S.busy = true;
   } else if (T === 'aas.files') {

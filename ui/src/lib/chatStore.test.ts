@@ -149,6 +149,91 @@ describe('ChatStore', () => {
     expect(s.current()!.busy).toBe(false);
   });
 
+  // 이슈 #22: Enter 뒤 서버 왕복 동안 화면이 그대로라 다시 누르면 세션이 또 열리고 같은 글이 또 갔다
+  describe('보내는 중(이슈 #22)', () => {
+    /** api() 위에 덮어 /api/chat/session·/api/chat/send 응답만 늦춘다. release() 로 풀어 준다 */
+    function slow() {
+      const a = api();
+      const inner = a.fn.getMockImplementation()!;
+      const gates: (() => void)[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init?: RequestInit) => {
+          if (url.startsWith('/api/chat/send') || (url.startsWith('/api/chat/session') && !url.startsWith('/api/chat/sessions')))
+            await new Promise<void>((ok) => gates.push(ok));
+          return inner(url, init);
+        })
+      );
+      const release = async () => {
+        while (gates.length) gates.shift()!();
+        await new Promise((r) => setTimeout(r, 0));
+      };
+      /** p 가 끝날 때까지 막힌 응답을 차례로 푼다 */
+      const drain = async <T,>(p: Promise<T>): Promise<T> => {
+        let done = false;
+        void p.finally(() => (done = true));
+        while (!done) await release();
+        return p;
+      };
+      return { ...a, release, drain };
+    }
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    it('기존 대화: 서버가 받기 전에 「보내는 중」 말풍선을 그리고, 두 번째 보내기는 busy 로 막는다', async () => {
+      const a = slow();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      expect(await a.drain(s.send('첫'))).toBe('sent');
+      FakeES.all[0].emit('aas.user', { text: '첫', turn: 1 });
+      FakeES.all[0].emit('message.complete', { text: '답' });
+      expect(s.current()!.busy).toBe(false);
+
+      const p = s.send('둘');
+      await tick();
+      expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'user', text: '둘', pending: true });
+      expect(await s.send('둘')).toBe('busy'); // 왕복 중의 두 번째 Enter
+      expect(await a.drain(p)).toBe('sent');
+      expect(a.posted('/api/chat/send').map((b) => b.text)).toEqual(['첫', '둘']);
+    });
+
+    it('새 대화: 세션을 만드는 동안 두 번째 보내기는 세션을 또 열지 않는다', async () => {
+      const a = slow();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      const p = s.send('안녕');
+      await tick();
+      expect(await s.send('안녕')).toBe('busy');
+      expect(await a.drain(p)).toBe('sent');
+      expect(a.posted('/api/chat/session')).toHaveLength(1);
+      expect(a.posted('/api/chat/send')).toHaveLength(1);
+      expect(s.current()!.items.filter((x) => x.kind === 'user')).toMatchObject([{ text: '안녕', pending: true }]);
+    });
+
+    it('aas.user 가 오면 「보내는 중」 말풍선을 그 자리에서 바꾼다 — 같은 말이 두 번 보이지 않는다', async () => {
+      api();
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      await s.send('안녕');
+      FakeES.all[0].emit('aas.user', { text: '안녕', turn: 1 });
+      const mine = s.current()!.items.filter((x) => x.kind === 'user');
+      expect(mine).toHaveLength(1);
+      expect(mine[0]).toMatchObject({ text: '안녕', turn: 1 });
+      expect(mine[0].pending).toBeUndefined();
+      expect(mine[0].t).toBeTypeOf('number');
+      expect(s.current()!.busy).toBe(true);
+    });
+
+    it('보내기가 실패하면 「보내는 중」 말풍선을 거두고 오류 줄만 남긴다', async () => {
+      api({ '/api/chat/send': new Error('연결 거부') });
+      const s = new ChatStore();
+      await s.openAgent('ma');
+      expect(await s.send('안녕')).toBe('failed');
+      expect(s.current()!.items.some((x) => x.kind === 'user')).toBe(false);
+      expect(s.current()!.items.at(-1)).toMatchObject({ kind: 'error', retry: '안녕' });
+      expect(await s.send('다시')).toBe('failed'); // 잠금이 풀렸다
+    });
+  });
+
   it('이벤트가 들어오면 현재 대화를 갱신하고 구독자에게 알린다', async () => {
     api();
     const s = new ChatStore();

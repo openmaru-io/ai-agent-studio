@@ -12,7 +12,7 @@ import { t } from '@/i18n';
 
 import { ApiError, get, post } from './api';
 import { backoffDelay, RETRY_MAX_MS, RETRY_MAX_TRIES } from './backoff';
-import { applyEvent, ChatEvent, newSession, pending, Reconnect, Session, SessionInfo } from './chat';
+import { applyEvent, ChatEvent, Item, newSession, pending, Reconnect, Session, SessionInfo } from './chat';
 import { MAX_FILES, PARALLEL, precheck, sendUpload, Upload } from './chatFiles';
 import { wsClient } from './ws';
 
@@ -254,6 +254,8 @@ export class ChatStore {
   private catchUpTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 대화 id → 마지막으로 다시 연 때의 횟수(CARRY_MS) */
   private recent = new Map<string, { tries: number; since: number; at: number }>();
+  /** 보내는 중인 대화(draftKey). 서버 왕복 동안 두 번째 Enter 가 세션을 또 열거나 같은 글을 또 보내지 않게 한다(이슈 #22) */
+  private inflight = new Set<string>();
   private connTimer: ReturnType<typeof setTimeout> | null = null;
   private wasConnWaiting = false;
   /** 숨은 알림 영역에 읽힐 글(DR9·DR12). 상태가 바뀌는 네 순간만 바뀐다 */
@@ -1313,12 +1315,38 @@ export class ChatStore {
     if (retryFiles === undefined && this.uploading()) return 'uploading';
     const files = retryFiles ?? this.uploads.filter((u) => u.state === 'done' && u.path).map((u) => u.path as string);
     if ((!text && !files.length) || !this.profile) return 'empty';
-    let S = this.current();
+    const S = this.current();
     if (S?.busy) return 'busy';
     if (S?.ended) return 'rejected'; // 끝난 대화 — 새 대화는 에이전트를 골라 연다(디자인 3C). 없어진 프로파일로 새로 열지 않는다
+    // 보내는 중이면 받지 않는다(이슈 #22). 세션 만들기·보내기 왕복이 끝나기 전의 두 번째 Enter 가 세션을 또 열고 같은 글을 또 보냈다
+    const key = this.draftKey();
+    if (this.inflight.has(key)) return 'busy';
+    this.inflight.add(key);
+    try {
+      return await this.sendNow(S, raw, text, files, retryFiles, skill);
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  private async sendNow(S0: Session | null, raw: string, text: string, files: string[], retryFiles: string[] | undefined, skill: string | undefined): Promise<'sent' | 'failed' | 'rejected'> {
+    let S = S0;
+    // 말풍선은 서버의 aas.user 를 기다리지 않고 지금 그린다(보내는 중 표시). aas.user 가 오면 이 줄을 그 내용으로 바꾼다(lib/chat.ts)
+    // 첨부 칩은 aas.user 가 가져온다(서버가 이름·크기를 붙인다). 그때까지는 글만 보인다
+    const mine: Item = { kind: 'user', text, pending: true, t: Date.now() };
+    const show = (s: Session) => {
+      if (text) s.items.push(mine);
+      this.notify();
+    };
+    const unshow = (s: Session) => {
+      const i = s.items.indexOf(mine);
+      if (i >= 0) s.items.splice(i, 1);
+    };
+    if (S && !S.closed) show(S);
     if (!S || S.closed) {
       S = await this.startSession();
       if (!S) return 'failed';
+      show(S);
     }
     this.draft = '';
     const kept = this.uploads;
@@ -1330,6 +1358,7 @@ export class ChatStore {
       return 'sent';
     } catch (e) {
       S.busy = false;
+      unshow(S);
       const bad = e instanceof ApiError && e.status === 400 && typeof e.data.path === 'string' ? (e.data.path as string) : '';
       if (bad && retryFiles === undefined && kept.some((u) => u.path === bad)) {
         this.uploads = kept.map((u) => (u.path === bad ? { ...u, state: 'fail' as const, code: String(e instanceof ApiError ? e.data.code || 'unknown' : 'unknown') } : u));

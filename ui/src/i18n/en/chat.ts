@@ -410,6 +410,7 @@ export default {
   'chat.cmd.queueLost': '{count} queued messages were lost · Write them again',
   'chat.cmd.queueTail': '· {count} queued',
   'chat.cmd.retryMark': 'Answered again',
+  'chat.sending': 'Sending…',
   'chat.cmd.retryFailed': 'Could not send the retry · Send the question in the box',
   'chat.cmd.undone': 'Undid the last turn',
   'chat.cmd.undoneN': 'Undid {count} turns',
