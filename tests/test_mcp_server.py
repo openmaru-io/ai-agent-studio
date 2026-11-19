@@ -379,6 +379,23 @@ class McpServerTest(unittest.TestCase):
         self.assertEqual((got["state"], got["after"]), ("running", 0))
         self.assertLess(time.time() - t0, 5)
 
+    def test_끊긴_세션은_다시_불러도_disconnected(self):
+        """끊김 이벤트를 앞 chat_wait 가 가져간 뒤 after 를 넘겨 다시 부르면 이벤트가 없다 — 그래도 running 이 아니다(2026-11-19)."""
+        hub = self.hubs["mcp-a"]
+        err, start = self.call("chat_start", {"pod": "mcp-a", "profile": "main"})
+        sid = start["session_id"]
+        hub.push(sid, "aas.disconnected", {"code": "hub_disconnected"})
+        hub.sessions[sid]["closed"] = True
+        err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": sid, "after": 0, "timeout": 1})
+        self.assertEqual((got["state"], got["after"]), ("disconnected", 1))
+        with mock.patch.object(hub, "session_state", lambda s: "closed" if hub.sessions[s].get("closed") else "idle", create=True):
+            err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": sid, "after": 1, "timeout": 0.2})
+            self.assertFalse(err, got)
+            self.assertEqual((got["state"], got["after"]), ("disconnected", 1))
+            err, start2 = self.call("chat_start", {"pod": "mcp-a", "profile": "main"})   # 열린 세션은 그대로 running
+            err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": start2["session_id"], "after": 0, "timeout": 0.2})
+            self.assertEqual(got["state"], "running")
+
     def test_승인과_되묻기(self):
         hub = self.hubs["mcp-a"]
         err, start = self.call("chat_start", {"pod": "mcp-a", "profile": "main"})

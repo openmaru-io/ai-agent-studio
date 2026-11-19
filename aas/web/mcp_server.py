@@ -562,6 +562,12 @@ async def chat_wait(ctx: Ctx, args: dict):
     out = summarize(events)
     if out["after"] is None:
         out["after"] = after
+    # 새 이벤트 없이 끝났는데 세션이 이미 닫혔으면(끊김을 앞 chat_wait 가 가져갔다) running 이 아니라 disconnected.
+    # 예전에는 끊김 뒤 after 를 넘겨 다시 부르면 이벤트가 없어 늘 running 이라, 에이전트가 사라진 대화를 몇 분씩 기다렸다(2026-11-19)
+    if not events and out["state"] == "running":
+        state_of = getattr(h, "session_state", None)
+        if state_of is not None and state_of(sid) == "closed":
+            out["state"] = "disconnected"
     # 승인을 못 하는 사람(보기만 받은 사람·「대화」 구성원)에게는 답할 수 없는 승인 상태 대신 「주인 승인을 기다리는 중」(스펙 2026-11-17-008 §3-3).
     # approval_respond 를 불러 403 을 받고 다시 시도하지 않게 한다
     if out["state"] == "approval" and not await anyio.to_thread.run_sync(server.may_approve, pod, ctx.user, server.auth().enabled):
@@ -1401,7 +1407,8 @@ TOOLS = {t["name"]: t for t in (
     _tool("chat_wait", "chat", chat_wait,
           "Wait up to 50s for events after `after`. state: running (call again with the returned `after`), done (text = answer), "
           "approval (call approval_respond), awaiting_owner_approval (the workspace owner must approve; call chat_wait again, up to 5 minutes), "
-          "clarify (call clarify_answer), error, disconnected. Tool calls show name and state only.",
+          "clarify (call clarify_answer), error, disconnected (the chat is gone; open a new one with chat_start). "
+          "Tool calls show name and state only.",
           {"pod": POD, "session_id": SESSION, "after": {"type": "integer", "description": "Last event number you saw"},
            "timeout": {"type": "number", "description": "Seconds to wait, 0-50 (default 50)"}}, ("pod", "session_id")),
     _tool("chat_interrupt", "chat:send", chat_interrupt, "Stop the answer in progress.", {"pod": POD, "session_id": SESSION},
