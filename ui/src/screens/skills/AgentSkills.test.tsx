@@ -1197,4 +1197,29 @@ describe('스킬 — 기간 사용(스펙 2026-11-19-005 R3·R4)', () => {
     const notice = await screen.findByText(/기록이 많아 읽지 못했습니다/);
     expect(notice).toHaveTextContent(`${range[0].slice(5, 10)}~${range[1].slice(5, 10)}`);
   });
+
+  // 정리 연결(U8, 2026-11-21): 「모름」 구간이 있으면 「안 씀」 목록을 믿을 수 없어 끄고 이유를 보인다
+  it('고른 기간에 읽지 못한 구간이 있으면 정리를 끄고 이유를 보인다', async () => {
+    const now = Date.now();
+    const range = [iso(now - 5 * day), iso(now - 3 * day)] as [string, string];
+    mount('/skills?profile=ma&p=30', { '/api/skills': periodList({ usage_unknown: [range] }) });
+    await own();
+    const btn = screen.getByRole('button', { name: '정리' });
+    expect(btn).toBeDisabled();
+    // 툴팁(describeChild)은 단추를 감싼 span 에 붙는다
+    const wrap = btn.parentElement as HTMLElement;
+    expect(wrap.getAttribute('title') ?? wrap.getAttribute('aria-label')).toBe('일부 기록을 읽지 못해 정리할 수 없습니다');
+  });
+
+  it('다른 칩을 고른 채 정리를 눌러도 「N일 넘게 안 씀」으로 거른 채 연다', async () => {
+    const user = userEvent.setup();
+    // 앞 시험이 기간 7일을 브라우저에 남길 수 있어 주소로 30일을 정한다
+    mount('/skills?profile=ma&f=setup&p=30', { '/api/skills': periodList() });
+    await own();
+    await user.click(screen.getByRole('button', { name: '정리' }));
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('f=unused'));
+    expect(screen.getByRole('button', { name: /^30일 넘게 안 씀 1/ })).toHaveAttribute('aria-pressed', 'true');
+    // 미리 고르지 않는다(U8)
+    expect(screen.queryAllByRole('checkbox', { checked: true })).toHaveLength(0);
+  });
 });

@@ -226,6 +226,7 @@ export default {
   'skillsAgent.period.unknown': 'Could not read the records for {ranges} because there were too many. They are read again at the next count.',
   'skillsAgent.period.unknownMore': 'Could not read the records for {first} and {n} more ranges because there were too many. They are read again at the next count.',
   'skillsAgent.period.cleanupNeedsLonger': 'Seven days of use is too short to pick skills that are no longer used. Choose 30 or 90 days, then clean up',
+  'skillsAgent.period.cleanupUnknown': 'Some usage records could not be read, so clean-up is not available',
   'skillsAgent.period.ariaUsed': '{uses} uses in the last {n} days',
   'skillsAgent.period.ariaUnused': 'Not used in the last {n} days',
   'skillsAgent.period.ariaFileOnly': 'Not in the session records; only the last-used date is known ({at})',

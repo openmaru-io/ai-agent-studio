@@ -842,6 +842,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class UnknownMethodTest(unittest.TestCase):
+    """GitHub #2(스펙 2026-11-03-004 R3): 낮은 판 Hermes 가 모르는 RPC(-32601)는 Hermes 원문 대신 판 안내로."""
+
+    def test_unknown_method_says_this_hermes_does_not_support_it(self):
+        from aas.hermes.hermes_chat import ChatUnavailable
+        exc = ChatUnavailable("unknown method: session.control")
+        exc.code = -32601
+        err = cc.from_hermes("subgoal", exc)
+        self.assertEqual(err.code, "failed")
+        self.assertIn("이 Hermes 판은 이 명령을 지원하지 않습니다", err.text)
+        self.assertNotIn("unknown method", err.text)
+
+
 class PluginGuardTest(unittest.TestCase):
     """명령 권한이 없는 사람이 「/<플러그인 명령>」 을 글로 보내면 서버가 막는다(스펙 2026-11-19-003 §3-1 #15)."""
 

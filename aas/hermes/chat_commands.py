@@ -33,6 +33,7 @@ NOT_OURS = ("User commands", "Plugin commands")          # catalog 의 빠른·�
 COMPRESS_TIMEOUT = 180                                   # R7 — 대화 다시 열기(RESUME_TIMEOUT)와 같은 값
 HISTORY_TIMEOUT = 30                                     # 되감은 뒤 기록 다시 읽기
 BUSY, USAGE, EMPTY = 4009, 4004, (4001, 4018)            # Hermes 거절 코드(tui_gateway/methods_tools.py)
+UNKNOWN_METHOD = -32601                                   # JSON-RPC 「모르는 메서드」 — 낮은 판 Hermes 에 그 RPC 가 없다
 
 
 def describe(name: str) -> str:
@@ -214,6 +215,9 @@ def from_hermes(name: str, exc) -> CommandError:
         return usage_error(name)
     if code in EMPTY and name in ("retry", "undo", "compress"):
         return empty_error(name)
+    if code == UNKNOWN_METHOD:                            # 낮은 판 Hermes 에 그 RPC 가 없다(GitHub #2, 스펙 2026-11-03-004 R3)
+        return CommandError("failed", tr(f"이 Hermes 판은 이 명령을 지원하지 않습니다(/{name}) · Hermes 를 v0.22.2 이상으로 올리세요",
+                                         f"This Hermes version does not support this command (/{name}) · Upgrade Hermes to v0.22.2 or later"))
     return CommandError("failed", tr(f"/{name} 를 실행하지 못했습니다: {exc}", f"/{name} failed: {exc}"))
 
 

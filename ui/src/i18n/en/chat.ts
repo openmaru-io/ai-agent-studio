@@ -235,6 +235,7 @@ export default {
   'chat.files.pastHint': 'Files from this chat are in Files',
   'chat.files.notice.cwd_fallback': 'Could not create the work folder, so files made in this chat may not be downloadable',
   'chat.files.notice.cwd_unchanged': 'Files made in this chat may not be downloadable. Start a new chat',
+  'chat.files.notice.hermes_legacy': 'The attached Hermes is older than the tested version (v0.22.2). Answering questions, goal commands and some other features may not work. Upgrade Hermes to v0.22.2 or later',
   'chat.files.podNote': 'A work folder shared by all profiles in this AI Agent Workspace',
   'chat.files.usage': 'Usage',
   'chat.files.usageUnknown': 'Unknown',

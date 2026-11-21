@@ -235,6 +235,7 @@ export default {
   'chat.files.pastHint': '이 대화의 파일은 「파일」에서 받을 수 있습니다',
   'chat.files.notice.cwd_fallback': '작업 폴더를 만들지 못해 이 대화에서 만든 파일은 받을 수 없을 수 있습니다',
   'chat.files.notice.cwd_unchanged': '이 대화에서 만든 파일은 받을 수 없을 수 있습니다. 새 대화를 여세요',
+  'chat.files.notice.hermes_legacy': '붙은 Hermes 판이 시험한 판(v0.22.2)보다 낮습니다. 되묻기 답하기·목표 명령 등 일부 기능이 동작하지 않을 수 있습니다. Hermes 를 v0.22.2 이상으로 올리세요',
   'chat.files.podNote': '이 AI 에이전트 작업공간의 모든 프로파일이 함께 쓰는 작업 폴더입니다',
   'chat.files.usage': '사용량',
   'chat.files.usageUnknown': '알 수 없음',

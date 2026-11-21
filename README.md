@@ -368,6 +368,8 @@ docker compose up -d --build
 
 The Hermes version is set by `HERMES_IMAGE`. We test AI Agent Studio with the default version. Back up the `hermes-data` volume before you use a different Hermes version.
 
+With `docker-compose.attach.yml`, the Hermes you already run must be **v0.22.2 or later**. Earlier versions (for example v0.21.0) do not have the RPCs that AI Agent Studio uses: answering a question card (`clarify.lock`), registering for questions and approvals (`client.capabilities`) and, before v0.21.1, goal commands (`session.control`). AI Agent Studio shows a notice in the chat when it detects an older Hermes, and a command that the Hermes does not have says so instead of showing the raw error.
+
 ### Back up and restore
 
 The data is in three Docker volumes: `aas_hermes-data`, `aas_aas-data` and `aas_aas-config`. Stop the services before a backup, so the databases do not change during the copy.

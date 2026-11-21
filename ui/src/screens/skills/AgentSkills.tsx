@@ -1246,11 +1246,14 @@ function SkillColumn({
       else next.add(id);
       return next;
     });
+  // 정리는 「N일 넘게 안 씀」으로 거른 채 연다 — 다른 칩을 골라 두었어도 바꾼다. 미리 고르지는 않는다(U8)
   const startCleanup = () => {
     setCleanup(true);
     setChosen(new Set());
-    if (filter === 'all') onFilter('unused');
+    if (filter !== 'unused') onFilter('unused');
   };
+  // 7일 사용이나 읽지 못한 구간으로는 「안 씀」 목록을 믿을 수 없다 — 정리를 끄고 이유를 보인다(U8)
+  const cleanupOff = !ready ? '' : p === 7 ? 'skillsAgent.period.cleanupNeedsLonger' : unknown.length ? 'skillsAgent.period.cleanupUnknown' : '';
   const endCleanup = () => {
     setCleanup(false);
     setChosen(new Set());
@@ -1356,8 +1359,7 @@ function SkillColumn({
           })}
           <Box sx={{ flex: 1 }} />
           {!cleanup && (
-            // 7일 사용만으로는 오래 안 쓴 스킬을 가리기 어렵다 — 7일을 고르면 정리를 끄고 이유를 보인다
-            <Tooltip describeChild title={p === 7 && ready ? t('skillsAgent.period.cleanupNeedsLonger') : t('skillsAgent.cleanupHint')}>
+            <Tooltip describeChild title={t(cleanupOff || 'skillsAgent.cleanupHint')}>
               <span>
                 <Button
                   size="small"
@@ -1366,7 +1368,7 @@ function SkillColumn({
                   sx={tier2}
                   startIcon={<DeleteOutlineIcon />}
                   onClick={startCleanup}
-                  disabled={p === 7 && ready}
+                  disabled={!!cleanupOff}
                 >
                   {t('skillsAgent.cleanup')}
                 </Button>

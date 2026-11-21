@@ -106,6 +106,14 @@ class DirectTest(Base):
             self.direct(inf=info(scripts=[{"path": "scripts/run.py"}]))
         self.assertEqual(self.direct(inf=info(scripts=[{"path": "scripts/run.py"}]), confirm=True)["status"], "published")
 
+    def test_a_protected_skill_name_is_refused_even_when_its_setting_is_off(self):
+        # 같은 이름으로 허브에 올려 보호 스킬을 가리지 못하게 — 설치 값과 상관없이 폴더에 있으면 막는다(스펙 2026-11-21-003 §3-1)
+        with mock.patch.object(ha.protected_skills, "protected_names", return_value=["protected-fixture"]), \
+             mock.patch.object(ha.protected_skills, "protected_enabled", return_value=[]):
+            reasons = ha.blockers("protected-fixture", None, "paid", files(name="protected-fixture"), "admin@x.io")
+            self.assertTrue(any("보호 스킬" in r for r in reasons), reasons)
+            self.assertFalse(any("보호 스킬" in r for r in ha.blockers("other-skill", None, "paid", files(name="other-skill"), "admin@x.io")))
+
     def test_waiting_request_blocks_and_approve_refuses_admin_records(self):
         row = self.direct()
         row.update(status="failed")

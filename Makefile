@@ -4,7 +4,7 @@ PYTHON ?= python3
 IMG ?= aas:local
 SIDECAR_IMG ?= aas-sidecar:local
 
-.PHONY: help test-python test-python-docker test-python-pg push lint-ui test-ui build-ui docker verify-keycloak ci ci-kind
+.PHONY: help check-protected-skills test-python test-python-docker test-python-pg push lint-ui test-ui build-ui docker verify-keycloak ci ci-kind
 
 help: ## 목표 목록
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*## /\t/'
@@ -19,6 +19,9 @@ $(VENV)/.deps: Makefile
 
 test-python: $(VENV)/.deps ## Python 시험(표준 unittest). 처음 한 번 .venv 에 서버 의존성을 설치한다
 	PYTHONPATH=. $(VENV)/bin/python -m unittest discover -s tests -p "test_*.py"
+
+check-protected-skills: $(VENV)/.deps ## 보호 스킬을 더하거나 판을 올린 뒤 빠진 곳(잠금·설정 이름 표·공개본 제외·흔적 규칙)을 찾는다
+	PYTHONPATH=. $(VENV)/bin/python -m aas.market.protected_skills check
 
 PG_IMG ?= postgres:16
 PG_VENV ?= .venv-pg

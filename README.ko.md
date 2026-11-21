@@ -368,6 +368,8 @@ docker compose up -d --build
 
 Hermes 버전은 `HERMES_IMAGE` 로 정한다. AI Agent Studio 는 기본 버전으로 시험했다. 다른 Hermes 버전을 쓰기 전에 `hermes-data` 볼륨을 백업한다.
 
+`docker-compose.attach.yml` 로 붙이는 Hermes 는 **v0.22.2 이상**이어야 한다. 그보다 낮은 판(예: v0.21.0)에는 AI Agent Studio 가 쓰는 RPC 가 없다: 되묻기 카드에 답하기(`clarify.lock`), 되묻기·승인 요청 받기(`client.capabilities`), v0.21.1 이전에는 목표 명령(`session.control`)도 없다. 낮은 판을 알아보면 채팅에 안내를 한 줄 보이고, Hermes 에 없는 명령은 Hermes 원문 오류 대신 「이 Hermes 판은 이 명령을 지원하지 않습니다」를 보인다.
+
 ### 백업과 복원
 
 데이터는 Docker 볼륨 세 개 `aas_hermes-data`·`aas_aas-data`·`aas_aas-config` 에 있다. 복사하는 동안 데이터베이스가 바뀌지 않도록 백업 전에 서비스를 멈춘다.

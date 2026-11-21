@@ -15,7 +15,7 @@ import secrets
 from datetime import datetime
 
 from ..common.i18n import tr
-from . import market_publish as mp, marketplace, publish_auto, skill_bundle
+from . import market_publish as mp, marketplace, protected_skills, publish_auto, skill_bundle
 from .marketplace import NAME, VERSION, MarketError
 
 
@@ -113,6 +113,8 @@ def blockers(name: str, version: str | None, namespace: str, files: list[tuple[s
         return out
     if name in skill_bundle.names():
         out.append(tr("AAS 기본 스킬은 AAS 서버가 관리합니다. 서버를 새 버전으로 반영해 배포하세요", "AAS built-in skills are managed by the AAS server. Deploy a new server version to update them"))
+    elif name in protected_skills.protected_names():         # 설치 값과 상관없이 막는다 — 같은 이름으로 허브에 올려 보호 스킬을 가리지 못하게(스펙 2026-11-21-003 §3-1)
+        out.append(tr("AAS 서버가 관리하는 보호 스킬과 같은 이름입니다 — 다른 이름을 쓰세요", "This name belongs to a protected skill managed by the AAS server. Use another name"))
     if mp._exists_readonly(name):
         out.append(tr("공개 미러에 같은 이름이 있습니다 — 다른 이름을 쓰세요", "The public mirror has a package with that name. Use another name"))
     from . import hub_hide

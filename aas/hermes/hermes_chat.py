@@ -275,6 +275,9 @@ class ChatHub:
         self.sessions: dict[str, dict] = {}
         self._resuming: dict[str, Future] = {}   # 저장 대화 id → 지금 도는 다시 열기(R9). 뒤에 온 요청은 이 결과를 같이 받는다
         self.last_error = ""
+        # 붙은 Hermes 가 client.capabilities 를 모르는 낮은 판(v0.21.0 등)인가 — 연결마다 _hello 가 정한다. 참이면 대화를 열 때
+        # 판 안내 aas.notice hermes_legacy 를 넣는다(GitHub #2, 스펙 2026-11-03-004 R2). v0.21 용 clarify.respond 대체는 넣지 않는다
+        self.legacy = False
         self.listeners: list = []             # fn(sid, profile, etype, payload) — 오피스가 대화의 시작·끝을 알아채는 데 쓴다
         # 대화 작업 폴더(workspace.Workspace, OMAI-1153). 있으면 새 대화의 cwd 를 workspace 로, 턴 전후 목록으로 결과 파일을 알린다
         self.workspace = None
@@ -342,8 +345,10 @@ class ChatHub:
                 ws.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": "client.capabilities",
                                     "params": {"server_requests": True}}) + "\n")
             fut.result(timeout=CAPS_WAIT)
+            self.legacy = False
         except Exception as exc:
             self._pending.pop(rid, None)
+            self.legacy = getattr(exc, "code", None) == -32601
             self.last_error = tr(f"되묻기·승인 요청을 받겠다고 알리지 못했습니다: {type(exc).__name__}",
                                  f"Could not register for questions and approvals: {type(exc).__name__}")
         finally:
@@ -605,7 +610,13 @@ class ChatHub:
             meta["relay"] = True
         if cwd_ok is False:
             self._push(sid, "aas.notice", {"code": "cwd_fallback"})
+        self._legacy_notice(sid)
         return {"session_id": sid, "profile": profile or "default"}
+
+    def _legacy_notice(self, sid: str) -> None:
+        """낮은 판 Hermes 면 그 대화에 판 안내를 한 번 넣는다(R2). 되묻기 답·목표 명령 등이 동작하지 않을 수 있다."""
+        if self.legacy and sid:
+            self.notice_once(sid, "hermes_legacy", {"code": "hermes_legacy"})
 
     def forget(self, sid: str) -> None:
         """세션 하나를 이 허브의 메모리에서 지운다(세션 정보·이벤트·번호). 그 세션을 다시 쓰지 않을 때만 부른다(회의 앞 차례, 스펙 2026-10-20-027 R10)."""
@@ -790,9 +801,12 @@ class ChatHub:
                 running.result(timeout=RESUME_TIMEOUT + 5)
             except FutureTimeout:
                 raise ChatUnavailable(tr("대화를 다시 열지 못했습니다", "Cannot reopen the chat")) from None
-            return self._resume(profile, stored_id, relay, by)
+            out = self._resume(profile, stored_id, relay, by)
+            self._legacy_notice(str(out.get("session_id") or ""))
+            return out
         try:
             out = self._resume(profile, stored_id, relay, by)
+            self._legacy_notice(str(out.get("session_id") or ""))
         except BaseException as exc:
             running.set_exception(exc)
             raise

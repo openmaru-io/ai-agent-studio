@@ -225,6 +225,7 @@ export default {
   'skillsAgent.period.unknown': '{ranges} 기록이 많아 읽지 못했습니다. 다음 집계 때 다시 읽습니다.',
   'skillsAgent.period.unknownMore': '{first} 외 {n}곳 기록이 많아 읽지 못했습니다. 다음 집계 때 다시 읽습니다.',
   'skillsAgent.period.cleanupNeedsLonger': '7일 사용만으로는 오래 안 쓴 스킬을 고르기 어렵습니다. 30일이나 90일을 고른 뒤 정리하세요',
+  'skillsAgent.period.cleanupUnknown': '일부 기록을 읽지 못해 정리할 수 없습니다',
   'skillsAgent.period.ariaUsed': '최근 {n}일 {uses}회',
   'skillsAgent.period.ariaUnused': '최근 {n}일 쓰지 않음',
   'skillsAgent.period.ariaFileOnly': '세션 기록에는 없고 마지막 사용 날짜만 있음({at})',

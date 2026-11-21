@@ -596,6 +596,39 @@ class ServerRequestTest(unittest.TestCase):
         self.assertEqual(self.hub.create_session("ma")["session_id"], "s1")
         self.assertIn("되묻기", self.hub.last_error)
 
+    def _legacy_caps(self):
+        """Hermes v0.21.0 처럼 client.capabilities 를 모르는 판(-32601, GitHub #2)."""
+        orig = self.ws.send
+
+        def send(data):
+            frame = json.loads(data)
+            if frame.get("method") == "client.capabilities":
+                self.ws.sent.append(frame)
+                self.ws.inbox.put(json.dumps({"id": frame["id"], "error": {"code": -32601, "message": "unknown method: client.capabilities"}}))
+                return
+            orig(data)
+        self.ws.send = send
+
+    def test_old_hermes_gets_a_version_notice_once_per_chat(self):
+        """스펙 2026-11-03-004 R2: capabilities 가 -32601 이면 대화를 열 때 판 안내를 한 번 넣는다(다시 돌려받아도 한 번)."""
+        self._legacy_caps()
+        sid = self.hub.create_session("ma")["session_id"]
+        self.assertTrue(self.hub.legacy)
+        notices = [e["payload"] for e in self.hub.events_after(sid, 0, wait=0) if e["type"] == "aas.notice"]
+        self.assertEqual(notices, [{"code": "hermes_legacy"}])
+
+    def test_old_hermes_notice_once_when_a_chat_is_reopened_twice(self):
+        self._legacy_caps()
+        sid = self.hub.resume("ma", "st1")["session_id"]
+        self.hub.resume("ma", "st1")                      # 이미 열린 대화를 다시 돌려받음
+        notices = [e["payload"] for e in self.hub.events_after(sid, 0, wait=0) if e["type"] == "aas.notice"]
+        self.assertEqual(notices, [{"code": "hermes_legacy"}])
+
+    def test_current_hermes_gets_no_version_notice(self):
+        sid = self.hub.create_session("ma")["session_id"]
+        self.assertFalse(self.hub.legacy)
+        self.assertEqual([e for e in self.hub.events_after(sid, 0, wait=0) if e["type"] == "aas.notice"], [])
+
     def test_requests_without_a_screen_are_declined_at_once(self):
         """R5: 화면이 없는 요청은 -32601, 창이 답하는 요청은 4404. 요청이 온 연결로 답한다."""
         self.hub.create_session("ma")
