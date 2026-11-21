@@ -25,7 +25,7 @@ from ..auth import keycloak, mcp_limits, mcp_transfers, tokens
 from ..common import config, i18n, store
 from ..common.i18n import tr
 from ..fleet import profiles
-from ..ops import chat_session_meta
+from ..ops import chat_session_meta, restart_pending
 from ..hermes import workspace as wsp
 from ..hermes.hermes_chat import APPROVAL_CHOICES, ChatUnavailable
 from ..market import marketplace
@@ -40,14 +40,18 @@ INLINE_MAX = 64 * 1024                                    # 파일을 결과에 
 FIELD_MAX = 2000                                          # 승인·되묻기 카드의 글 칸 하나의 한도
 MEMBER_TTL = 300.0                                        # Keycloak 활성·그룹 확인을 기억하는 시간(D12)
 INSTRUCTIONS = ("CogentAI AAS: talk to your remote Hermes agents. Start with agents_list, then chat_start → chat_send → chat_wait "
-                "(repeat chat_wait with the returned `after` until state is done). Answer approvals with approval_respond.")
+                "(repeat chat_wait with the returned `after` until state is done). Answer approvals with approval_respond. "
+                "If chat_wait returns state disconnected, the chat is gone: open a new chat with chat_start and send again "
+                "(you decide whether to carry over earlier context). The reconnect error from chat_send or chat_wait means the same. "
+                "Templates: market_list(kind=template) → market_install → secret_request links. Publishing: market_template_publish(dry_run=true) first.")
 
 
 class ToolError(Exception):
-    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·reconnect·unavailable."""
-    def __init__(self, word: str, message: str = "", hint: str = ""):
+    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·in_use·reconnect·unavailable.
+    data 는 결과에 그대로 붙일 값(in_use 의 부르는 곳 목록 dependents)."""
+    def __init__(self, word: str, message: str = "", hint: str = "", data: dict | None = None):
         super().__init__(message or word)
-        self.word, self.message, self.hint = word, message, hint
+        self.word, self.message, self.hint, self.data = word, message, hint, data or {}
 
 
 MCP_LANG = "en"                                          # Claude Code 는 Accept-Language 를 보내지 않는다. 도구 설명과 같은 영어로(2026-10-28)
@@ -56,6 +60,8 @@ MCP_LANG = "en"                                          # Claude Code 는 Accep
 def _hint(word: str) -> str:
     """오류의 next. message(서버 문장)와 같은 언어로 — 한쪽만 한국어이던 것(2026-10-28 OKE reconnect)."""
     return {"busy": tr("몇 초 기다린 뒤 다시 부르세요", "wait a few seconds and call again"),
+            "in_use": tr("이 스킬을 부르는 크론 작업·스킬을 먼저 고치거나 지운 뒤 다시 부르세요",
+                         "change or delete the scheduled jobs and skills that call this skill first, then call again"),
             "reconnect": tr("이 서버에서 대화가 사라졌습니다. chat_start 로 새 대화를 열고 다시 보내세요",
                             "the chat is gone from this server; open a new chat with chat_start and send again"),
             "auth": tr("토큰이 더는 유효하지 않습니다. Claude Code 를 AAS 에 다시 연결하세요",
@@ -208,6 +214,20 @@ def _ok(status: int, out):
     msg = str(msg or "")[:500]
     if isinstance(out, dict) and out.get("reason") == "already_answered":   # 사람이 먼저 답했다 — 다시 부를 일이 아니다(§3-7 ④)
         raise ToolError("invalid", msg)
+    # 스킬 지우기 차단(스펙 2026-11-19-003 §3-3): 상태 코드가 아니라 본문의 이유 코드로 가른다 — 같은 409 를 파일 저장의 base_sha 충돌도 쓴다
+    reason = out.get("reason") if isinstance(out, dict) else None
+    if status == 409 and reason == "in_use":
+        raise ToolError("in_use", msg, _hint("in_use"), {"dependents": out.get("dependents")})
+    if status == 409 and reason == "state":               # 게시 요청 거두기: 이미 게시·반려·거둠 — 다시 불러도 같다(스펙 2026-11-20-009 §3-2 5)
+        raise ToolError("invalid", msg, "", {"status": out.get("status")})
+    if status == 409 and reason == "busy":
+        wait = int(out.get("retry_after") or 5)
+        raise ToolError("busy", msg, tr(f"{wait}초 기다린 뒤 다시 부르세요", f"wait {wait} seconds and call again"))
+    if status == 409 and reason == "checking":
+        wait = int(out.get("retry_after") or 10)
+        raise ToolError("busy", msg, tr(f"{wait}초 기다린 뒤 다시 부르세요", f"wait {wait} seconds and call again"))
+    if status == 503 and reason == "unchecked":           # 호출 관계를 확인하지 못함 — 대화가 사라진 것(reconnect)이 아니다
+        raise ToolError("unavailable", msg)
     if status == 401:
         raise ToolError("auth", msg, _hint("auth"))
     if status == 403:
@@ -293,7 +313,7 @@ def _link_view(url: str, command: str, **extra) -> dict:
     return {"url": url, "command": command, "expires_in": int(mcp_transfers.TTL), "single_use": True, **extra}
 
 
-AGENT_KEYS = ("pod", "name", "owner_name", "current", "shared", "team", "state", "connected", "profiles", "chat_default", "primary")
+AGENT_KEYS = ("pod", "name", "owner_name", "current", "shared", "team", "role", "state", "connected", "profiles", "chat_default", "primary")
 PROFILE_KEYS = ("name", "title", "description", "running")
 
 
@@ -307,6 +327,36 @@ async def agents_list(ctx: Ctx, args: dict):
         row["agents"] = [{k: p[k] for k in PROFILE_KEYS if k in p} for p in g.get("agents") or [] if isinstance(p, dict)]
         rows.append(row)
     return {"agents": rows}
+
+
+async def members_list(ctx: Ctx, args: dict):
+    """작업공간 구성원(스펙 2026-11-17-008 §7). 화면 공유 구역과 같은 값."""
+    pid = await _pod(ctx, args)
+    return await ctx.call("GET", "/api/agents/members", pid, {"pod": pid})
+
+
+async def members_set(ctx: Ctx, args: dict):
+    """구성원 넣기·역할 바꾸기·빼기(소유자·팀 관리자·관리자). role=none 이면 뺀다."""
+    pid = await _pod(ctx, args)
+    role = _arg(args, "role")
+    if role not in ("use", "edit", "none"):
+        raise ToolError("invalid", "`role` must be use, edit or none")
+    return await ctx.call("POST", "/api/agents/members", pid,
+                          body={"pod": pid, "op": "set", "email": _arg(args, "email", True, 254), "role": role})
+
+
+async def messenger_link(ctx: Ctx, args: dict):
+    """내 메신저 계정 연결(스펙 2026-11-17-008 §7): list · link(봇이 보낸 코드) · unlink."""
+    pid, op = await _pod(ctx, args), _arg(args, "op")
+    if op == "list":
+        return await ctx.call("GET", "/api/messenger/links", pid, {"pod": pid})
+    if op == "link":
+        return await ctx.call("POST", "/api/messenger/links", pid, body={"pod": pid, "op": "link", "profile": _arg(args, "profile"),
+                                                                         "platform": _arg(args, "platform"), "code": _arg(args, "code", True, 20)})
+    if op == "unlink":
+        return await ctx.call("POST", "/api/messenger/links", pid, body={"pod": pid, "op": "unlink", "profile": _arg(args, "profile"),
+                                                                         "platform": _arg(args, "platform"), "user_id": _arg(args, "user_id", True, 120)})
+    raise ToolError("invalid", "`op` must be list, link or unlink")
 
 
 async def chat_start(ctx: Ctx, args: dict):
@@ -519,6 +569,16 @@ async def chat_wait(ctx: Ctx, args: dict):
     out = summarize(events)
     if out["after"] is None:
         out["after"] = after
+    # 새 이벤트 없이 끝났는데 세션이 이미 닫혔으면(끊김을 앞 chat_wait 가 가져갔다) running 이 아니라 disconnected.
+    # 예전에는 끊김 뒤 after 를 넘겨 다시 부르면 이벤트가 없어 늘 running 이라, 에이전트가 사라진 대화를 몇 분씩 기다렸다(2026-11-19)
+    if not events and out["state"] == "running":
+        state_of = getattr(h, "session_state", None)
+        if state_of is not None and state_of(sid) == "closed":
+            out["state"] = "disconnected"
+    # 승인을 못 하는 사람(보기만 받은 사람·「대화」 구성원)에게는 답할 수 없는 승인 상태 대신 「주인 승인을 기다리는 중」(스펙 2026-11-17-008 §3-3).
+    # approval_respond 를 불러 403 을 받고 다시 시도하지 않게 한다
+    if out["state"] == "approval" and not await anyio.to_thread.run_sync(server.may_approve, pod, ctx.user, server.auth().enabled):
+        out["state"] = "awaiting_owner_approval"
     stored = str((getattr(h, "sessions", {}).get(sid) or {}).get("stored_id") or "")
     if stored:                                            # 다른 서버로 넘어가도 chat_start(resume) 로 다시 열 번호
         out["stored_id"] = stored
@@ -604,7 +664,11 @@ async def skill_get(ctx: Ctx, args: dict):
         except ToolError:                                 # 본문을 못 읽어도 정보는 준다
             pass
     if args.get("zip") and isinstance(hit, dict):         # 폴더 zip 받기(스크립트 포함). 권한은 /api/skill/download 가 받을 때 다시 본다
-        url = await _link(ctx, "skill", "down", pid, {"profile": hit.get("profile") or "", "path": hit.get("path") or ""})
+        prof = hit.get("profile") or ""
+        rel = str(hit.get("path") or "")
+        if prof not in ("", "default") and rel.startswith(f"profiles/{prof}/"):
+            rel = rel[len(f"profiles/{prof}/"):]           # 다운로드 API 는 프로파일 기준 경로를 받는다(화면 DownloadSkill 과 같게)
+        url = await _link(ctx, "skill", "down", pid, {"profile": prof, "path": rel})
         hit["download"] = _link_view(url, _down_command(url, f"aas-files/{hit.get('name') or 'skill'}.zip"))
     return hit
 
@@ -707,9 +771,21 @@ async def credentials_status(ctx: Ctx, args: dict):
 
 
 # ---- 쓰기 도구(T5c) ------------------------------------------------------------------------------------
+RESTART_NEXT = ("Saved. The gateway must restart before this takes effect. A person restarts it from the top bar in AAS, "
+                "or call mcp_apply if you were asked to restart.")
+
+
+def _restart_hint(out):
+    """저장이 게이트웨이 다시 시작을 기다리면 next 로 알린다(스펙 2026-11-18-016 4-4). 에이전트가 바꾼 직후 그 도구를 써 보고
+    반영이 안 됐다고 잘못 판단하지 않게. 스스로 다시 시작하지는 않는다(D4)."""
+    if isinstance(out, dict) and out.get("restart_pending"):
+        return {**out, "next": RESTART_NEXT}
+    return out
+
+
 async def _profile_action(ctx: Ctx, pid: str, body: dict):
     """/api/profile/action — 화면의 프로파일 바꾸기와 같은 경로·권한(주인 금지 이름·https·형식 검사, owner_guard)."""
-    return await ctx.call("POST", "/api/profile/action", pid, body={"pod": pid, **body})
+    return _restart_hint(await ctx.call("POST", "/api/profile/action", pid, body={"pod": pid, **body}))
 
 
 # ---- M2 ① 성격·작업 지침·설정(스펙 §3-6-1, profile:write) ---------------------------------------------------------
@@ -880,8 +956,14 @@ async def mcp_list(ctx: Ctx, args: dict):
     pid, profile = await _pod(ctx, args, required=False), _arg(args, "profile")
     out = await ctx.call("GET", "/api/profile", pid, {"pod": pid, "name": profile})
     rows = out.get("mcp") if isinstance(out.get("mcp"), list) else []
-    return {"pod": pid, "profile": profile, "servers": [{k: r[k] for k in MCP_ROW if k in r} for r in rows if isinstance(r, dict)],
-            "can_edit": bool(((out.get("caps") or {}).get("mcp") or {}).get("can"))}
+    res = {"pod": pid, "profile": profile, "servers": [{k: r[k] for k in MCP_ROW if k in r} for r in rows if isinstance(r, dict)],
+           "can_edit": bool(((out.get("caps") or {}).get("mcp") or {}).get("can"))}
+    name = str((out.get("profile") or {}).get("name") or profile)
+    pending = [{"kind": r["kind"], "target": r["target"]} for r in restart_pending.all_items(pid) if r["profile"] == name]
+    if pending:                                                # 저장했지만 아직 반영되지 않은 것(스펙 2026-11-18-016 4-4)
+        res["restart_pending"] = pending
+        res["next"] = RESTART_NEXT
+    return res
 
 
 async def mcp_catalog(ctx: Ctx, args: dict):
@@ -1037,9 +1119,32 @@ def _label_of(labels: dict, ns: str) -> str:
     return str(labels.get(ns) or marketplace.ns_label(ns)) if ns else ""
 
 
+async def _template_call(ctx: Ctx, method: str, path: str, pid: str, query=None, body=None):
+    """템플릿 도구의 화면 API 호출. 실패면 오류 코드(§4-5 code)를 첫 낱말로 둔 ToolError — 에이전트가 code 로 고칠 일을 고른다."""
+    status, out = await ctx.api(method, path, pid, query, body)
+    if 200 <= status < 300:
+        return out
+    code = str(out.get("reason") or "") if isinstance(out, dict) else ""
+    try:
+        return _ok(status, out)
+    except ToolError as exc:
+        if code:
+            exc.message = f"{code}: {exc.message}"
+            if isinstance(out, dict) and status == 429:
+                exc.message += f" (limit {out.get('limit')}, used {out.get('used')}, setting {out.get('setting')})"
+        raise
+
+
 async def market_list(ctx: Ctx, args: dict):
-    """마켓(SkillHub) 패키지와 이 에이전트에 설치한 것. 화면 목록과 같은 /api/market — query 로 이름·요약을 거른다."""
+    """마켓(SkillHub) 패키지와 이 에이전트에 설치한 것. 화면 목록과 같은 /api/market — query 로 이름·요약을 거른다.
+    kind=template 이면 프로파일 템플릿 목록(/api/market/templates, 스펙 2026-11-18-002 §4-3)."""
     pid = await _pod(ctx, args, required=False)
+    if _arg(args, "kind", False, 20) == "template":
+        out = await _template_call(ctx, "GET", "/api/market/templates", pid, {"pod": pid})
+        keep = ("namespace", "name", "version", "description", "author", "env_requires", "mcp", "skills", "hub_skills", "cron", "files", "installs", "public")
+        return {"pod": pid, "templates": [{k: r[k] for k in keep if k in r} for r in (out.get("items") or [])[:50] if isinstance(r, dict)],
+                "profile_limit": out.get("limit"), "profiles_used": out.get("used"),
+                "next": "market_install with mode=install and a NEW profile name, then secret_request for each env_requires key."}
     out = await ctx.call("GET", "/api/market", pid, {"pod": pid})
     q = _arg(args, "query", False, 80).lower()
     labels = out.get("namespace_labels") or {}
@@ -1055,7 +1160,20 @@ async def market_install(ctx: Ctx, args: dict):
     pid = await _pod(ctx, args)
     body = {"pod": pid, "profile": _arg(args, "profile"), "namespace": _arg(args, "namespace", True, 63), "name": _arg(args, "name", True, 63),
             "version": _arg(args, "version", False, 20), "mode": _arg(args, "mode", False, 20) or "install"}
+    template = None
+    if body["mode"] == "install":                         # 템플릿이면 KEY 값을 받지 않고, 명령 실행 MCP 가 있으면 사람의 동의 링크만 준다(스펙 2026-11-18-002 §4-3)
+        status, got = await ctx.api("GET", "/api/market/template", pid, {"pod": pid, "ns": body["namespace"], "name": body["name"], "version": body["version"]}, None)
+        template = got if status == 200 and isinstance(got, dict) else None
+    if template and any(m.get("stdio") for m in template.get("mcp") or []):
+        raise ToolError("forbidden", f"consent_required: A person must agree on this link before it is installed: {base_url(ctx.request)}/#/profiles "
+                                     "(New profile → From a template). Command MCP servers in this template: "
+                                     + ", ".join(m["name"] for m in template["mcp"] if m.get("stdio")))
     out = await ctx.call("POST", "/api/market/install", pid, body=body)
+    if template:
+        keys = [e["name"] for e in template.get("env_requires") or []]
+        return {**(out if isinstance(out, dict) else {"result": out}), "env_requires": keys,
+                "next": "The profile is created in the background. Do not pass key values in chat: when it exists, call secret_request "
+                        f"(or env_upload_command) for each key ({', '.join(keys) or 'none'}). MCP servers turn on once their keys are set."}
     return {**(out if isinstance(out, dict) else {"result": out}),
             "next": "Installing runs in the background. Check market_list (installed) in a minute, then open a NEW chat to use it."}
 
@@ -1074,18 +1192,88 @@ async def market_remove(ctx: Ctx, args: dict):
                                                                     "namespace": _arg(args, "namespace", True, 63), "name": _arg(args, "name", True, 63)})
 
 
+# 자동 승인이 안 되는 이유 코드 → 에이전트가 읽을 문장(화면 문구표와 같다, 스펙 2026-11-20-009 §3-3). 표에 없는 코드는 unknown 문장
+AUTO_REASON_EN = {
+    "no_record": "No record that this skill was made on this AAS, so an admin must approve it",
+    "changed_since": "It changed after it was made, so an admin must approve it",
+    "other_author": "Someone else made this skill, so an admin must approve it",
+    "not_owner": "You do not own this AI Agent Workspace, so an admin must approve it",
+    "origin_bundled_modified": "It is a changed copy of another skill, so an admin must approve it",
+    "origin_market": "It is a changed copy of another skill, so an admin must approve it",
+    "internal_refs": "It has internal addresses, so it cannot go to a public namespace automatically",
+    "off": "An admin must approve it",
+    "admin": "Admins approve their own requests",
+    "unknown": "Decided after you send it",
+}
+
+
+def _auto_reason(code: str) -> str:
+    return AUTO_REASON_EN.get(code or "", AUTO_REASON_EN["unknown"])
+
+
 async def market_publish(ctx: Ctx, args: dict):
-    """올리기 요청. 주인이 이 AAS 로 만든 스킬이면 자동 승인(Q14, 뒤에서 게시), 아니면 관리자 승인을 기다린다. 검사는 화면과 같다."""
+    """올리기 요청. 주인이 이 AAS 로 만든 스킬이면 자동 승인(Q14, 뒤에서 게시), 아니면 관리자 승인을 기다린다. 검사는 화면과 같다.
+    dry_run 이면 보내지 않고 화면의 점검(POST /api/market/publish/check)과 자동 승인 예상을 돌려준다(템플릿 게시와 같은 관례, 스펙 2026-11-20-009 §3-3 3)."""
     pid = await _pod(ctx, args)
-    out = await ctx.call("POST", "/api/market/publish", pid, body={"pod": pid, "profile": _arg(args, "profile"), "path": _arg(args, "path", True, 400),
-                                                                   "name": _arg(args, "name", True, 63), "version": _arg(args, "version", True, 20),
-                                                                   "namespace": _arg(args, "namespace", False, 63)})
+    body = {"pod": pid, "profile": _arg(args, "profile"), "path": _arg(args, "path", True, 400), "name": _arg(args, "name", True, 63),
+            "version": _arg(args, "version", True, 20), "namespace": _arg(args, "namespace", False, 63)}
+    if args.get("dry_run"):
+        out = await ctx.call("POST", "/api/market/publish/check", pid, body=body)
+        out = out if isinstance(out, dict) else {}
+        auto = out.get("auto") or {}
+        problems = [c for c in out.get("checks") or [] if c.get("level") in ("fail", "warn")]
+        if not out.get("ok"):
+            nxt = "Not sent. Fix every check with level fail, then call again with dry_run."
+        elif auto.get("will"):
+            nxt = (f"Not sent. Sending will try automatic approval to {auto.get('namespace_label') or auto.get('namespace')} "
+                   f"({'public' if auto.get('public') else 'members only'}); it can still wait for an admin if the files change or publishing fails. "
+                   "Call again without dry_run to send.")
+        else:
+            nxt = f"Not sent. {_auto_reason(str(auto.get('reason') or ''))}. Call again without dry_run to send."
+        return {"ok": bool(out.get("ok")), "name": out.get("name"), "version": out.get("version"), "checks": problems, "auto": auto, "next": nxt}
+    out = await ctx.call("POST", "/api/market/publish", pid, body=body)
     req = (out or {}).get("request") or {} if isinstance(out, dict) else {}
     target = req.get("auto_namespace_label") or _label_of({}, str(req.get("auto_namespace") or ""))
     nxt = (f"Approved automatically without admin review; publishing to {target} in the background. "
            "Check market_publish_status in a few seconds." if req.get("auto") == "pending" else
-           f"The request waits for an admin to approve it (reason: {req.get('auto_reason') or 'manual'}). Check market_publish_status.")
+           f"The request waits for an admin to approve it: {_auto_reason(str(req.get('auto_reason') or ''))}. Check market_publish_status. "
+           "To cancel it, call market_publish_withdraw.")
     return {**(out if isinstance(out, dict) else {"result": out}), "next": nxt}
+
+
+async def market_template_publish(ctx: Ctx, args: dict):
+    """프로파일을 템플릿으로 올린다(화면과 같은 POST /api/market/template/publish, 스펙 2026-11-18-002 §4-3). 기본 구역은 제한 구역."""
+    pid = await _pod(ctx, args)
+    ns = _arg(args, "namespace", False, 63)
+    if not ns:
+        mine = await _template_call(ctx, "GET", "/api/market/templates/mine", pid, {"pod": pid})
+        ns = next((n for n in mine.get("namespaces") or [] if n not in (mine.get("public") or [])), "")
+    body = {"pod": pid, "profile": _arg(args, "profile"), "name": _arg(args, "name", True, 63), "description": _arg(args, "description", True, 400),
+            "namespace": ns, "dry_run": bool(args.get("dry_run"))}
+    for key in ("choices", "tags", "files", "examples", "key_notes"):
+        if isinstance(args.get(key), (dict, list)):
+            body[key] = args[key]
+    if isinstance(args.get("soul_override"), str) and args["soul_override"].strip():
+        body["soul_override"] = args["soul_override"][:20000]
+    if isinstance(args.get("agents"), bool):
+        body["agents"] = args["agents"]
+    if isinstance(body.get("files"), list):                # D5 확인은 사람만 한다 — 에이전트가 보낸 confirmed 는 지운다
+        body["files"] = [{"path": str(f.get("path") if isinstance(f, dict) else f)[:500]} for f in body["files"]][:40]
+    out = await _template_call(ctx, "POST", "/api/market/template/publish", pid, body=body)
+    status = out.get("status") if isinstance(out, dict) else ""
+    keep = ("status", "name", "version", "namespace", "update", "items", "env_requires", "hub_skills", "errors", "warnings", "needs_confirmation", "request_id", "used", "limit")
+    res = {k: out[k] for k in keep if isinstance(out, dict) and k in out}
+    if status == "needs_confirmation":
+        res["next"] = (f"Not published. A person must confirm each non-text file has no personal or customer data: open {base_url(ctx.request)}/#/profiles, "
+                       "the profile → Publish as template. Then check market_publish_status.")
+    elif status == "preview":
+        res["next"] = "Fix every item in errors, then call again without dry_run."
+    return res
+
+
+async def market_template_unpublish(ctx: Ctx, args: dict):
+    pid = await _pod(ctx, args, required=False)
+    return await _template_call(ctx, "POST", "/api/market/template/unpublish", pid, body={"pod": pid, "name": _arg(args, "name", True, 63)})
 
 
 async def market_publish_status(ctx: Ctx, args: dict):
@@ -1097,6 +1285,14 @@ async def market_publish_status(ctx: Ctx, args: dict):
                                  "want_namespace_label": _label_of(labels, str(r.get("want_namespace") or ""))} if isinstance(r, dict) else r
                                 for r in out["items"]]}
     return out
+
+
+async def market_publish_withdraw(ctx: Ctx, args: dict):
+    """기다리는 게시 요청을 거둔다(이슈 #25). 같은 이름을 다시 보낼 수 있게 된다. 실패는 ToolError(forbidden·busy·invalid+data.status)."""
+    pid = await _pod(ctx, args, required=False)
+    out = await ctx.call("POST", "/api/market/publish/withdraw", pid, body={"pod": pid, "id": _arg(args, "request_id", True, 40)})
+    req = (out or {}).get("request") or {} if isinstance(out, dict) else {}
+    return {"request": req, "next": f"Cancelled {req.get('name')}@{req.get('version')}. You can send a new publish request with the same name."}
 
 
 async def skill_file_read(ctx: Ctx, args: dict):
@@ -1229,7 +1425,20 @@ def _tool(name, scope, fn, desc, props=None, required=()):
 
 
 TOOLS = {t["name"]: t for t in (
-    _tool("agents_list", "chat", agents_list, "List the agents (POD) and profiles you can use."),
+    _tool("agents_list", "chat", agents_list, "List the agents (POD) and profiles you can use. role: owner, admin, team, edit, use or viewer."),
+    _tool("members_list", "chat", members_list, "List the people an agent (POD) is shared with and their access (use = chat, edit = chat and edit content).",
+          {"pod": POD}, ("pod",)),
+    _tool("messenger_link", "channels", messenger_link,
+          "Link your own messenger account (Telegram, Slack, Discord, Mattermost) to an agent (POD) shared with you, so it can reach you there. "
+          "op list shows the bots and your links; op link takes the 8-character code the bot sent you; op unlink removes a link.",
+          {"pod": POD, "op": _s("list, link or unlink", enum=["list", "link", "unlink"]), "profile": PROFILE,
+           "platform": _s("telegram, slack, discord or mattermost"), "code": _s("The code the bot sent you (op link)"),
+           "user_id": _s("Your messenger user id (op unlink)")}, ("pod", "op")),
+    _tool("members_set", "profile:write", members_set,
+          "Share an agent (POD) with a person, change their access, or remove them (role none). Owner, team manager or admin only. "
+          "Members can reach the workspace's secrets through the agent's tools, so share only with people you trust.",
+          {"pod": POD, "email": _s("The person's email address"), "role": _s("use (chat), edit (chat and edit content) or none (remove)",
+                                                                              enum=["use", "edit", "none"])}, ("pod", "email", "role")),
     _tool("chat_start", "chat:send", chat_start,
           "Open a new chat on an agent, or reopen a past one with resume=<stored_id>. Returns session_id and `after` for chat_wait, "
           "and stored_id once the agent has saved the chat (chat_wait also returns it).",
@@ -1247,7 +1456,9 @@ TOOLS = {t["name"]: t for t in (
           ("pod", "session_id", "text")),
     _tool("chat_wait", "chat", chat_wait,
           "Wait up to 50s for events after `after`. state: running (call again with the returned `after`), done (text = answer), "
-          "approval (call approval_respond), clarify (call clarify_answer), error, disconnected. Tool calls show name and state only.",
+          "approval (call approval_respond), awaiting_owner_approval (the workspace owner must approve; call chat_wait again, up to 5 minutes), "
+          "clarify (call clarify_answer), error, disconnected (the chat is gone; open a new one with chat_start). "
+          "Tool calls show name and state only.",
           {"pod": POD, "session_id": SESSION, "after": {"type": "integer", "description": "Last event number you saw"},
            "timeout": {"type": "number", "description": "Seconds to wait, 0-50 (default 50)"}}, ("pod", "session_id")),
     _tool("chat_interrupt", "chat:send", chat_interrupt, "Stop the answer in progress.", {"pod": POD, "session_id": SESSION},
@@ -1267,7 +1478,9 @@ TOOLS = {t["name"]: t for t in (
           {"pod": POD, "profile": _s("Only this profile")}),
     _tool("skill_get", "chat", skill_get,
           "Show one skill with its SKILL.md text and sha (skill_md, ready for skill_update), required secrets and whether each "
-          "is set. zip=true adds a one-time download link for the folder.",
+          "is set. A required env entry with managed: \"aas\" is an LLM connection value that AAS provides "
+          "(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL), so do not ask for it with secret_request even though secrets_status "
+          "does not list it. zip=true adds a one-time download link for the folder.",
           {"pod": POD, "id": _s("Skill id from skills_list, or just the skill name"),
            "profile": _s("Profile, when the name is in several profiles"), "zip": {"type": "boolean"}}, ("id",)),
     _tool("file_get", "files:read", file_get,
@@ -1406,7 +1619,8 @@ TOOLS = {t["name"]: t for t in (
           ("pod", "profile", "platform", "op")),
     _tool("market_list", "chat", market_list, "Skill hub packages (namespace/name, summary, versions) and what is installed on this agent. "
           "query filters by name, namespace or summary. When you talk to a person, name the namespace by namespace_label (e.g. shared, restricted), "
-          "not by namespace; send namespace to the other market tools.", {"pod": POD, "query": _s("Words to look for")}),
+          "not by namespace; send namespace to the other market tools. kind=template lists profile templates (keys needed, MCP servers, skills).",
+          {"pod": POD, "query": _s("Words to look for"), "kind": _s("template = profile templates only", enum=["template"])}),
     _tool("market_install", "market", market_install,
           "Request installing (or updating, mode=update) a hub package into a profile. Runs in the background.",
           {"pod": POD, "profile": _s("Profile name"), "namespace": _s("Package namespace"), "name": _s("Package name"),
@@ -1414,22 +1628,53 @@ TOOLS = {t["name"]: t for t in (
           ("pod", "profile", "namespace", "name")),
     _tool("skill_delete", "profile:write", skill_delete,
           "Delete a skill you made or uploaded: Hermes moves it to the archive (restorable from the skill hub's archived list). "
-          "Hub-installed and built-in skills are refused. `id` is the skill id from skills_list.",
+          "Hub-installed and built-in skills are refused. A skill that a scheduled job or another skill calls is not deleted "
+          "(error in_use with the callers). `id` is the skill id from skills_list.",
           {"pod": POD, "id": _s("Skill id from skills_list (or its name)"), "profile": _s("Profile name when the name exists in several profiles")}, ("pod", "id")),
-    _tool("market_remove", "market", market_remove, "Request removing an installed hub package from a profile.",
+    _tool("market_remove", "market", market_remove,
+          "Request removing an installed hub package from a profile. Refused (error in_use with the callers) while a scheduled job "
+          "or another skill calls the skill.",
           {"pod": POD, "profile": _s("Profile name"), "namespace": _s("Package namespace"), "name": _s("Package name")},
           ("pod", "profile", "namespace", "name")),
     _tool("market_publish", "market", market_publish,
-          "Request publishing a skill folder (path relative to the profile, e.g. skills/uploaded/<name>) to the skill hub. A skill the agent's "
+          "Request publishing a skill folder (path relative to the profile, e.g. skills/uploaded/<name>; the path from skills_list/skill_get, "
+          "profiles/<profile>/skills/..., is also accepted) to the skill hub. A skill the agent's "
           "owner made on this AAS (skill_create, skill_upload, skill_update) and nobody changed since is approved automatically without "
           "admin review; otherwise an admin approves it. Same checks as the screen (name, version, secrets; internal addresses are refused "
-          "for public namespaces).",
+          "for public namespaces). Call with dry_run=true first: nothing is sent, and the result has the checks and `auto` "
+          "(will it be approved automatically, and why not).",
           {"pod": POD, "profile": _s("Profile name"), "path": _s("Skill folder path relative to the profile"), "name": _s("Package name"),
-           "version": _s("Version, e.g. 1.0.0"), "namespace": _s("Target namespace (empty = the admin's default for automatic approval)")},
+           "version": _s("Version, e.g. 1.0.0"), "namespace": _s("Target namespace (empty = the admin's default for automatic approval)"),
+           "dry_run": {"type": "boolean", "description": "Check only and predict automatic approval; nothing is sent"}},
           ("pod", "profile", "path", "name", "version")),
-    _tool("market_publish_status", "chat", market_publish_status, "Publish requests of this agent and their status (waiting, approved, rejected). "
-          "When you talk to a person, use namespace_label and want_namespace_label.",
+    _tool("market_template_publish", "market", market_template_publish,
+          "Publish a profile as a template (skill hub agent package) so others create a profile by entering only keys. Values of .env, sign-in data, "
+          "messenger connections, memories and chats are never included; MCP secrets become ${KEY}. Call with dry_run=true first and fix every `errors` item. "
+          "Default zone is the restricted zone; the shared zone (free) must be named and refuses command MCP servers and internal addresses. "
+          "Result `status`: published, pending_review, needs_confirmation (non-text files need a person's confirmation on screen) or preview.",
+          {"pod": POD, "profile": _s("Profile to publish"), "name": _s("Template name (lowercase, digits, hyphens)"),
+           "description": _s("What the profile does (20+ characters)"), "namespace": _s("Zone namespace (empty = restricted zone)"),
+           "dry_run": {"type": "boolean", "description": "Check only; nothing is published and the daily limit is not used"},
+           "choices": {"type": "object", "description": "Items to include: {skills: [skill folder], mcp: [server name], cron: [job id]}; a missing key = all"},
+           "tags": {"type": "array", "items": {"type": "string"}, "description": "Work tags"},
+           "soul_override": _s("SOUL text for the template only (the profile SOUL stays)"),
+           "agents": {"type": "boolean", "description": "Include AGENTS.md (default: include when it exists)"},
+           "files": {"type": "array", "items": {"type": "string"}, "description": "Reference files: paths relative to the workspace folder"},
+           "examples": {"type": "array", "items": {"type": "string"}, "description": "Up to 5 first-task prompts shown in the new profile's empty chat"},
+           "key_notes": {"type": "object", "additionalProperties": {"type": "string"}, "description": "One-line description per KEY name, shown under the installer's KEY field (where to get it)"}},
+          ("pod", "profile", "name", "description")),
+    _tool("market_template_unpublish", "market", market_template_unpublish,
+          "Take down a template you published (admins can take down any). Installed profiles stay as they are.",
+          {"pod": POD, "name": _s("Template name")}, ("name",)),
+    _tool("market_publish_status", "chat", market_publish_status, "Publish requests of this agent and their status (requested = waiting, published, "
+          "pending_review, rejected, withdrawn = cancelled by the requester, failed). To cancel your own waiting request (status requested), "
+          "call market_publish_withdraw with its id. When you talk to a person, use namespace_label and want_namespace_label.",
           {"pod": POD}),
+    _tool("market_publish_withdraw", "market", market_publish_withdraw,
+          "Cancel your own waiting publish request (status requested) so the same name can be sent again. Only the requester can cancel. "
+          "Errors: forbidden (not your request), busy (another action on the name; wait and call again), invalid with data.status "
+          "(already published, rejected, cancelled or failed).",
+          {"pod": POD, "request_id": _s("Request id from market_publish_status")}, ("request_id",)),
     _tool("skill_file_read", "chat", skill_file_read, "Read one skill file (e.g. profiles/<p>/skills/<name>/SKILL.md) with its sha for skill_update.",
           {"pod": POD, "path": _s("File path from skill_get")}, ("path",)),
     _tool("skill_create", "skills:write", skill_create,
@@ -1497,7 +1742,7 @@ def tools_for(scopes: set[str]) -> list[dict]:
 def _result(payload, error: ToolError | None = None) -> dict:
     if error is not None:
         body = {"error": error.word, **({"message": error.message} if error.message and error.message != error.word else {}),
-                **({"next": error.hint} if error.hint else {})}
+                **({"next": error.hint} if error.hint else {}), **error.data}
         return {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}], "isError": True}
     return {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, default=str)}], "isError": False}
 

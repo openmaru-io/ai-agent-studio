@@ -109,3 +109,13 @@ describe('사전', () => {
     expect(bad).toEqual([]);
   });
 });
+
+describe('skills.origin', () => {
+  // 서버가 출처로 내는 값(aas/assets/skill_origin.py, market_publish.ADMIN_ORIGIN, profile_template.KIND).
+  // 화면은 `skills.origin.${값}` 을 형 변환으로 불러 사전에 없으면 키가 그대로 보였다(2026-11-19 템플릿 게시 기록, 스펙 2026-11-19-004 §1)
+  const ORIGINS = ['bundled', 'bundled_modified', 'hub', 'market', 'agent', 'local', 'aas', 'admin_upload', 'template'];
+  it.each(ORIGINS)('출처 %s 는 두 사전에 문구가 있다', (o) => {
+    expect(dictionaries.ko[`skills.origin.${o}`]).toBeTruthy();
+    expect(dictionaries.en[`skills.origin.${o}`]).toBeTruthy();
+  });
+});

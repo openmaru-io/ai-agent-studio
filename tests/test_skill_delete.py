@@ -75,6 +75,7 @@ class SkillDeleteTest(unittest.TestCase):
         cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
         threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
         (HOME / "profiles" / "ma").mkdir(parents=True)
+        (HOME / "profiles" / "ma" / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
         reg = root / "del-pods.json"
         reg.write_text(json.dumps({"pods": [{"id": "p", "owner": "t@example.com", "hermes_home": str(HOME),
                                               "dashboard_url": f"http://127.0.0.1:{cls.fake.server_port}"}]}))
@@ -112,8 +113,53 @@ class SkillDeleteTest(unittest.TestCase):
     def rows(self):
         return {r["id"]: r for r in self.req("GET", "/api/skills")[1]["skills"]}
 
-    def delete(self, sid):
-        return self.req("POST", "/api/skill/delete", {"id": sid})
+    def delete(self, sid, wait=True):
+        """wait 면 「확인 중」(흐름 색인을 뒤에서 만드는 중)을 받았을 때 색인이 생길 때까지 기다려 한 번 더 보낸다 — 화면의 「잠시 뒤 다시 시도」."""
+        code, out = self.req("POST", "/api/skill/delete", {"id": sid})
+        if wait and code == 409 and out.get("reason") == "checking":
+            self.wait_flow()
+            code, out = self.req("POST", "/api/skill/delete", {"id": sid})
+        return code, out
+
+    def wait_flow(self):
+        import time
+        for _ in range(100):
+            if server._flow_for_delete(self.pod)[1] == "ok":
+                return
+            time.sleep(0.05)
+        self.fail("흐름 색인이 만들어지지 않았다")
+
+    def test_flow_build_failure_is_503_not_endless_checking(self):
+        put("profiles/ma/skills/uploaded/lonely", "lonely")
+        with mock.patch.object(server.flow, "build", side_effect=RuntimeError("boom")):
+            code, out = self.delete("ma:profiles/ma/skills/uploaded/lonely", wait=False)
+            self.assertEqual((code, out["reason"]), (409, "checking"))
+            import time
+            for _ in range(100):
+                if self.pod.id not in server._flow_fresh_warming:
+                    break
+                time.sleep(0.05)
+            code, out = self.delete("ma:profiles/ma/skills/uploaded/lonely", wait=False)
+        self.assertEqual((code, out["reason"]), (503, "unchecked"))
+        self.assertFalse([c for c in Fake.calls if c[1] == "/api/learning/node"])
+        server._flow_fresh_error.pop(self.pod.id, None)
+
+    def test_hub_skill_called_by_a_cron_job_is_refused_on_market_remove(self):
+        put("profiles/ma/skills/market/hub-pull", "hub-pull")
+        cron = HOME / "profiles/ma/cron"
+        cron.mkdir(parents=True, exist_ok=True)
+        (cron / "jobs.json").write_text(json.dumps({"jobs": [{"id": "j2", "name": "허브 수집", "skills": ["hub-pull"]}]}), encoding="utf-8")
+        try:
+            with mock.patch.object(server.marketplace, "request_remove") as remove:
+                code, out = self.req("POST", "/api/market/remove", {"namespace": "free", "name": "hub-pull", "profile": "ma"})
+                self.assertEqual((code, out["reason"]), (409, "checking"))
+                self.wait_flow()
+                code, out = self.req("POST", "/api/market/remove", {"namespace": "free", "name": "hub-pull", "profile": "ma"})
+                self.assertEqual((code, out["reason"]), (409, "in_use"))
+                self.assertEqual([x["label"] for x in out["dependents"]["block"]], ["허브 수집"])
+                remove.assert_not_called()
+        finally:
+            shutil.rmtree(cron, ignore_errors=True)
 
     def test_my_skill_goes_to_the_archive_and_versions_are_forgotten(self):
         put("profiles/ma/skills/uploaded/weekly-report", "weekly-report")
@@ -127,6 +173,34 @@ class SkillDeleteTest(unittest.TestCase):
         forget.assert_called_once_with("p", "profiles/ma/skills/uploaded/weekly-report/SKILL.md")   # 같은 경로로 다시 올리면 옛 버전과 비교되지 않게(R2)
         self.assertTrue((HOME / "profiles/ma/skills/.archive/weekly-report/SKILL.md").is_file())
         self.assertNotIn(sid, self.rows())                                                          # 목록 캐시도 비웠다
+
+    def test_skill_called_by_a_cron_job_or_frontmatter_is_refused_with_callers(self):
+        put("profiles/ma/skills/uploaded/daily-pull", "daily-pull")
+        caller = HOME / "profiles/ma/skills/uploaded/digest"
+        caller.mkdir(parents=True, exist_ok=True)
+        (caller / "SKILL.md").write_text("---\nname: digest\ndescription: 시험\nrelated_skills: [daily-pull]\n---\n# digest\n", encoding="utf-8")
+        put("profiles/ma/skills/uploaded/free-one", "free-one")
+        cron = HOME / "profiles/ma/cron"
+        cron.mkdir(parents=True, exist_ok=True)
+        (cron / "jobs.json").write_text(json.dumps({"jobs": [{"id": "j1", "name": "아침 수집", "skills": ["daily-pull"]}]}), encoding="utf-8")
+        try:
+            code, out = self.delete("ma:profiles/ma/skills/uploaded/daily-pull", wait=False)
+            # 흐름 색인이 비어 있으면 요청 안에서 만들지 않는다(프로파일 13개에 27초) — 「확인 중」과 다시 시도할 때를 돌려주고 뒤에서 만든다(스펙 2026-11-19-003 §3-3)
+            self.assertEqual((code, out["reason"], out["retry_after"]), (409, "checking", 10))
+            self.wait_flow()
+            code, out = self.delete("ma:profiles/ma/skills/uploaded/daily-pull")
+            self.assertEqual((code, out["reason"]), (409, "in_use"))
+            self.assertEqual(sorted(x["kind"] for x in out["dependents"]["block"]), ["cron", "skill"])
+            self.assertFalse([c for c in Fake.calls if c[1] == "/api/learning/node"])              # Hermes 에 묻기 전에 막았다
+            rows = self.rows()                                                                         # 색인이 생긴 뒤의 목록은 같은 이유를 미리 보인다
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/daily-pull"]["delete_block"], "in_use")
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/daily-pull"]["dependents_n"], 2)
+            self.assertEqual(rows["ma:profiles/ma/skills/uploaded/free-one"]["delete_block"], "")
+            one = self.req("GET", "/api/skill?id=" + "ma:profiles/ma/skills/uploaded/daily-pull")[1]
+            self.assertEqual(one["delete_block"], "in_use")
+            self.assertEqual([x["label"] for x in one["dependents"]["block"]], ["아침 수집", "digest"])
+        finally:
+            shutil.rmtree(cron, ignore_errors=True)
 
     def test_other_origins_same_name_and_bad_names_are_refused_before_hermes(self):
         put("profiles/ma/skills/market/hub-one", "hub-one")                    # 스킬 허브 스킬(출처 market)
@@ -169,6 +243,26 @@ class SkillDeleteTest(unittest.TestCase):
         self.assertEqual(self.delete("ma:profiles/ma/skills/uploaded/late-one")[0], 200)
         Fake.mode = "archive"                                                  # 두 번 누르기: 이미 없는 스킬은 404(목록에 없음)
         self.assertEqual(self.delete("ma:profiles/ma/skills/uploaded/late-one")[0], 404)
+
+    def test_mcp_words_follow_the_reason_code_not_only_the_status(self):
+        """409 in_use 는 낱말 in_use 와 부르는 곳, 같은 409 라도 이유가 없으면(파일 저장 base_sha 충돌) busy, 확인 중은 retry_after 를 안내에,
+        503 unchecked 는 reconnect 가 아니라 unavailable(스펙 2026-11-19-003 §3-3, 리뷰 F3)."""
+        deps = {"block": [{"kind": "cron", "id": "j1", "label": "아침 수집", "profile": "ma"}], "warn": [], "agents": [], "checked": True}
+        with self.assertRaises(mcp_server.ToolError) as e:
+            mcp_server._ok(409, {"error": "막힘", "reason": "in_use", "dependents": deps})
+        self.assertEqual((e.exception.word, e.exception.data["dependents"]["block"][0]["id"]), ("in_use", "j1"))
+        shown = json.loads(mcp_server._result(None, e.exception)["content"][0]["text"])
+        self.assertEqual((shown["error"], shown["dependents"]["block"][0]["label"]), ("in_use", "아침 수집"))
+        with self.assertRaises(mcp_server.ToolError) as e:
+            mcp_server._ok(409, {"error": "다른 사람이 먼저 바꿨습니다"})
+        self.assertEqual(e.exception.word, "busy")
+        with self.assertRaises(mcp_server.ToolError) as e:
+            mcp_server._ok(409, {"error": "확인 중", "reason": "checking", "retry_after": 10})
+        self.assertEqual(e.exception.word, "busy")
+        self.assertIn("10", e.exception.hint)
+        with self.assertRaises(mcp_server.ToolError) as e:
+            mcp_server._ok(503, {"error": "확인 못 함", "reason": "unchecked"})
+        self.assertEqual(e.exception.word, "unavailable")
 
     def test_change_log_kind_and_mcp_tool_scope(self):
         from aas.ops import changes

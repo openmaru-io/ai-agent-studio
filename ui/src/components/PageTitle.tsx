@@ -30,6 +30,7 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import StorefrontOutlinedIcon from '@mui/icons-material/StorefrontOutlined';
 import TerminalOutlinedIcon from '@mui/icons-material/TerminalOutlined';
 import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
+import WebOutlinedIcon from '@mui/icons-material/WebOutlined';
 import { Box, IconButton, Stack, Tooltip, Typography } from '@mui/material';
 import { visuallyHidden } from '@mui/utils';
 import { ReactNode } from 'react';
@@ -64,6 +65,7 @@ export const VIEW_ICONS: Record<string, SvgIconComponent> = {
   settings: DomainOutlinedIcon,
   'soul-templates': SelfImprovementOutlinedIcon,
   notices: CampaignOutlinedIcon,
+  'embed-apps': WebOutlinedIcon,
 };
 
 /** 지금 주소의 화면 아이콘. 라우터 밖(일부 시험)이나 모르는 주소면 undefined. 본문 제목과 서랍 제목이 같이 쓴다 */

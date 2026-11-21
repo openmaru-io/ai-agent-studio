@@ -20,7 +20,7 @@ from ..hermes import readers
 from ..common.i18n import tr
 from .pods import Pod
 
-EMAIL = re.compile(r"^[^@\s]+@(?=[^@\s]*$)[^@\s]+\.[^@\s]+$")   # 도메인 칸을 먼저 한 번 훑어 확인한다(되돌아가기로 제곱 시간, CodeQL #3~5·7·10)
+EMAIL = re.compile(r"^[^@\s]+@(?=[^@\s]*\Z)[^@\s]+\.[^@\s]+\Z")   # 도메인 칸을 먼저 한 번 훑어 확인한다(되돌아가기로 제곱 시간, CodeQL #3~5·7·10)
 NAME_PREFIX = "aas-agent-"                                  # 사용자 Hermes(HermesAgent·StatefulSet·파드) 이름의 앞부분
 DELETED_SUB = "aas:deleted-owner"                           # 주인을 지운 Hermes 의 ownerSub(CRD 필수 칸이라 비울 수 없다). 누구의 sub 와도 같지 않다(lifecycle.orphan)
 
@@ -87,7 +87,9 @@ def view(item: dict) -> dict:
             "wait_reason": str(status.get("waitReason") or ""), "size": spec_size(item),
             # hermes 컨테이너의 마지막 비정상 종료(오퍼레이터 status.lastTermination, 스펙 2026-11-06-005 §5 O1). 안내 여부는 oom_notice
             "last_termination": _last_termination(status),
-            "busy": _busy(item)}                                # 대화 중(busy-until). 크기 저장 확인 창의 목록이 보인다(3A)
+            "busy": _busy(item),                                # 대화 중(busy-until). 크기 저장 확인 창의 목록이 보인다(3A)
+            # 기본 digest 가 레지스트리에 없어 차트 이미지로 만든 컨테이너(오퍼레이터 image-fallback 주석, 스펙 2026-11-17-001 O3). 판 칸이 「대체 이미지」
+            "image_fallback": str((meta.get("annotations") or {}).get("aas.openmaru.io/image-fallback") or "")}
 
 
 def _last_termination(status: dict) -> dict | None:
@@ -277,9 +279,9 @@ RES_FIELDS = {"cpu_request": ("requests", "cpu"), "memory_request": ("requests",
               "cpu_limit": ("limits", "cpu"), "memory_limit": ("limits", "memory")}
 SIZE_SCHEMA = ("CREATE TABLE IF NOT EXISTS agent_sizes (email TEXT PRIMARY KEY, cpu_request TEXT, memory_request TEXT, "
                "cpu_limit TEXT, memory_limit TEXT, storage TEXT, by TEXT, ts TEXT NOT NULL)")
-_CPU_IN = re.compile(r"^[0-9]+(\.[0-9]+)?m?$")              # 화면이 보내는 모양: 500m·2·0.5
-_MEM_IN = re.compile(r"^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti)?$")   # 1280Mi·4Gi
-_QTY = re.compile(r"^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?(n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$")
+_CPU_IN = re.compile(r"^[0-9]+(\.[0-9]+)?m?\Z")              # 화면이 보내는 모양: 500m·2·0.5
+_MEM_IN = re.compile(r"^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti)?\Z")   # 1280Mi·4Gi
+_QTY = re.compile(r"^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?(n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?\Z")
 _SUFFIX = {"": 1.0, "n": 1e-9, "u": 1e-6, "m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
            "Ki": 2.0 ** 10, "Mi": 2.0 ** 20, "Gi": 2.0 ** 30, "Ti": 2.0 ** 40, "Pi": 2.0 ** 50, "Ei": 2.0 ** 60}
 GIB = 2.0 ** 30
@@ -617,8 +619,8 @@ def check_size(doc: dict | None, merged: dict, targets: list[dict]) -> dict:
                           "nodes": [{"name": n.get("name") or "", "free_cpu": max(0.0, _free(n)[0]), "free_memory": max(0.0, _free(n)[1])} for n in nodes]}
     # 새 작업공간용 값이 지금 여유 노드에 들어가지 않으면 경고만(§4-6 4)
     if not any(fits(n) for n in nodes):
-        out["warnings"].append(tr("지금 노드 여유로는 이 크기의 새 AI 에이전트 작업공간이 뜨지 못합니다. 다른 작업공간을 멈추면 자리가 생깁니다",
-                                  "With the current node room, a new AI Agent Workspace of this size cannot start. Suspending other workspaces frees room"))
+        out["warnings"].append(tr("지금 노드 여유로는 이 크기의 새 AI 에이전트 작업공간이 뜨지 못합니다. 다른 AI 에이전트 작업공간을 멈추면 자리가 생깁니다",
+                                  "With the current node room, a new AI Agent Workspace of this size cannot start. Suspending other AI Agent Workspaces frees room"))
     # D9: 메모리 한도 합. 바로 바뀌는 작업공간이 있으면 그 노드에 늘어나는 만큼, 없으면(관리자 기본값) 새 작업공간 하나가 더해질 때
     new_lim = qty(merged.get("memory_limit"))
     if new_lim:

@@ -12,13 +12,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from aas.market import skill_bundle
 
 ROOT = skill_bundle.PACKAGES_DIR
 # aas-help 는 화면 빌드(ui/src/lib/helpSkill.ts)가 만든다(스펙 2026-10-29-001 §10-9)
-NAMES = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "korean-business-writing", "markdown-to-doc", "ocr-to-markdown")
+ORIGINAL = ("aas-help", "business-card-ocr", "doc-to-markdown", "hwp-to-markdown", "korean-business-writing", "markdown-to-doc", "ocr-to-markdown")
+# 마켓 레포(cogentai-aas-marketplace packages/free)에서 옮긴 MCP 짝 스킬(OMAI-2031). 마켓 레포는 Bitbucket 이라 CI 가 돌지 않아
+# main 에 합쳐도 허브에 올라가지 않았다 — 서버 이미지에 실어 기본 스킬처럼 게시·배달한다. 설명은 옮기기 전 그대로(판을 올리지 않음)
+MOVED = ("cogentai-chart", "cogentai-database", "cogentai-mindwiki", "docmost", "outline")
+# 처음부터 여기 만든 MCP 짝 스킬 — law-go-kr 는 법령 조회 커넥터(스펙 2026-11-20-008, AAS_LAW_GO_KR_ENABLED 켠 설치에만)
+NEW_MCP = ("law-go-kr",)
+# 고객사 판 스킬(사내 전용, 공개본에는 없다 — 스펙 2026-11-21-001)은 skill_bundle.EDITION_PACKAGES 로 더한다
+NAMES = tuple(sorted(ORIGINAL + MOVED + NEW_MCP + tuple(skill_bundle.EDITION_PACKAGES)))
 # Hermes 가 함께 싣는 스킬 이름 — 같은 이름이면 프로파일에서 어느 쪽이 쓰일지 모른다(옛 이미지 빌드 확인 줄의 이름 겹침 검사)
 HERMES_BUNDLED = {"docx", "pdf", "xlsx", "powerpoint", "pptx"}
 NO_OPENPYXL = "import sys\nclass B:\n    def find_spec(self, name, *a):\n        if name.split('.')[0] == 'openpyxl':\n            raise ImportError('no openpyxl')\nsys.meta_path.insert(0, B())\n"
@@ -34,16 +42,18 @@ def _run(script: Path, *args, env=None, block_openpyxl=False, cwd=None):
 
 
 class PackagesTest(unittest.TestCase):
-    def test_exactly_the_seven_packages_with_matching_name_and_version(self):
+    def test_exactly_the_bundled_packages_with_matching_name_and_version(self):
         self.assertEqual(tuple(skill_bundle.names()), NAMES)
         for name in NAMES:
             front = skill_bundle.front(name)
             self.assertEqual(front["name"], name)
             self.assertRegex(front["version"], r"^\d+\.\d+\.\d+$")
             self.assertRegex(front["description"], "[가-힣]")
+            self.assertNotIn(name, HERMES_BUNDLED)
+        for name in ORIGINAL:                                    # 처음 일곱은 한/영 설명·400자 규칙을 지킨다
+            front = skill_bundle.front(name)
             self.assertRegex(front["description"], " / [A-Z]")
             self.assertLessEqual(len(front["description"]), 400)
-            self.assertNotIn(name, HERMES_BUNDLED)
 
     def test_writing_skill_is_picked_from_the_first_60_characters(self):
         # Hermes 는 시스템 프롬프트의 스킬 목록에 description 을 60자(57자 + "...")만 넣는다

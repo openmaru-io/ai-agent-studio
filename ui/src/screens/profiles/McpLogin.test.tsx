@@ -186,9 +186,10 @@ describe('추가 대화 상자의 OAuth(V7)', () => {
     await addVia(true);
     expect(screen.queryByText(/MCP 서버 설정을 바꿨습니다/)).toBeNull();
   });
-  it('인증 없이 추가하면 지금처럼 안내를 띄운다', async () => {
+  // 서버 더하기는 Hermes 가 60초 안에 스스로 붙여 다시 시작 기록이 없다 — 안내는 서버 장부를 따른다(스펙 2026-11-18-016 2-2·4-5)
+  it('인증 없이 추가해도 다시 시작 안내를 띄우지 않는다', async () => {
     await addVia(false);
-    expect(await screen.findByText(/MCP 서버 설정을 바꿨습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/MCP 서버 설정을 바꿨습니다/)).toBeNull();
   });
 
   it('OAuth 를 고르면 콜백 주소와 복사 단추를 보이고, 토큰 없이 auth=oauth 로 추가한다', async () => {

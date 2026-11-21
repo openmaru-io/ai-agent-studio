@@ -9,6 +9,7 @@ import {
   Alert,
   alpha,
   Box,
+  Button,
   Chip,
   IconButton,
   LinearProgress,
@@ -195,6 +196,8 @@ export interface Issue {
   code?: string;
   package?: string;
   version?: string;
+  /** 있으면 「다시 하기」 단추(템플릿 설치 뒤 단계, 스펙 2026-11-18-002). 값은 설치 요청 id. IssueList 에 onRetry 를 주어야 보인다 */
+  retry?: string;
 }
 
 /** 안내가 아닌(고칠 것인) 항목. 「주의」 표시·개수는 이것만 센다 */
@@ -203,7 +206,7 @@ export const actionable = <I extends Pick<Issue, 'level'>>(issues: I[] | null | 
 /** 안내는 맨 뒤로. 나머지 순서는 그대로 */
 export const issueOrder = <I extends Pick<Issue, 'level'>>(issues: I[]): I[] => [...actionable(issues), ...issues.filter((i) => i.level === 'info')];
 
-export function IssueList({ issues, onAck }: { issues?: Issue[] | null; onAck?: (issue: Issue) => void }) {
+export function IssueList({ issues, onAck, onRetry }: { issues?: Issue[] | null; onAck?: (issue: Issue) => void; onRetry?: (issue: Issue) => void }) {
   if (!issues || issues.length === 0) return <Tag tone="good">{t('common.noIssues')}</Tag>;
   return (
     <RowList>
@@ -219,6 +222,14 @@ export function IssueList({ issues, onAck }: { issues?: Issue[] | null; onAck?: 
               <LinkChip to={i.to.view} params={i.to.params}>
                 {t('common.issueOpen')}
               </LinkChip>
+            </>
+          )}
+          {i.retry && onRetry && (
+            <>
+              {' '}
+              <Button size="small" variant="outlined" color="inherit" onClick={() => onRetry(i)} sx={{ ml: 0.5, py: 0, minHeight: 0 }}>
+                {t('common.issueRetry')}
+              </Button>
             </>
           )}
           {i.ack && onAck && (

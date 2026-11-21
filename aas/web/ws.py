@@ -19,17 +19,18 @@ import random
 import re
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ..auth import embed
 from ..auth.auth import COOKIE as _SESSION_COOKIE, _cookie
 from ..common import i18n, settings
 from ..market import skill_desc
 from ..ops import notices
-from . import protocol, server, topics
+from . import embed_routes, protocol, server, topics
 
 STARTED = int(time.time())          # 서버가 바뀌면 브라우저가 모든 토픽을 스냅샷부터 다시 받는다
 HB_SECONDS = 20
@@ -40,6 +41,10 @@ RATE_PER_SECOND = 50
 SUBS_PER_CONN = 100
 QUEUE_MSGS = 256
 QUEUE_BYTES = 1024 * 1024
+# 채팅 임베드 위젯(OMAI-1873). 다른 출처의 연결은 쿠키를 쓰지 않고 첫 메시지 {t:"auth", token, pod} 로 사용자를 정한다
+EMBED_AUTH_TIMEOUT = 5.0
+EMBED_PENDING_PER_ORIGIN = 20           # 인증 전 연결은 서버 정원(Manager.add)에 넣지 않고 출처마다 따로 센다
+EMBED_TOPIC = re.compile(r"pod:[^:]{1,100}:chat:[A-Za-z0-9_.-]{1,100}")   # 임베드 연결이 구독할 수 있는 토픽(대화)만
 
 
 def _env_int(name: str, default: int) -> int:
@@ -104,6 +109,7 @@ class Conn:
         self.tasks: set = set()
         self.pub_window, self.pub_count = 0.0, 0
         self.people_window, self.people_count = 0.0, 0     # 사람 신호(office:people) 속도 제한 — 걸음이 신호를 밀어내지 않게 따로 센다
+        self.embed: dict | None = None                  # 임베드 연결이면 {"origin", "hash", "expires"}(OMAI-1873). 쿠키는 늘 빈 값이다
 
     # ---- 보내기(루프 스레드에서만) -------------------------------------------------
     def push(self, topic: str, msg: str, kind: str) -> None:
@@ -211,6 +217,7 @@ class Manager:
         self.max_conns = _env_int("AAS_WS_MAX", 500)
         self.budget = _env_int("AAS_WS_SEND_BUDGET_MB", 64) * 1024 * 1024
         self.stats = collections.Counter()
+        self.embed_pending: collections.Counter = collections.Counter()   # 출처 → 인증 전 임베드 연결 수
 
     def add(self, conn: Conn) -> bool:
         if len(self.conns) >= self.max_conns:
@@ -252,6 +259,13 @@ class Manager:
         """권한·세션이 바뀐 사용자의 연결을 다시 검사한다: 세션이 없으면 4401, 관리자 권한을 잃었으면 4403, 볼 수 없게 된 토픽은 해지."""
         for conn in list(self.by_user.get(email.lower(), [])):
             if conn.closing is not None:
+                continue
+            if conn.embed is not None:                      # 임베드 연결: 쿠키가 없다 — 토큰이 살아 있는지만 본다. 관리자 권한은 늘 없다
+                if not await run_in_threadpool(embed.lookup_hash, conn.embed["hash"], conn.embed["origin"]):
+                    conn.close_with(protocol.UNAUTHORIZED, "token_ended")
+                    continue
+                for name in await topics.hub().recheck(conn):
+                    conn.push(name, protocol.encode("error", code="forbidden", topic=name), "error")
                 continue
             a = server.auth()
             user = await run_in_threadpool(a.user, conn.cookie) if a.enabled else conn.user
@@ -456,6 +470,9 @@ async def _on_people_pub(conn: "Conn", msg: dict) -> None:
 async def _on_pub(conn: "Conn", msg: dict) -> None:
     """내 아바타 위치를 공유 DB 에 쓴다(계획 007 P6b). 다른 토픽에는 쓰지 못한다.
     알리는 일은 서버마다 도는 server.presence_tick 이 한다 — 다른 서버에 붙은 사람도 같은 길로 받는다."""
+    if conn.embed is not None:                           # 임베드 위젯은 오피스에 사람 신호·걸음을 보내지 않는다(OMAI-1873)
+        conn.push("", protocol.encode("error", code="bad_pub"), "error")
+        return
     if msg.get("topic") == "office:people" and conn.email:
         await _on_people_pub(conn, msg)
         return
@@ -766,6 +783,12 @@ async def endpoint(ws: WebSocket) -> None:
     if draining():
         await _refuse(ws, protocol.RESTART, "restart", retry_after_ms=random.randint(5000, 30000))
         return
+    origin = ws.headers.get("origin") or ""
+    if origin and origin != "null" and not origin_ok(view) and await run_in_threadpool(embed.app_for_origin, origin) is not None:
+        # 등록된 임베드 출처(OMAI-1873). AAS 와 호스트가 같은 상위 도메인이면 aas_session 쿠키가 핸드셰이크에 실린다 —
+        # Cookie 헤더를 통째로 버리고 사용자는 auth 메시지로만 정한다(교차 사이트 웹소켓 탈취 방지). admit 은 부르지 않는다
+        await _embed_endpoint(ws, m, origin)
+        return
     refused, user = await admit(ws, view)
     if refused == "origin":
         m.stats["refused_origin"] += 1
@@ -783,6 +806,11 @@ async def endpoint(ws: WebSocket) -> None:
         m.stats["refused_full"] += 1
         await _refuse(ws, protocol.TRY_AGAIN, "server_full", retry_after_ms=random.randint(5000, 30000))
         return
+    await _serve(conn, m)
+
+
+async def _serve(conn: Conn, m: Manager) -> None:
+    """받아들여 정원에 넣은 연결을 끝날 때까지 돌린다(일반·임베드 연결이 함께 쓴다)."""
     _register_topics()
     sender = asyncio.create_task(conn.sender())
     ticker = asyncio.create_task(_ticker(conn))
@@ -802,6 +830,102 @@ async def endpoint(ws: WebSocket) -> None:
             sender.cancel()
         m.remove(conn)
         server.PRESENCE.release(conn.id)                  # 이 연결이 붙잡던 사람은 서버가 더 쓰지 않는다 — TTL(30초) 뒤 빠진다(스펙 2026-10-26-001 D15)
+
+
+# ---- 임베드 연결(OMAI-1873) ------------------------------------------------------------
+def _embed_pod(msg: dict) -> str:
+    pod = msg.get("pod")
+    return pod[:100] if isinstance(pod, str) else ""
+
+
+async def _embed_check(msg: dict, origin: str) -> tuple[dict | None, str, int]:
+    """auth 메시지의 토큰 → (토큰 줄, 거절 이유, close 코드). 출처는 토큰에 묶인 출처와 같아야 한다."""
+    raw = msg.get("token")
+    if not isinstance(raw, str) or not raw or not server.auth().enabled:
+        return None, "token_invalid", protocol.UNAUTHORIZED
+    row = await run_in_threadpool(embed.lookup, raw, origin)
+    if row is None:
+        return None, "token_invalid", protocol.UNAUTHORIZED
+    if await run_in_threadpool(embed_routes.over_limit, row["user_email"]):
+        return None, "rate_limited", protocol.TRY_AGAIN
+    return row, "", 0
+
+
+def _authed(conn: Conn) -> str:
+    return protocol.encode("authed", user=conn.email, expires=int(conn.embed["expires"]), pod=conn.ctx.get("pod", ""))
+
+
+async def _embed_endpoint(ws: WebSocket, m: Manager, origin: str) -> None:
+    """인증 전에는 정원에 넣지 않고 출처마다 따로 센다. EMBED_AUTH_TIMEOUT 안에 맞는 auth 가 오지 않으면 4401."""
+    key = embed.normalize_origin(origin)
+    if m.embed_pending[key] >= EMBED_PENDING_PER_ORIGIN:
+        m.stats["refused_embed_pending"] += 1
+        await _refuse(ws, protocol.TRY_AGAIN, "server_full", retry_after_ms=random.randint(5000, 30000))
+        return
+    m.embed_pending[key] += 1
+    try:
+        got = await _embed_first_auth(ws, origin)
+    finally:
+        m.embed_pending[key] -= 1
+        if m.embed_pending[key] <= 0:
+            del m.embed_pending[key]
+    if got is None:
+        m.stats["refused_embed_auth"] += 1
+        return
+    row, pod = got
+    user = embed.embed_user(row)
+    ctx = {"user": user, "auth": True, "admin": False, "host": ws.headers.get("host", ""), "lang": i18n.DEFAULT, "pod": pod}
+    conn = Conn(ws, m, user, ctx, "")
+    conn.embed = {"origin": origin, "hash": row["token_hash"], "expires": float(row["expires"])}
+    if not m.add(conn):
+        m.stats["refused_full"] += 1
+        await _refuse(ws, protocol.TRY_AGAIN, "server_full", retry_after_ms=random.randint(5000, 30000))
+        return
+    conn.push("", _authed(conn), "welcome")
+    await _serve(conn, m)
+
+
+async def _embed_first_auth(ws: WebSocket, origin: str) -> tuple[dict, str] | None:
+    try:
+        message = await asyncio.wait_for(ws.receive(), timeout=EMBED_AUTH_TIMEOUT)
+    except asyncio.TimeoutError:
+        await _refuse(ws, protocol.UNAUTHORIZED, "auth_timeout")
+        return None
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return None
+    if message["type"] == "websocket.disconnect":
+        return None
+    try:
+        msg = protocol.parse(message.get("text") or "")
+    except protocol.ProtocolError:
+        msg = {}
+    if msg.get("t") != "auth":
+        await _refuse(ws, protocol.UNAUTHORIZED, "auth_first")
+        return None
+    row, why, code = await _embed_check(msg, origin)
+    if row is None:
+        await _refuse(ws, code, why)
+        return None
+    return row, _embed_pod(msg)
+
+
+async def _on_auth(conn: Conn, msg: dict) -> None:
+    """같은 연결에 auth 를 다시 보냈다(토큰 갱신). 다른 사람의 토큰이면 닫는다 — 위젯은 열린 대화를 닫고 새로 붙는다."""
+    if conn.embed is None:
+        conn.push("", protocol.encode("error", code="bad_message", reason="auth"), "error")
+        return
+    row, why, code = await _embed_check(msg, conn.embed["origin"])
+    if row is None:
+        conn.close_with(code, why)
+        return
+    if row["user_email"] != conn.email:
+        conn.close_with(protocol.UNAUTHORIZED, "user_changed")
+        return
+    conn.embed.update(hash=row["token_hash"], expires=float(row["expires"]))
+    pod = _embed_pod(msg)
+    if pod:
+        conn.ctx["pod"] = pod
+    conn.push("", _authed(conn), "welcome")
 
 
 async def admit(ws: WebSocket, view: _View | None = None) -> tuple[str, dict | None]:
@@ -841,7 +965,16 @@ async def _ticker(conn: Conn) -> None:
             conn.manager.stats["idle_closed"] += 1
             return
         conn.push("", protocol.encode("hb", ts=int(time.time() * 1000)), "hb")
-        if a.enabled and now >= next_session:
+        if conn.embed is not None:                         # 임베드 연결: 쿠키 세션이 아니라 토큰의 만료·폐기를 본다
+            if time.time() > conn.embed["expires"]:
+                conn.close_with(protocol.UNAUTHORIZED, "token_expired")
+                return
+            if now >= next_session:
+                next_session = now + SESSION_CHECK
+                if not await run_in_threadpool(embed.lookup_hash, conn.embed["hash"], conn.embed["origin"]):
+                    conn.close_with(protocol.UNAUTHORIZED, "token_ended")
+                    return
+        elif a.enabled and now >= next_session:
             next_session = now + SESSION_CHECK
             if not await run_in_threadpool(a.user, conn.cookie):
                 conn.close_with(protocol.UNAUTHORIZED, "session_ended")
@@ -884,12 +1017,14 @@ async def _receive_loop(conn: Conn) -> None:
             conn.push("", protocol.encode("error", code="bad_message", reason=exc.reason), "error")
             continue
         t = msg["t"]
-        if not hello and t != "hello":
+        if not hello and t != "hello" and not (t == "auth" and conn.embed is not None):
             conn.close_with(protocol.POLICY, "hello_first")
             return
         if t == "hello":
             hello = True
             await _on_hello(conn, msg)
+        elif t == "auth":
+            await _on_auth(conn, msg)
         elif t == "sub":
             await _on_sub(conn, msg.get("topic") or "", msg.get("after"))
         elif t == "unsub":
@@ -925,6 +1060,9 @@ async def _on_hello(conn: Conn, msg: dict) -> None:
 
 
 async def _on_sub(conn: Conn, topic: str, after: int | None) -> None:
+    if conn.embed is not None and not EMBED_TOPIC.fullmatch(topic or ""):    # 임베드 연결은 대화 토픽만(OMAI-1873)
+        conn.push(topic, protocol.encode("error", code="forbidden", topic=topic), "error")
+        return
     if len(conn.topics) >= SUBS_PER_CONN:
         conn.push(topic, protocol.encode("error", code="too_many_subs", topic=topic), "error")
         return
@@ -965,14 +1103,27 @@ async def _on_req(conn: Conn, msg: dict) -> None:
         conn.push("", _req_error(rid, "bad_path"), "res")
         return
     from . import legacy
+    principal = None
+    if conn.embed is not None:                            # 임베드 연결: 쿠키 대신 principal 로, 임베드 경로 허용 목록 안에서만(OMAI-1873)
+        if time.time() > conn.embed["expires"]:
+            conn.close_with(protocol.UNAUTHORIZED, "token_expired")
+            return
+        if not embed.path_allowed(path.split("?", 1)[0]):
+            conn.push("", _req_error(rid, "forbidden"), "res")
+            return
+        if await run_in_threadpool(embed_routes.over_limit, conn.email):
+            conn.push("", _req_error(rid, "rate_limited"), "res")
+            return
+        pod = str((parse_qs(urlsplit(path).query).get("pod") or [""])[0])[:100] or conn.ctx.get("pod", "")
+        principal = {"user": conn.user, "pod": pod}
     view = _View(conn.ws)
     headers = [("Host", conn.ws.headers.get("host", "")), ("Accept-Language", conn.ctx.get("lang", i18n.DEFAULT)),
-               ("Cookie", conn.cookie), ("Sec-Fetch-Site", "same-origin")]
+               ("Cookie", "" if principal else conn.cookie), ("Sec-Fetch-Site", "same-origin")]
     for name in ("x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"):     # 신뢰 판정은 Handler 가 한다(R1)
         if conn.ws.headers.get(name):
             headers.append((name, conn.ws.headers[name]))
     raw = ("GET " + path + " HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in headers if v) + "\r\n").encode("latin-1", "replace")
-    handler = legacy.AdaptedHandler(raw, view.client_address, view._https)
+    handler = legacy.AdaptedHandler(raw, view.client_address, view._https, principal)
     try:
         await run_in_threadpool(handler.run)
         out = handler.wfile.getvalue()

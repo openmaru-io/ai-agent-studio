@@ -12,6 +12,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 TMP = tempfile.TemporaryDirectory()
@@ -204,6 +205,36 @@ class AgentsMdTest(unittest.TestCase):
         self.addCleanup(lambda: (setattr(server, "_auth", old[0]), setattr(reg, "is_admin", old[1])))
 
     # ---- 읽기·경로 ----
+    def test_catalog_install_adds_an_instructions_block_and_remove_takes_it_out(self):
+        # OKE 2026-11-08: the skill index shows 60 chars of a description, so the model skipped the skill and answered
+        # from web search. The catalog puts the rule in AGENTS.md (the system prompt) instead (OMAI-1863).
+        # Only the customer edition entry carries a block and it is internal-only, so a demo entry stands in (spec 2026-11-21-001).
+        import dataclasses
+        from aas.hermes.hermes_api import HermesAPI
+        from aas.ops import mcp_servers
+        demo = dataclasses.replace(mcp_servers.COGENTAI, name="demo-db", instructions="## 데모\n- 먼저 `demo_tool` 을 부른다.\n")
+        patcher = mock.patch.dict(mcp_servers.SIMPLE_BUILTINS, {"demo-db": demo})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        api = HermesAPI(server.hub(self.pod).auth)
+        self.put_file("main", "# 내 지침\n- 사람이 쓴 줄\n")
+        out = server._catalog_instructions(self.pod, api, "main", "demo-db", "t@example.com", add=True)
+        self.assertEqual(out, {"ok": True, "changed": True})
+        text = self.file("main")
+        self.assertTrue(text.startswith("# 내 지침\n- 사람이 쓴 줄\n\n<!-- aas:mcp:demo-db:begin"), text)
+        self.assertIn("demo_tool", text)
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "demo-db", "t@example.com", add=True),
+                         {"ok": True, "changed": False})                     # 두 번 넣지 않는다
+        self.assertIsNone(server._catalog_instructions(self.pod, api, "main", "cogentai-chart", "t@example.com", add=True))  # 블록 없는 항목
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "demo-db", "t@example.com", add=False),
+                         {"ok": True, "changed": True})
+        self.assertEqual(self.file("main"), "# 내 지침\n- 사람이 쓴 줄\n")       # 사람이 쓴 줄은 그대로
+        self.assertGreaterEqual(len(files.versions(POD, "agents:main")), 2)     # 사람이 고칠 때와 같은 판 기록
+        Fake.state["marker"]["main"] = (404, {"detail": "Not Found"})           # 작업 지침을 읽지 않는 Hermes 면 쓰지 않는다
+        self.assertEqual(server._catalog_instructions(self.pod, api, "main", "demo-db", "t@example.com", add=True),
+                         {"ok": False, "reason": "unsupported"})
+        self.assertFalse(mcp_servers.instruction_block_present(self.file("main"), "demo-db"))
+
     def test_detail_shape_path_limit_chars_and_size_warning(self):
         self.put_file("ma", "  " + "가" * 120 + "\n\n")
         a = self.detail()["agents"]

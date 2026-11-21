@@ -22,7 +22,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import marketplace, skill_keep
+from ..assets import skill_setup
+from . import marketplace, skill_keep, template_checks
 
 NAME = marketplace.NAME
 PROFILE = marketplace.PROFILE
@@ -34,7 +35,16 @@ SKILL_CATEGORY = "market"                                                       
 
 
 class Refuse(Exception):
-    """요청을 거절한다 — 메시지는 화면에 그대로 보인다."""
+    """요청을 거절한다 — 메시지는 화면에 그대로 보인다. code = 오류 코드(스펙 2026-11-18-002 §4-5, 없으면 빈 값)."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
+class Unavailable(Refuse):
+    """스킬 허브에 잠깐 닿지 않았다(연결 실패·시간 초과·5xx·429). 요청은 지금처럼 실패로 닫히되 transient 가 남아,
+    기본 스킬 배달기가 간격을 두고 다시 시도한다(OMAI-2085). Refuse 를 잡던 곳은 그대로 잡는다."""
 
 
 class NeedsChoice(Refuse):
@@ -72,9 +82,10 @@ def _hub(path: str, raw: bool = False):
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = resp.read(MAX_ZIP + 1)
     except urllib.error.HTTPError as exc:
-        raise Refuse(f"스킬 허브가 거절했습니다 (HTTP {exc.code})") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+        why = Unavailable if exc.code >= 500 or exc.code == 429 else Refuse
+        raise why(f"스킬 허브가 거절했습니다 (HTTP {exc.code})") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
     except OSError as exc:
-        raise Refuse(f"스킬 허브에 연결할 수 없습니다: {type(exc).__name__}") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+        raise Unavailable(f"스킬 허브에 연결할 수 없습니다: {type(exc).__name__}") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
     if raw:
         return data
     body = json.loads(data or b"{}")
@@ -141,11 +152,35 @@ def planned_skills(req: dict, pkg: Path) -> dict[str, str]:
     return {rel: skill_keep.skill_name(pkg / "agent" / rel) for rel in _agent_skill_folders(pkg)}
 
 
-def stage(req: dict, pkg: Path, out: Path, current: dict | None = None, skip: set | None = None) -> dict:
+def _check_agent(req: dict, pkg: Path, src: Path, manifest: dict, consent: bool | None = None) -> dict:
+    """새 프로파일로 설치하는 에이전트 패키지의 검사(스펙 2026-11-18-002 §4-2 4, E2). 받은 본문에 대해 한다 — 검사한 것과 설치하는 것이 같다.
+    템플릿만이 아니라 모든 에이전트 패키지에 한다(좁히면 R1 이 다른 패키지에 열린 채 남는다). 돌려주는 값 = template_checks.check 결과."""
+    read = lambda rel: (src / rel).read_text(encoding="utf-8") if (src / rel).is_file() else ""      # noqa: E731
+    env = manifest.get("env_requires") or []
+    names = [str(e.get("name") or "") for e in env if isinstance(e, dict)]
+    if any(isinstance(e, dict) and "default" in e for e in env):
+        raise Refuse("env_requires 에 default 값을 둘 수 없습니다(.env.EXAMPLE 에 그대로 적힙니다)", "env_default")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+    files = [p.relative_to(pkg).as_posix() for p in pkg.rglob("*") if p.is_file()]
+    if consent is None:
+        consent = req["mode"] == "install"
+    consents = [str(c) for c in req.get("consents") or []] if consent else None
+    try:
+        return template_checks.check(req["namespace"], read("config.yaml"), read("cron/jobs.json"), names, files, consents, read("mcp.json"))
+    except template_checks.CheckError as exc:
+        raise Refuse(str(exc), exc.code) from None
+
+
+def is_template(manifest: dict) -> bool:
+    aas = manifest.get("aas") if isinstance(manifest, dict) else None
+    return isinstance(aas, dict) and aas.get("template") == 1
+
+
+def stage(req: dict, pkg: Path, out: Path, current: dict | None = None, skip: set | None = None, report: dict | None = None) -> dict:
     """받은 패키지를 Hermes 배포판 모양으로 만든다. 돌려주는 값 = 적은 매니페스트.
     Hermes 는 매니페스트의 distribution_owned 에 적힌 경로만 프로파일에 베낀다 — 스킬 패키지는 자기 폴더 하나만, 에이전트 패키지는 허용한 것만.
     current = 새 판으로 올릴 때 그 프로파일의 지금 크론·MCP 파일 {"cron/jobs.json": 글, "mcp.json": 글}(없으면 None) — 사용자 것과 합쳐 지우지 않는다(R9).
-    skip = 이번에는 바꾸지 않을 distribution_owned 경로들(사용자가 「내 것 지키기」를 골랐다, R3)."""
+    skip = 이번에는 바꾸지 않을 distribution_owned 경로들(사용자가 「내 것 지키기」를 골랐다, R3).
+    report = 부른 쪽이 넘긴 빈 표. 템플릿 설치면 {template, template_version, env_names, waiting_mcp} 를 채운다(설치 줄에 적는다, 값은 없다)."""
     import yaml
     out.mkdir(parents=True)
     if req["kind"] == "skill":
@@ -168,6 +203,15 @@ def stage(req: dict, pkg: Path, out: Path, current: dict | None = None, skip: se
             raise Refuse("에이전트 패키지의 agent/distribution.yaml 을 읽을 수 없습니다") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
         if not isinstance(manifest, dict):
             raise Refuse("agent/distribution.yaml 이 올바르지 않습니다")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+        template = is_template(manifest)
+        env_names = [str(e.get("name") or "") for e in manifest.get("env_requires") or [] if isinstance(e, dict)
+                     and not skill_setup.is_aas_managed(str(e.get("name") or ""))]     # LLM 접속값은 AAS 가 준다 — 그 KEY 로 MCP 를 꺼 두지 않는다(스펙 2026-11-19-002)
+        if req["mode"] == "install" or (template and req["mode"] == "update"):
+            # 템플릿 새 판도 같은 검사와 stdio 동의를 받는다 — 올리기 뒤 AAS 가 MCP 를 합치므로 새 명령도 동의 없이 들어가지 않게(스펙 2026-11-18-002 새 판)
+            _check_agent(req, pkg, src, manifest, consent=True)
+        main_config = (current or {}).get("config.yaml")
+        if template and req["mode"] == "install" and not main_config:      # 모델 없는 프로파일을 만들지 않는다(E16)
+            raise Refuse("받는 사람의 주 프로파일 설정(config.yaml)을 읽지 못해 템플릿으로 프로파일을 만들지 않았습니다", "main_config_missing")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
         owned = []
         for entry in sorted(src.iterdir()):
             if entry.name == "distribution.yaml":
@@ -175,6 +219,15 @@ def stage(req: dict, pkg: Path, out: Path, current: dict | None = None, skip: se
             if entry.name not in AGENT_TOP:
                 raise Refuse(f"에이전트 패키지에 넣을 수 없는 항목입니다: agent/{entry.name}")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
             (shutil.copytree if entry.is_dir() else shutil.copy2)(entry, out / entry.name)
+            if entry.name == "config.yaml" and template and req["mode"] == "install":
+                # 템플릿 전용 합치기(E1): 받는 사람 main 의 모델·제공자 위에 템플릿의 도구 묶음·스킬 켜기/끄기·MCP 만. KEY 를 쓰는 MCP 는 꺼 둔다
+                try:
+                    merged, waiting = template_checks.merge_config(main_config, entry.read_text(encoding="utf-8"), env_names)
+                except (ValueError, OSError) as exc:
+                    raise Refuse(f"템플릿 설정을 주 프로파일 설정과 합치지 못했습니다: {exc}", "config_invalid") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+                (out / "config.yaml").write_text(merged, encoding="utf-8")
+                if report is not None:
+                    report["waiting_mcp"] = waiting
             if entry.name == "config.yaml" and req["mode"] == "update":
                 continue                                          # 새 버전으로 올릴 때는 쓰던 설정을 지킨다
             if entry.name == "skills":                            # 폴더째 넣으면 프로파일의 다른 스킬·사용 기록이 지워진다 — 패키지의 스킬 폴더마다 따로 적는다(리뷰 P1 A)
@@ -187,6 +240,17 @@ def stage(req: dict, pkg: Path, out: Path, current: dict | None = None, skip: se
                 owned.append(entry.name)
         if "SOUL.md" not in owned:
             raise Refuse("에이전트 패키지에 agent/SOUL.md 가 없습니다")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
+        if template and "config.yaml" not in owned and req["mode"] == "install":       # 템플릿이 config 를 담지 않아도 main 의 모델로 만든다
+            merged, waiting = template_checks.merge_config(main_config, "", env_names)
+            (out / "config.yaml").write_text(merged, encoding="utf-8")
+            owned.append("config.yaml")
+            if report is not None:
+                report["waiting_mcp"] = waiting
+        if report is not None and template:
+            aas_ = manifest.get("aas") if isinstance(manifest.get("aas"), dict) else {}
+            report.update(template=req["package"], template_version=req["version"], env_names=env_names,
+                          examples=[str(x)[:200] for x in aas_.get("examples") or []][:5])   # 첫 대화 빈 화면의 예시(§4-5 첫 일 안내)
+            report.setdefault("waiting_mcp", [])
         manifest = {k: manifest[k] for k in ("description", "hermes_requires", "author", "license", "env_requires") if manifest.get(k)}
         manifest.update({"name": req["profile"], "version": req["version"], "distribution_owned": owned})
     for rel in sorted(skip or ()):                              # 사용자가 지키기로 한 것은 이번 배포판에서 뺀다
@@ -295,14 +359,27 @@ def prepare(req: dict, home=None, record: dict | None = None) -> dict:
                 if req["kind"] == "agent" and req["mode"] == "update":
                     current = {rel: (root / rel).read_text(encoding="utf-8") if (root / rel).is_file() else None for rel in ("cron/jobs.json", "mcp.json")}
                     overwritten = overwritten + [rel for rel in ("cron/jobs.json", "mcp.json") if current[rel] is not None]
+                if req["kind"] == "agent" and req["mode"] == "install":     # 템플릿 전용 합치기의 바탕 = 받는 사람 주 프로파일 config(스펙 2026-11-18-002 §4-2 4)
+                    current = {"config.yaml": _main_config(home, req)}
                 backup_name = skill_keep.backup(root, req["id"], overwritten)
             except OSError as exc:
                 raise Refuse(f"그 프로파일의 스킬을 읽지 못해 지키기 검사·백업을 할 수 없어 진행하지 않았습니다: {type(exc).__name__}") from None  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
-        manifest = stage(req, pkg, staged, current=current, skip=skip)
+        report: dict = {}
+        manifest = stage(req, pkg, staged, current=current, skip=skip, report=report)
         blob = pack(staged) if manifest["distribution_owned"] else b""
     if len(blob) > MAX_PAYLOAD:
         raise Refuse(f"패키지가 너무 큽니다(묶으면 {len(blob) // 1024} KiB, 한도 {MAX_PAYLOAD // 1024} KiB)")  # i18n-ignore: 배달기가 요청 결과로 기록하는 문장(저장)
-    return {"payload": base64.b64encode(blob).decode() if blob else "", "manifest": manifest, "backup": backup_name, "skipped": sorted(skip)}
+    return {"payload": base64.b64encode(blob).decode() if blob else "", "manifest": manifest, "backup": backup_name, "skipped": sorted(skip), "template": report}
+
+
+def _main_config(home, req: dict) -> str | None:
+    """그 작업공간 주 프로파일의 config.yaml 글. 읽지 못하면 None — 템플릿이면 stage 가 거절한다."""
+    from ..fleet import primary
+    try:
+        path = skill_keep.profile_root(home, primary.primary_of(str(req.get("pod") or ""))) / "config.yaml"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        return None
 
 
 def build_payload(req: dict) -> tuple[str, dict]:

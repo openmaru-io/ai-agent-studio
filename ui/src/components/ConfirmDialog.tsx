@@ -20,6 +20,8 @@ export interface ConfirmOpts {
   check?: { label: string; onChange: (checked: boolean) => void };
   title?: string;
   confirmLabel?: string;
+  /** 취소 단추 글자(없으면 「취소」). 확인 단추가 「요청 취소」처럼 취소를 뜻할 때 헷갈리지 않게(스펙 2026-11-20-009 거두기 「그대로 두기」) */
+  cancelLabel?: string;
   cancelFirst?: boolean;
 }
 type Confirm = (message: string, opts?: ConfirmOpts) => Promise<boolean>;
@@ -126,7 +128,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         <DialogActions>
           {/* 위험한 동작은 Enter 한 번으로 실행되지 않도록 처음 포커스를 취소에 둔다 */}
           <Button onClick={() => answer(false)} ref={cancelFirst ? focusNow : undefined}>
-            {t('common.cancel')}
+            {opts.cancelLabel ?? t('common.cancel')}
           </Button>
           <Button variant="contained" color={danger ? 'error' : 'primary'} onClick={() => answer(true)} ref={cancelFirst ? undefined : focusNow}>
             {opts.confirmLabel ?? t('common.confirm')}

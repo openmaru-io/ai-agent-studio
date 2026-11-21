@@ -131,7 +131,7 @@ def _collect_mine_health(slot: str, pods: list) -> None:
     """이 서버가 맡은 에이전트만 읽어 에이전트별 줄로 적는다(스펙 2026-10-24-013 3단계 D5). 모든 서버가 수집 창마다 한 번."""
     from .office import shared
     mine = owner.mine(list(pods), server.SHARED.origin, server._alive_origins())
-    for pid, body in collect_all.collect_rows(mine).items():
+    for pid, body in collect_all.collect_rows(mine, workers=collect_all.BACKGROUND_WORKERS).items():
         shared.put_health(slot, pid, body)
 
 
@@ -141,7 +141,7 @@ def _merge_health(slot: str, pods: list) -> dict:
     rows = shared.get_health(slot)
     missing = [p for p in pods if p.id not in rows]
     if missing:
-        rows.update(collect_all.collect_rows(missing))
+        rows.update(collect_all.collect_rows(missing, workers=collect_all.BACKGROUND_WORKERS))
     return collect_all.merge([rows[p.id] for p in pods if p.id in rows], len(pods))
 
 

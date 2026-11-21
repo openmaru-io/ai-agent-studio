@@ -5,6 +5,7 @@
 
 import { Typography } from '@mui/material';
 import { useQueryClient } from '@tanstack/react-query';
+import { useSnackbar } from 'notistack';
 import { type ReactNode, useCallback } from 'react';
 
 import { Tag } from '@/components/bits';
@@ -99,6 +100,7 @@ const PROFILE_SET_ACTIONS = new Set(['create', 'rename', 'delete']);
 
 export function useProfileAct(name: string) {
   const qc = useQueryClient();
+  const { enqueueSnackbar } = useSnackbar();
   // 화면이 보던 에이전트를 함께 보낸다. 다른 탭에서 에이전트가 바뀌었으면 서버가 409 로 거절한다(스펙 2026-10-19-011 R1 ③)
   const pod = useMe().data?.pod?.id;
   const act = useCallback(
@@ -111,6 +113,10 @@ export function useProfileAct(name: string) {
             void qc.invalidateQueries({ queryKey: ['skills'] });
             void qc.invalidateQueries({ queryKey: ['profiles'] });
           }
+          // 다시 시작이 필요한 변경이 기록됐다 — 상단 막대 아이콘이 곧바로 보이게 me 를 다시 읽는다. 기록에 실패했으면 그 자리에 알린다(스펙 2026-11-18-016 4-1·4-4)
+          const pending = (r as { restart_pending?: unknown } | null)?.restart_pending;
+          if (pending) void qc.invalidateQueries({ queryKey: ['me'] });
+          if (pending === 'unrecorded') enqueueSnackbar(t('restartPending.unrecorded'), { variant: 'warning' });
           return r;
         },
         (e: unknown) => {
@@ -119,7 +125,7 @@ export function useProfileAct(name: string) {
           throw e;
         }
       ),
-    [name, pod, qc]
+    [name, pod, qc, enqueueSnackbar]
   );
   const refresh = useCallback(async () => {
     await Promise.all([
@@ -134,6 +140,11 @@ export function useProfileAct(name: string) {
 
 /** 관리자가 아닌 사람이 이 프로파일을 고칠 수 있는가: 주인이나 팀 관리자(스펙 2026-10-22-001). 옛 서버는 manages 가 없어 owner 로 본다 */
 export const mayManage = (d: ProfileDetailData): boolean => !!(d.manages ?? d.owner);
+
+/** 이 탭의 내용을 고칠 수 있는가. 서버 caps 를 따르므로 「편집」 구성원은 SOUL·지침·스킬·도구·크론만 열린다(스펙 2026-11-17-008 §3-2).
+ *  관리자(can_edit)는 늘 열리고, caps 가 없는 옛 서버는 주인 규칙(mayManage)으로 본다 */
+export const mayEditTab = (d: ProfileDetailData, tab: string): boolean =>
+  !!d.can_edit || (d.caps?.[tab] ? !!d.caps[tab].can : mayManage(d));
 
 /** 서버 caps 의 막힌 이유 코드 → 화면 문장. 코드를 모르면 빈 문자열(옛 서버는 caps 가 없어 화면이 예전 규칙으로 가린다) */
 export function capWhy(d: ProfileDetailData, tab: string): string {

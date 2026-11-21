@@ -138,7 +138,7 @@ class HealthRoundTest(unittest.TestCase):
         shared.put_health("10:00", "p1", self.row("p1"))
         read = []
 
-        def rows(pp):
+        def rows(pp, **kw):                       # 진짜 collect_rows 처럼 workers 등을 받는다
             read.extend(p.id for p in pp)
             return {p.id: self.row(p.id) for p in pp}
         with unittest.mock.patch.object(main.collect_all, "collect_rows", side_effect=rows):
@@ -151,7 +151,7 @@ class HealthRoundTest(unittest.TestCase):
         from aas import __main__ as main
         pods = [unittest.mock.Mock(id=f"p{i}") for i in range(6)]
         mine = owner.mine(pods, "me", ["me", "other"])
-        with unittest.mock.patch.object(main.collect_all, "collect_rows", side_effect=lambda pp: {p.id: self.row(p.id) for p in pp}), \
+        with unittest.mock.patch.object(main.collect_all, "collect_rows", side_effect=lambda pp, **kw: {p.id: self.row(p.id) for p in pp}), \
                 unittest.mock.patch.object(main.server.SHARED, "origin", "me"), \
                 unittest.mock.patch.object(main.server.SHARED, "alive_servers", return_value=["me", "other"]):
             main._collect_mine_health("10:30", pods)

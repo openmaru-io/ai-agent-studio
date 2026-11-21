@@ -7,11 +7,13 @@
 // 목록 줄(agentMenuItems)은 계정 메뉴도 함께 쓴다. 부품이 아니라 MenuItem 배열을 돌려준다 — MUI MenuList 는 바로 아래
 // 자식에서 selected 줄을 찾아 열 때 포커스를 주므로, 부품으로 감싸면 포커스가 갈 곳이 없다(O1).
 // 바꾸는 중 상태(pendingId)는 AppShell 이 가진다: 계정 메뉴에서 골라도 이 단추가 같은 표시를 한다(DD4).
+// 작업공간이 많으면(SEARCH_MIN 이상) 맨 위에 찾기 칸을 두고 목록 높이를 줄여 스크롤한다(스펙 2026-11-18-006).
 import CheckIcon from '@mui/icons-material/Check';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import SearchIcon from '@mui/icons-material/Search';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
-import { Box, CircularProgress, ListSubheader, Menu, MenuItem, SxProps, Theme, Tooltip, Typography, useTheme } from '@mui/material';
-import { ReactNode, useState } from 'react';
+import { Box, CircularProgress, InputBase, ListSubheader, Menu, MenuItem, SxProps, Theme, Tooltip, Typography, useTheme } from '@mui/material';
+import { KeyboardEvent, ReactNode, useRef, useState } from 'react';
 
 import { t } from '@/i18n';
 import { viewerAgentLabel, viewerAgentParts } from '@/lib/agentLabel';
@@ -28,6 +30,16 @@ const DIM = 'rgba(255,255,255,0.6)';
 /** 주인·에이전트 글자의 최대 폭(R2), 그 안에서 에이전트 이름이 지키는 폭(DD1) */
 const LABEL_MAX = 220;
 const AGENT_KEEP = 160;
+/** 이만큼 넘으면 찾기 칸을 두고, 메뉴 높이를 줄 열두 개쯤(36px)으로 묶는다 */
+export const SEARCH_MIN = 8;
+const MENU_MAX_H = 480;
+
+/** 찾기: 보이는 이름(주인 · 에이전트)·id·주인 메일에 글자가 들어 있으면 남긴다. 대소문자는 가리지 않는다 */
+export function matchPod(p: Pod, needle: string, viewerEmail?: string): boolean {
+  const n = needle.trim().toLowerCase();
+  if (!n) return true;
+  return [viewerAgentLabel(p, viewerEmail), p.name, p.id, p.owner, p.owner_name].some((v) => (v ?? '').toLowerCase().includes(n));
+}
 
 /** 내 것(이름순) → 남의 것(주인 이름순, 그다음 에이전트 이름순)(DD3) */
 export function sortPods(pods: Pod[], viewerEmail?: string): Pod[] {
@@ -163,6 +175,9 @@ export function AgentSwitch({ pods, pod, viewerEmail, registryError, pendingId, 
   const tk = chatTokens[mode];
   const dlg = dialogTokens[mode];
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [q, setQ] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   if (!pod && pods.length === 0) return null; // 에이전트가 없는 설치(로컬 모드)
 
@@ -190,7 +205,26 @@ export function AgentSwitch({ pods, pod, viewerEmail, registryError, pendingId, 
   const full = shown ? viewerAgentLabel(shown, viewerEmail) : t('topbar.agentChoose');
   const busy = !!pendingId;
   const open = !!anchor;
-  const grouped = podSections(pods, viewerEmail).length > 1;
+  const searchable = pods.length >= SEARCH_MIN;
+  const visible = searchable ? pods.filter((p) => matchPod(p, q, viewerEmail)) : pods;
+  const grouped = podSections(visible, viewerEmail).length > 1;
+  const close = () => {
+    setAnchor(null);
+    setQ('');
+  };
+  const rows = () => Array.from(listRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? []);
+  // 찾기 칸의 글자는 메뉴의 첫 글자 이동에 넘기지 않는다. ↓ 는 첫 줄로, Enter 는 맞는 줄이 하나뿐이면 그 줄을 고른다. Esc 는 메뉴가 닫는다
+  const onSearchKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') return;
+    e.stopPropagation();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      rows()[0]?.focus();
+    } else if (e.key === 'Enter' && visible.length === 1) {
+      e.preventDefault();
+      rows()[0]?.click();
+    }
+  };
   const tipLines = shown ? [{ text: t('topbar.agentSwitch') }, { text: full }, { text: shown.id }] : [{ text: t('topbar.agentSwitch') }];
   return (
     <>
@@ -245,16 +279,25 @@ export function AgentSwitch({ pods, pod, viewerEmail, registryError, pendingId, 
       <Menu
         anchorEl={anchor}
         open={open}
-        onClose={() => setAnchor(null)}
+        onClose={close}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        // 찾기 칸이 있으면 열 때 초점은 찾기 칸, 지금 줄은 스크롤로 보이게만 둔다
+        disableAutoFocusItem={searchable}
         slotProps={{
+          transition: {
+            onEntered: () => {
+              if (!searchable) return;
+              searchRef.current?.focus();
+              listRef.current?.querySelector('[aria-checked="true"]')?.scrollIntoView?.({ block: 'nearest' });
+            },
+          },
           paper: {
             sx: {
               mt: 0.75,
-              width: 296,
+              width: searchable ? 336 : 296,
               maxWidth: 'calc(100vw - 16px)',
-              maxHeight: 'calc(100vh - 96px)',
+              maxHeight: searchable ? `min(${MENU_MAX_H}px, calc(100vh - 96px))` : 'calc(100vh - 96px)',
               borderRadius: '12px',
               bgcolor: dlg.surface,
               backgroundImage: 'none',
@@ -263,20 +306,73 @@ export function AgentSwitch({ pods, pod, viewerEmail, registryError, pendingId, 
               boxShadow: `${tk.popup.shadow}, ${tk.popup.highlight}`,
             },
           },
-          list: { sx: { py: 0.75 } },
+          list: { ref: listRef, sx: { py: 0.75, pt: searchable ? 0 : 0.75 } },
         }}
       >
+        {/* 찾기 칸: 메뉴 위에 붙어 스크롤해도 남는다. 초점이 가지 않는 ListSubheader 안에 둔다(줄 이동이 건너뛴다) */}
+        {searchable && (
+          <ListSubheader
+            disableGutters
+            sx={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 2,
+              px: 1,
+              pt: 1,
+              pb: 0.75,
+              mb: 0.5,
+              lineHeight: 'normal',
+              bgcolor: dlg.surface,
+              borderBottom: '1px solid',
+              borderColor: tk.popup.edge,
+            }}
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.75,
+                height: 32,
+                px: 1,
+                borderRadius: '8px',
+                border: '1px solid',
+                borderColor: tk.popup.edge,
+                bgcolor: tk.hover,
+                '&:focus-within': { borderColor: tk.popup.edgeFront },
+              }}
+            >
+              <SearchIcon aria-hidden="true" sx={{ fontSize: 16, color: tk.muted }} />
+              <InputBase
+                inputRef={searchRef}
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={onSearchKey}
+                placeholder={t('topbar.agentSearch')}
+                inputProps={{ 'aria-label': t('topbar.agentSearch'), type: 'search' }}
+                sx={{ flex: 1, fontSize: 13, color: tk.text, '& input::placeholder': { color: tk.muted, opacity: 1 } }}
+              />
+              <Box component="span" aria-hidden="true" sx={{ fontSize: 12, color: tk.muted, fontVariantNumeric: 'tabular-nums' }}>
+                {q.trim() ? `${visible.length}/${pods.length}` : pods.length}
+              </Box>
+            </Box>
+          </ListSubheader>
+        )}
         {/* 구역이 둘 이상이면 구역 머리글이 「에이전트」 머리글을 대신한다(DD2) */}
-        {grouped ? null : <ListSubheader sx={subheaderSx(tk.muted)}>{t('shell.agents')}</ListSubheader>}
+        {grouped || !visible.length ? null : <ListSubheader sx={subheaderSx(tk.muted)}>{t('shell.agents')}</ListSubheader>}
         {agentMenuItems({
-          pods,
+          pods: visible,
           currentId: pod?.id,
           viewerEmail,
           sx: menuItemSx(tk),
-          onClose: () => setAnchor(null),
+          onClose: close,
           onPick,
           sections: { muted: tk.muted },
         })}
+        {searchable && !visible.length && (
+          <Box role="status" sx={{ px: 2.25, py: 1.5, fontSize: 13, color: tk.muted }}>
+            {t('topbar.agentSearchEmpty', { q: q.trim() })}
+          </Box>
+        )}
       </Menu>
     </>
   );

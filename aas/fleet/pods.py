@@ -213,6 +213,76 @@ class Registry:
                 conn.execute(db.upsert("access_grants", ("email", "role", "pods", "by", "ts"), ("email",)),
                              (email, role, ",".join(pods), by, datetime.now().astimezone().isoformat(timespec="seconds")))
 
+    # ---- 소유자가 고른 구성원(스펙 2026-11-17-008 §3). use = 보기·대화, edit = 그 위에 내용 편집(SOUL·지침·스킬 켜기·도구·크론).
+    # access_grants(관리자가 준 보기)와 따로 둔다 — 누가 줬는지와 단계가 다르다. 쓰기 화면·API 는 단계 2.
+    MEMBER_SCHEMA = ("CREATE TABLE IF NOT EXISTS workspace_members (pod TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL, "
+                     "by TEXT, ts TEXT NOT NULL, PRIMARY KEY (pod, email))")
+    MEMBER_ROLES = ("use", "edit")
+
+    def members(self) -> dict[str, dict[str, str]]:
+        """이메일 → {POD id: 역할}. 등록부에 없는 POD 는 뺀다. 읽지 못하면 비어 있다(권한을 더 주지 않는 쪽).
+        관리자가 설치에서 소유자 공유를 끄면(sharing.enabled) 비어 있다 — 행은 남기고 권한 계산에서만 뺀다(스펙 2026-11-17-008 §3-6)."""
+        from ..common import store
+        from . import sharing
+        if not sharing.enabled():
+            return {}
+
+        def read() -> list[dict]:
+            with store.connect() as conn:
+                conn.execute(self.MEMBER_SCHEMA)
+                return [dict(r) for r in conn.execute("SELECT pod, email, role FROM workspace_members").fetchall()]
+        try:
+            rows = store.memo(f"members:{id(self)}", read)      # allowed·_edits_pod 가 한 요청에서 여러 번 읽는다(grants 와 같다)
+        except Exception:
+            return {}
+        known = {p.id for p in self.pods}
+        out: dict[str, dict[str, str]] = {}
+        for r in rows:
+            if r["pod"] in known and r["role"] in self.MEMBER_ROLES:
+                out.setdefault(r["email"].lower(), {})[r["pod"]] = r["role"]
+        return out
+
+    def member_rows(self, pod_id: str) -> list[dict]:
+        """한 작업공간의 구성원 줄(스위치와 상관없이 표 그대로, 공유 화면·관리자 현황용): [{email, role, by, ts}]."""
+        from ..common import store
+        with store.connect() as conn:
+            conn.execute(self.MEMBER_SCHEMA)
+            return [dict(r) for r in conn.execute("SELECT email, role, by, ts FROM workspace_members WHERE pod=? ORDER BY ts, email",
+                                                  (pod_id,)).fetchall()]
+
+    def memberships(self, email: str) -> list[dict]:
+        """이 사람이 구성원인 작업공간: [{pod, role, ts}]. 설치에서 공유를 끄면 비어 있다(members 와 같다)."""
+        from ..common import store
+        from . import sharing
+        email = (email or "").lower()
+        if not email or not sharing.enabled():
+            return []
+        known = {p.id for p in self.pods}
+        with store.connect() as conn:
+            conn.execute(self.MEMBER_SCHEMA)
+            rows = conn.execute("SELECT pod, role, ts FROM workspace_members WHERE email=?", (email,)).fetchall()
+        return [dict(r) for r in rows if r["pod"] in known and r["role"] in self.MEMBER_ROLES]
+
+    def member_role(self, user: dict | None, pod_id: str) -> str:
+        """이 사람이 이 POD 의 구성원이면 "use"·"edit", 아니면 ""."""
+        email = str((user or {}).get("email") or "").lower()
+        return self.members().get(email, {}).get(pod_id, "") if email else ""
+
+    def set_member(self, pod_id: str, email: str, role: str, by: str) -> None:
+        """구성원 한 명을 넣거나 역할을 바꾼다. role="none" 이면 뺀다."""
+        from datetime import datetime
+        from ..common import store
+        if role not in (*self.MEMBER_ROLES, "none"):
+            raise ValueError(role)
+        email = email.strip().lower()
+        with store.connect() as conn:
+            conn.execute(self.MEMBER_SCHEMA)
+            if role == "none":
+                conn.execute("DELETE FROM workspace_members WHERE pod=? AND email=?", (pod_id, email))
+            else:
+                conn.execute(db.upsert("workspace_members", ("pod", "email", "role", "by", "ts"), ("pod", "email")),
+                             (pod_id, email, role, by, datetime.now().astimezone().isoformat(timespec="seconds")))
+
     def admin_grants(self) -> list[str]:
         """화면이 예전에 준 관리자(access_grants.role=admin) 중 아직 Keycloak 관리자 그룹으로 옮기지 못한 이메일(K7)."""
         from ..common import store
@@ -272,7 +342,7 @@ class Registry:
         옮긴 행은 role 이 user 로 바뀌므로 더는 관리자로 읽히지 않는다(K7, 스펙 2026-10-14-011)."""
         if not user:
             return False
-        if user.get("via") == "token":                  # Claude Code 연결로 온 요청은 관리자 권한을 쓰지 않는다(이메일 관리자 목록도 무시, 스펙 2026-10-28-001 D5)
+        if user.get("via") in ("token", "embed"):       # Claude Code 연결·채팅 임베드 위젯(OMAI-1873)으로 온 요청은 관리자 권한을 쓰지 않는다(이메일 관리자 목록도 무시, 스펙 2026-10-28-001 D5)
             return False
         email = user["email"].lower()
         return bool(user.get("admin")) or email in self.admins or self.grants().get(email, {}).get("role") == "admin"
@@ -318,7 +388,7 @@ class Registry:
             return []
         if self.is_admin(user):
             return pool
-        extra = set(self.grants().get(user["email"].lower(), {}).get("pods", []))
+        extra = set(self.grants().get(user["email"].lower(), {}).get("pods", [])) | set(self.members().get(user["email"].lower(), {}))
         team = {p.id for p in self.team_pods(user)} | ({p.id for p in self._team_of(user, list(getattr(self, "restarting", [])))} if restarting else set())
         return [p for p in pool if p.owned_by(user) or p.id in extra or p.id in team]   # '*' 는 로그인 사용자에게 주지 않는다
 

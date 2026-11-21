@@ -24,7 +24,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS admin_requests_pending ON admin_requests (pod,
 CREATE INDEX IF NOT EXISTS admin_requests_status ON admin_requests (status, created_at);
 CREATE INDEX IF NOT EXISTS admin_requests_requester ON admin_requests (requester, status);
 """
-KINDS = ("model_change", "profile_limit", "office_seat", "archive_restore", "channel_apply", "workspace_size", "other")
+KINDS = ("model_change", "profile_limit", "office_seat", "archive_restore", "channel_apply", "workspace_size", "template_notice", "namespace_grant", "other")
+# template_notice: 새 프로파일 템플릿이 올라왔다는 알림(승인이 아니다, 스펙 2026-11-18-002 D2·R-a). 관리자가 「처리」로 닫는다
 # workspace_size(메모리 늘리기, 스펙 2026-11-06-005 O2)는 작업공간 단위라 프로파일 칸에 이 자리표시를 쓴다 — 이름 바꾸기와 무관하게 중복 방지가 유지된다
 WORKSPACE = "_workspace"
 DETAIL_MAX, REASON_MAX = 300, 300
@@ -102,6 +103,20 @@ def close_workspace_size(pods: list[str], old_memory: float | None, new_memory: 
     with _conn() as conn:
         cur = conn.execute(f"UPDATE admin_requests SET status='handled', handled_by='auto:size', handled_at=?, reason=? "
                            f"WHERE status='pending' AND kind='workspace_size' AND pod IN ({marks})", (_iso(now or _now()), reason, *pods))
+        return cur.rowcount or 0
+
+
+def close_namespace_grant(pods: list[str], namespace: str, now: datetime | None = None) -> int:
+    """관리자가 그 작업공간들에 네임스페이스를 허용했다(스펙 2026-11-18-015 §3-5 X2). 그 네임스페이스를 요청한(detail 앞머리 「ns=<slug>」)
+    대기 중인 namespace_grant 요청만 「처리됨」으로 닫는다. reason 은 「grant:<slug>」 — 화면이 사용자 언어로 옮긴다. 닫은 수를 돌려준다."""
+    pods = [p for p in pods if p]
+    if not pods:
+        return 0
+    marks = ",".join("?" * len(pods))
+    with _conn() as conn:
+        cur = conn.execute(f"UPDATE admin_requests SET status='handled', handled_by='auto:grant', handled_at=?, reason=? "
+                           f"WHERE status='pending' AND kind='namespace_grant' AND (detail=? OR detail LIKE ?) AND pod IN ({marks})",
+                           (_iso(now or _now()), f"grant:{namespace}", f"ns={namespace}", f"ns={namespace} %", *pods))
         return cur.rowcount or 0
 
 

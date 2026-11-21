@@ -54,9 +54,11 @@ class ProfileActionTest(unittest.TestCase):
     def test_주인은_SOUL_스킬_도구_비밀값_채널만(self):
         # 도구(toolset)는 OMAI-1193, 비밀값·채널은 OMAI-1196(스펙 2026-10-15-011 단계 1), MCP 서버 추가·삭제·카탈로그는 OMAI-1240 에서 열었다.
         # mcp_url_check(주소 가능 여부, 읽기 전용)·mcp_to_oauth(헤더→OAuth)는 OMAI-1263 에서 더했다. 모델·게이트웨이·삭제는 관리자(삭제는 owner_delete 가 따로 허용)
+        # mcp_mindwiki_write 는 OMAI-2018(스펙 2026-11-14-001)에서 Docmost·Outline 쓰기 스위치와 같은 권한으로 더했다. mcp_mindwiki_connect(2단계)는 주인 자신의 MindWiki 계정으로만 — 핸들러가 남의 작업공간이면 관리자도 403. mcp_mindwiki_ack(3단계, 스펙 2026-11-14-012)는 자동 첫 연결 안내 닫기로, 요청한 사람 자신의 행만 바꾼다
         # 작업 지침(AGENTS.md) 넷은 OMAI-1340(스펙 2026-10-19-004 D2·§10 H3)에서 SOUL 과 같은 권한으로 더했다
-        allowed = {"soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "skill", "toolset", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke",
-                   "config", "config_preview", "config_revert", "mcp", "mcp_test", "rename", "create", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_apply", "mcp_url_check", "mcp_to_oauth"}
+        # pairing_clear(연결 대기 비우기)는 OMAI-2092(스펙 2026-11-17-008 §5-3)에서 페어링 승인·철회와 같은 권한으로 더했다
+        allowed = {"soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "skill", "toolset", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",
+                   "config", "config_preview", "config_revert", "mcp", "mcp_test", "rename", "create", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_apply", "mcp_url_check", "mcp_to_oauth"}
         self.assertEqual(server.OWNER_PROFILE_ACTIONS, allowed)                                  # 조용히 넓어지지 않게 정확한 집합을 고정한다
         for action in allowed:
             self.assertTrue(server.may_change_profile(action, POD, KIM, True, False), action)

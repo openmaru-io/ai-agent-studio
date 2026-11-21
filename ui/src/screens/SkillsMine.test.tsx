@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mountScreen, rowByName, stubApi } from '@/test/mountScreen';
+import { listProfiles, pickProfile, profileShown } from '@/test/pickProfile';
 
 import { isMySkill } from './profiles/skillOrigin';
 import { Skills } from './Skills';
@@ -65,16 +66,16 @@ describe('스킬 목록 — 내 스킬 먼저', () => {
     mount();
     expect(await rowByName(/^mine-none/)).toBeInTheDocument();
     expect(screen.queryByText('base-pdf')).not.toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /내 스킬, 6/ })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: /기본 제공, 2/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /전체, 8/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /직접 만든 스킬, 6/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /Hermes 기본 제공, 2/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /모두, 8/ })).toBeInTheDocument();
   });
 
   it('기본 제공 카드를 누르면 bundled·aas 두 줄만', async () => {
     const user = userEvent.setup();
     mount();
     await rowByName(/^mine-local/);
-    await user.click(screen.getByRole('tab', { name: /기본 제공/ }));
+    await user.click(screen.getByRole('tab', { name: /Hermes 기본 제공/ }));
     expect(await rowByName(/^base-pdf/)).toBeInTheDocument();
     expect(await rowByName(/^base-aas/)).toBeInTheDocument();
     expect(screen.queryByText('mine-local')).not.toBeInTheDocument();
@@ -83,7 +84,7 @@ describe('스킬 목록 — 내 스킬 먼저', () => {
   it('기본 제공 카드 둘째 줄은 프로파일이 둘 이상일 때 서로 다른 이름 수와 프로파일 수(D4)', async () => {
     mount('/skills?profile=*', data([...ROWS, row('ra:bundled', 'base-pdf', 'ra', 'bundled')])); // 여러 프로파일은 전체 프로파일에서(2026-10-27-013 D3)
     await rowByName(/^mine-local/);
-    expect(screen.getByRole('tab', { name: /기본 제공, 3/ })).toHaveAccessibleDescription('서로 다른 2개 · 프로파일 2개');
+    expect(screen.getByRole('tab', { name: /Hermes 기본 제공, 3/ })).toHaveAccessibleDescription('서로 다른 2개 · 프로파일 2개');
   });
 
   it('배지는 지금 보기 안에서 거르고, 외부 URL 배지면 호출 URL 열이 생기며 URL 없는 줄은 「—」(D19)', async () => {
@@ -104,7 +105,7 @@ describe('스킬 목록 — 내 스킬 먼저', () => {
     const user = userEvent.setup();
     mount('/skills?chip=mcp');
     await rowByName(/^mine-agent/);
-    await user.click(screen.getByRole('tab', { name: /전체/ }));
+    await user.click(screen.getByRole('tab', { name: /^모두/ }));
     expect(screen.getByTestId('loc')).not.toHaveTextContent('chip=');
   });
 
@@ -194,25 +195,24 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     stubApi({ '/api/market/publish': { items: [], can: false }, '/api/skills': body, '/api/me': me });
     mountScreen(<Skills />, at);
   };
-  const picker = () => screen.findByRole('combobox', { name: '프로파일' }) as Promise<HTMLSelectElement>;
+  // 프로파일 고르기는 MUI 드롭다운(스펙 2026-11-18-007 R7) — 공용 시험 도우미로 연다
 
   it('주소 없이 열면 주 프로파일을 골라 주소에 채우고, 수는 그 프로파일 기준이며 부제에 정적 분석이 없다(R3·D8·2A·3A·9A)', async () => {
+    const user = userEvent.setup();
     open('/skills?tab=all');
-    const sel = await picker();
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=main'));
-    expect(sel.value).toBe('main');
-    expect(within(sel).getAllByRole('option').map((o) => o.textContent)).toEqual(['main · 주 프로파일', 'p2', '전체 프로파일']);
-    expect(sel.querySelector('optgroup')?.getAttribute('label')).toBe('프로파일');
-    expect(screen.getByRole('tab', { name: /전체, 2/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /기본 제공, 1/ })).not.toHaveAccessibleDescription(/프로파일/); // 둘째 줄 없음
+    expect(await profileShown()).toContain('main · 주 프로파일');
+    expect(await listProfiles(user)).toEqual(['main · 주 프로파일', 'p2', '모든 AI 에이전트']);
+    expect(screen.getByRole('tab', { name: /모두, 2/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Hermes 기본 제공, 1/ })).not.toHaveAccessibleDescription(/프로파일/); // 둘째 줄 없음
     expect(screen.queryByText('정적 분석')).not.toBeInTheDocument();
-    expect(screen.queryByRole('columnheader', { name: '위치' })).not.toBeInTheDocument();       // 위치 값이 하나(12A)
+    expect(screen.queryByRole('columnheader', { name: 'AI 에이전트' })).not.toBeInTheDocument();       // 위치 값이 하나(12A)
   });
 
   it('다른 프로파일을 고르면 lens·open 은 지우고 tag·q·chip 은 남기며, 저장하고 한 번 읽어 주고 선택 상자에 포커스를 둔다(D5·6A·11A)', async () => {
     const user = userEvent.setup();
     open('/skills?tab=all&profile=main&tag=dev-workflow&q=m&chip=mcp&lens=mcp%3Achart');
-    await user.selectOptions(await picker(), 'p2');
+    await pickProfile(user, 'p2');
     const loc = screen.getByTestId('loc');
     await waitFor(() => expect(loc).toHaveTextContent('profile=p2'));
     expect(loc).toHaveTextContent('tag=dev-workflow');
@@ -249,7 +249,7 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     });
     open('/skills?tab=all');
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=main'));
-    await user.selectOptions(await picker(), 'p2');
+    await pickProfile(user, 'p2');
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('profile=p2'));
     get.mockRestore();                                                              // restoreAllMocks 는 공통 matchMedia 대역까지 되돌린다
     set.mockRestore();
@@ -282,11 +282,10 @@ describe('스킬 목록 — 프로파일 먼저', () => {
     open('/skills?tab=all&profile=main', D(skills, { profiles: ['default', 'main', 'p2'] }));
     expect(await rowByName(/^shared-one/)).toHaveTextContent('공용');
     expect(screen.getAllByRole('row', { name: /^pdf/ })).toHaveLength(1);         // main 의 pdf 만, 공용 pdf 는 빠진다
-    expect(screen.getByRole('columnheader', { name: '위치' })).toBeInTheDocument();
-    const sel = await picker();
-    expect(within(sel).getAllByRole('option').map((o) => o.textContent)).toEqual(['main · 주 프로파일', 'p2', '공용', '전체 프로파일']);
-    await user.selectOptions(sel, 'default');
-    await waitFor(() => expect(screen.getByRole('tab', { name: /전체, 2/ })).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'AI 에이전트' })).toBeInTheDocument();
+    expect(await listProfiles(user)).toEqual(['main · 주 프로파일', 'p2', '공용 스킬', '모든 AI 에이전트']);
+    await pickProfile(user, '공용 스킬');
+    await waitFor(() => expect(screen.getByRole('tab', { name: /모두, 2/ })).toBeInTheDocument());
   });
 
   it('공용 + 프로파일 하나뿐이면 선택이 없고 지금처럼 전부 보인다(R5)', async () => {

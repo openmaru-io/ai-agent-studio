@@ -15,9 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import Callable
 
-from ..common import config, db
+from ..common import config, db, i18n
 from . import cron_health
 from ..common.i18n import tr
+from ..hermes.readers import tree_cache
 
 ROW_KEYS = ("incidents", "failed_jobs", "stalled", "silent")
 SUM_KEYS = ("profiles", "profiles_ok", "jobs", "jobs_active", "open_incidents", "new_incidents",
@@ -30,6 +31,11 @@ def _num(key: str, default, cast, low):
     except ValueError:
         return default
     return value if value >= low else default
+
+
+# 뒤에서 도는 바퀴(ticker 상태 모으기·대시보드·서버 주기 작업)가 동시에 읽는 작업공간 수. 기본 8개였을 때 서버가 뜨자마자
+# 처음 묶음 받기 여러 개가 같은 NFS 를 함께 읽어 서로 느려졌다(스펙 2026-11-20-001 §3-3·3-9). 화면 요청의 모으기는 workers() 그대로
+BACKGROUND_WORKERS = 2
 
 
 def workers() -> int:
@@ -99,9 +105,16 @@ def map_pods(pods: list, fn: Callable, workers: int | None = None, timeout: floa
         return out
     begun: dict[str, float] = {}
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="aas-pods")
+    # 일꾼 스레드는 빈 맥락으로 시작한다. 「사람의 요청」 표시와 언어 두 값만 부른 쪽에서 물려준다 — 표시가 없으면 사람이 연 프로파일
+    # 화면의 다른 에이전트 묶음도 사용으로 세지지 않아 5분 정리에서 버려졌다(스펙 2026-11-20-006). 맥락 전체(copy_context)는 넘기지
+    # 않는다: 요청 메모(store._MEMO)·다시 시작 기록(restart_pending._CTX·_HELD)을 일꾼 여럿이 함께 쓰게 된다. 풀은 호출마다 새로 만들어
+    # 넣은 값이 다른 호출로 새지 않는다
+    human, lang = tree_cache.HUMAN.get(), i18n.get_lang()
 
     def run(p):
         begun[p.id] = time.monotonic()
+        tree_cache.HUMAN.set(human)
+        i18n.set_lang(lang)
         return fn(p)
     try:
         futures = {pool.submit(run, p): p for p in pods}

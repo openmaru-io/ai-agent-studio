@@ -10,9 +10,9 @@ import { useSyncExternalStore } from 'react';
 
 import { t } from '@/i18n';
 
-import { ApiError, get, post } from './api';
+import { apiConfig, ApiError, get, post } from './api';
 import { backoffDelay, RETRY_MAX_MS, RETRY_MAX_TRIES } from './backoff';
-import { applyEvent, ChatEvent, newSession, pending, Reconnect, Session, SessionInfo } from './chat';
+import { applyEvent, ChatEvent, Item, newSession, pending, Reconnect, Session, SessionInfo } from './chat';
 import { MAX_FILES, PARALLEL, precheck, sendUpload, Upload } from './chatFiles';
 import { wsClient } from './ws';
 
@@ -22,6 +22,13 @@ const CARRY_MS = 30000;
 /** 지난 이벤트 따라잡기의 안전 시한. 끝 번호가 이 안에 오지 않으면(버퍼가 줄었거나 끊김) 받은 데까지 그린다 */
 const CATCH_UP_MAX_MS = 8000;
 const NO_TOPIC_STATES = ['fallback-http', 'replaced', 'auth-failed'];
+/** 한 탭이 토픽으로 받는 대화 수. 넘으면 보지 않는 대기 대화부터 받기를 멈춘다. 서버 상한은 연결당 구독 100개이고
+ *  알림·사무실·상태 토픽 몫을 남긴다(OMAI-1863) */
+const CHAT_TOPIC_BUDGET = 40;
+/** 구독 상한으로 거절된 뒤 다시 구독할 때까지(ws 의 구독 해제 미룸 300ms 보다 길게) */
+const TOO_MANY_SUBS_RETRY_MS = 600;
+/** 화면 갱신이 멈춘 숨은 탭에서 실시간 이벤트 알림을 받치는 타이머 */
+const NOTIFY_HIDDEN_MS = 100;
 
 export interface AgentInfo {
   name: string;
@@ -70,6 +77,12 @@ export interface ChatGroup extends ChatStatus {
   shared?: boolean;
   /** 내가 팀 관리자로 다루는 팀원의 에이전트인가 — 머리에 「내 팀」, 입력 칸 위에 대상 상태 줄(스펙 2026-10-22-001 DD2·DD5) */
   team?: boolean;
+  /** 거짓이면 위험 명령 승인에 답할 수 없다(보기만 받은 사람·「대화」 구성원). 승인 카드는 단추 대신 「소유자 승인을 기다리는 중」(스펙 2026-11-17-008 §3-3) */
+  can_approve?: boolean;
+  /** 이 사람의 자격: owner·admin·team·edit·use·viewer(스펙 2026-11-17-008 §7) */
+  role?: string;
+  /** 공유받은 사람(use·edit)에게만: 소유자가 적은 시작 안내 한 줄(§3-4) */
+  share_note?: string;
   /** ok · error(연결 없음) · stopped(멈춤) · starting(파드 준비 중) */
   state?: 'ok' | 'error' | 'stopped' | 'starting';
   /** 거짓이면 주 프로파일(main)을 아직 만드는 중 */
@@ -87,6 +100,8 @@ export interface StoredSession {
   live_session_id?: string | null;
   /** 이 서버가 연 대화의 목표·반복(스펙 2026-10-27-002 R6). 다시 띄운 뒤에는 그 대화를 열어야 보인다 */
   control?: { goal?: { status?: string; turns_used?: number; max_turns?: number } | null; loop?: { status?: string } | null } | null;
+  /** 이 대화를 시작한 사람 이름(화면·Claude Code 로 연 대화, 스펙 2026-11-17-008 §4). 모르면 없다 */
+  by_name?: string;
   /** Claude Code(토큰)가 연 대화(스펙 2026-10-28-001 §3-7 ⑤). purpose skill-test 는 기본 거름에서 뺀다. active: 마지막 기다리기 뒤 90초 */
   claude?: { purpose: string; active: boolean } | null;
 }
@@ -94,6 +109,10 @@ export interface StoredSession {
 /** 「내 주 에이전트」를 뜻하는 이름. 이 이름은 그 에이전트의 채팅 기본 → 주 프로파일로 바꿔 연다(2026-10-19-001 R-LATE L5).
  *  예전에는 'default' 로 넘겨, 채팅 목록에서 진짜 루트를 누른 것과 가르지 못했다 */
 export const PRIMARY = '@primary';
+
+/** 지금 작업공간 상태를 못 읽었을 때 다시 읽기까지의 간격(ms). 서버를 다시 띄운 직후 첫 읽기는 서버 한도(8초)를 넘기기 쉽고,
+ *  넘긴 읽기는 서버에서 계속 돌아 곧 끝난다 — 그 뒤 다시 물으면 목록이 온다(OMAI-2056 남은 것) */
+const STATUS_RETRY_MS = [2000, 4000, 8000];
 
 const key = (pod: string | undefined, profile: string) => `${pod ?? ''}|${profile}`;
 
@@ -205,6 +224,8 @@ export function targetTitle(g: NameSource | null | undefined, a: AgentInfo, mult
 }
 
 export class ChatStore {
+  /** 보내기 잠금의 상한(ms). 서버 왕복이 응답 없이 멈추면 잠금과 「보내는 중」 말풍선이 남아 다시 보낼 수 없었다(스펙 2026-11-19-003 리뷰 F4) */
+  static sendLockMs = 30_000;
   /** 지금 고른 묶음(대화 중인 에이전트)의 상태. 목록·대화·파일이 이것을 본다 */
   status: ChatStatus | null = null;
   /** 내 에이전트별 묶음(지금 에이전트가 먼저) */
@@ -254,6 +275,8 @@ export class ChatStore {
   private catchUpTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** 대화 id → 마지막으로 다시 연 때의 횟수(CARRY_MS) */
   private recent = new Map<string, { tries: number; since: number; at: number }>();
+  /** 보내는 중인 대화(draftKey). 서버 왕복 동안 두 번째 Enter 가 세션을 또 열거나 같은 글을 또 보내지 않게 한다(이슈 #22) */
+  private inflight = new Set<string>();
   private connTimer: ReturnType<typeof setTimeout> | null = null;
   private wasConnWaiting = false;
   /** 숨은 알림 영역에 읽힐 글(DR9·DR12). 상태가 바뀌는 네 순간만 바뀐다 */
@@ -276,6 +299,10 @@ export class ChatStore {
   }
   /** 에이전트를 바꿀 때마다 오른다. 바꾸기 전에 나간 상태 요청의 늦은 응답을 버린다(2026-10-19-001 R1) */
   private generation = 0;
+  private statusRetry = 0;
+  private statusTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 실시간 이벤트의 알림을 다음 화면 갱신에 모아 두었다 */
+  private notifyQueued = false;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -285,6 +312,21 @@ export class ChatStore {
   notify() {
     this.version++;
     this.listeners.forEach((fn) => fn());
+  }
+
+  /** 실시간 이벤트는 바로 반영하고, 알림은 다음 화면 갱신 때 한 번만 보낸다. 답 조각마다 그리면 긴 답에서 그리기가 밀려
+   *  화면이 Hermes 보다 수십 초 늦게 끝났다(스펙 2026-11-06-006 6절). 숨은 탭은 화면 갱신이 멈추므로 타이머가 받친다
+   *  — 걸어 둔 직후 탭이 숨어도 알림이 멈추지 않는다 */
+  private notifySoon() {
+    if (this.notifyQueued) return;
+    this.notifyQueued = true;
+    const run = () => {
+      if (!this.notifyQueued) return;
+      this.notifyQueued = false;
+      this.notify();
+    };
+    if (typeof requestAnimationFrame === 'function' && !document.hidden) requestAnimationFrame(run);
+    setTimeout(run, NOTIFY_HIDDEN_MS);
   }
 
   current(): Session | null {
@@ -369,6 +411,22 @@ export class ChatStore {
     this.status = null;
     this.select(keep);
     this.notify();
+    this.retryStatusLater(groups);
+  }
+
+  /** 지금 작업공간 묶음이 오류(한도 초과·연결 없음)면 잠시 뒤 다시 읽는다. 읽히면 횟수를 되돌리고, STATUS_RETRY_MS 만큼 해 보고 멈춘다 */
+  private retryStatusLater(groups: ChatGroup[]) {
+    const cur = groups.find((g) => g.current) ?? groups.find((g) => g.pod === this.currentPod);
+    if (cur?.state !== 'error') {
+      this.statusRetry = 0;
+      return;
+    }
+    if (this.statusTimer || this.statusRetry >= STATUS_RETRY_MS.length) return;
+    const gen = this.generation;
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = null;
+      if (gen === this.generation) void this.loadStatus();
+    }, STATUS_RETRY_MS[this.statusRetry++]);
   }
 
   // ---- 대화 파일 ----
@@ -376,7 +434,8 @@ export class ChatStore {
     return this.status?.pod ?? '';
   }
   get filesEnabled(): boolean {
-    return !!this.status?.files && !!this.status?.pod;
+    // 다른 사이트에 붙은 위젯은 대화 파일 첨부·보기를 끈다 — 직접 올리기·받기는 Bearer 를 실을 수 없다(OMAI-1873)
+    return !apiConfig().embed && !!this.status?.files && !!this.status?.pod;
   }
   uploading(): boolean {
     return this.uploads.some((u) => u.state === 'wait' || u.state === 'up');
@@ -462,6 +521,38 @@ export class ChatStore {
     return this.status ? this.loadStatus() : Promise.resolve();
   }
 
+  /** 열린 대화와 목록을 모두 버린다(위젯의 사용자가 바뀌었을 때, OMAI-1873). 받던 길·다시 열기 시도도 멈춘다 */
+  resetAll() {
+    for (const S of Object.values(this.sessions)) {
+      this.stopReconnect(S);
+      this.closeStream(S);
+    }
+    this.catchUpTimers.forEach(clearTimeout);
+    this.catchUpTimers.clear();
+    if (this.statusTimer) clearTimeout(this.statusTimer);
+    this.statusTimer = null;
+    this.statusRetry = 0;
+    this.recent.clear();
+    this.generation++;
+    this.loading = null;
+    this.status = null;
+    this.groups = [];
+    this.currentPod = '';
+    this.selectedPod = '';
+    this.sessions = {};
+    this.active = {};
+    this.currentId = null;
+    this.profile = '';
+    this.draft = '';
+    this.drafts = {};
+    this.liveRows = [];
+    this.past = {};
+    this.opening = '';
+    this.notice = '';
+    this.uploads = [];
+    this.notify();
+  }
+
   /** 지금 에이전트(aas_pod)가 바뀌었다. 묶음 순서와 「지금 에이전트」 표시가 바뀌므로 목록을 다시 읽는다. 다른 에이전트와 하던 대화는
    *  닫지 않는다 — 대화마다 에이전트를 들고 있다(2026-10-19-001 R-LATE L1). 바꾸기 전에 나간 상태 요청의 응답은 버린다(R1). */
   podChanged() {
@@ -491,7 +582,7 @@ export class ChatStore {
       // 웹소켓이 켜져 있으면 토픽 pod:<대화의 pod>:chat:<세션> 으로, 아니면 SSE 로 받는다(OMAI-1100). 이벤트 모양은 같다.
       // 묶음에 pod 가 없는 옛 서버 응답이면 웹소켓이 붙은 지금 에이전트로 본다
       this.listen(S, this.topicFor(S));
-    }
+    } else if (S.parked) this.unpark(S);
     this.active[key(S.pod, S.profile)] = S.id;
     this.lastAt[S.id] ??= Date.now();
     this.dismissed.delete(S.id);
@@ -509,6 +600,7 @@ export class ChatStore {
   }
 
   private topicFor(S: Session): boolean {
+    if (apiConfig().wsOnly) return true; // 위젯은 웹소켓으로만 받는다 — EventSource 대체 경로를 쓰지 않는다(OMAI-1873)
     return wsClient.usable && !!(S.pod || wsClient.pod) && !NO_TOPIC_STATES.includes(wsClient.state);
   }
 
@@ -517,10 +609,38 @@ export class ChatStore {
     this.streams.delete(S.id);
   }
 
-  /** 대화 이벤트를 받는다. 받는 길이 끊기는 사건(토픽 거절·SSE 오류)이 생기면 그 대화를 다시 연다(4-3). */
-  private listen(S: Session, topic: boolean) {
+  /** 토픽으로 받는 대화가 CHAT_TOPIC_BUDGET 을 넘으면, 보지 않는 대기 대화부터(오래 쉰 순서) 받기를 멈춘다(OMAI-1863).
+   *  열었던 대화를 모두 구독한 채 두어 한 탭에서 100개를 넘게 열면 서버 상한에 걸렸다. 답하는 중·사람의 답을 기다리는·
+   *  다시 여는 중·따라잡는 중인 대화와 지금 보는 대화는 그대로 받는다. all: 상한과 관계없이 멈출 수 있는 대화를 모두 멈춘다.
+   *  돌려주는 값: 멈춘 대화 수 */
+  private parkIdle(keep?: Session, all = false): number {
+    const live = Object.values(this.sessions).filter((x) => x.via === 'topic' && this.streams.has(x.id));
+    const over = all ? live.length : live.length - CHAT_TOPIC_BUDGET;
+    if (over <= 0) return 0;
+    const idle = live
+      .filter((x) => x !== keep && x.id !== this.currentId && !x.closed && !x.reconnect && !x.busy && !x.compressing && !x.catchUp && !x.merging && !pending(x).length)
+      .sort((a, b) => (this.lastAt[a.id] ?? 0) - (this.lastAt[b.id] ?? 0))
+      .slice(0, over);
+    for (const x of idle) {
+      this.closeStream(x);
+      x.via = undefined;
+      x.parked = true;
+    }
+    return idle.length;
+  }
+
+  /** 받기를 멈췄던 대화를 다시 받는다 — 받던 번호 다음부터 */
+  private unpark(S: Session) {
+    this.listen(S, this.topicFor(S), S.lastSeq);
+  }
+
+  /** 대화 이벤트를 받는다. 받는 길이 끊기는 사건(토픽 거절·SSE 오류)이 생기면 그 대화를 다시 연다(4-3).
+   *  after: 이 번호까지는 이미 받았다(구독을 해제했던 대화를 다시 열 때) — 그 이하는 다시 그리지 않는다.
+   *  retried: 구독 상한으로 거절돼 다른 대화를 멈추고 다시 구독하는 중이다 — 또 거절되면 멈춘다 */
+  private listen(S: Session, topic: boolean, after?: number, retried = false) {
     this.closeStream(S);
     S.via = topic ? 'topic' : 'sse';
+    S.parked = false;
     if (topic) {
       if (wsClient.state === 'live') S.epoch = wsClient.epoch;
       const stream: Stream = { close: () => {} };
@@ -529,14 +649,33 @@ export class ChatStore {
         `pod:${S.pod || wsClient.pod}:chat:${S.id}`,
         (data, meta) => {
           if (this.streams.get(S.id) !== stream) return;
+          // 서버가 받던 번호를 잃어(gap) 처음부터 다시 보내도 이미 그린 이벤트는 건너뛴다
+          if (after && meta.seq && meta.seq <= after) return;
           if (meta.seq > (S.lastSeq ?? 0)) S.lastSeq = meta.seq;
           this.onEvent(S, data as ChatEvent);
         },
-        () => {
+        (code) => {
+          if (this.streams.get(S.id) !== stream) return;
+          if (code === 'too_many_subs') {
+            // 연결 하나의 구독 상한(서버 100개)에 걸렸다. 대화가 없어진 것이 아니므로 다시 열지 않는다 — 다시 열어도
+            // 또 거절돼 「다시 여는 중」이 1초마다 끝없이 깜빡였다(OKE 2026-11-08, OMAI-1863). SSE 로 바꾸지 않는다 —
+            // 브라우저의 서버별 연결 수 상한이 더 작다. 보지 않는 대기 대화를 모두 멈추고 한 번만 다시 구독한다
+            if (retried || !this.parkIdle(S, true)) {
+              this.closeStream(S);
+              return this.giveUp(S, 'expired');
+            }
+            // 멈춘 대화의 구독 해제는 ws 가 조금 미뤄 보낸다(UNSUB_DELAY) — 그 뒤에 다시 구독한다
+            setTimeout(() => {
+              if (this.streams.get(S.id) === stream && this.sessions[S.id] === S) this.listen(S, true, after, true);
+            }, TOO_MANY_SUBS_RETRY_MS);
+            return;
+          }
           // 구독이 거절됐다 — 새 서버에는 이 대화가 없다
-          if (this.streams.get(S.id) === stream) this.reconnect(S, 'aas');
-        }
+          this.reconnect(S, 'aas');
+        },
+        after
       );
+      this.parkIdle(S);
       return;
     }
     const podArg = S.pod ? `&pod=${encodeURIComponent(S.pod)}` : '';
@@ -650,16 +789,20 @@ export class ChatStore {
         if (!r.ok) throw new Error('down');
       }
       let stored = S.storedId;
+      let info: SessionInfo | undefined;
       if (!stored) {
+        // 저장 번호는 첫 답 뒤에 온다. 「가장 최근 AAS 대화」를 붙이면 다른 대화에 이어 보냈다(OMAI-1870) — 이 세션의 대화만 고른다
         const pod = S.pod ? `&pod=${encodeURIComponent(S.pod)}` : '';
         const rows = (await get<{ sessions: StoredSession[] }>('/api/chat/history?profile=' + encodeURIComponent(S.profile) + pod)).sessions;
-        stored = rows.find((x) => x.source === 'aas')?.id;
-        if (!stored) {
+        stored = this.storedOf(S, rows);
+        if (!stored && S.items.some((x) => x.kind === 'user')) {
           R.inflight = false;
           return this.giveUp(S, 'not_found');
         }
+        // 아직 말이 없는 세션 — 이을 대화가 없으므로 새 세션을 연다
+        if (!stored) info = await post<SessionInfo>('/api/chat/session', { profile: S.profile, ...(S.pod ? { pod: S.pod } : {}) });
       }
-      const info = await post<SessionInfo>('/api/chat/resume', { profile: S.profile, stored_id: stored, ...(S.pod ? { pod: S.pod } : {}) });
+      info ??= await post<SessionInfo>('/api/chat/resume', { profile: S.profile, stored_id: stored, ...(S.pod ? { pod: S.pod } : {}) });
       R.inflight = false;
       if (S.reconnect !== R) return; // 그 사이 그만뒀다
       if (!info?.session_id) throw new Error('no session'); // 잘못된 응답은 실패로 센다
@@ -714,7 +857,21 @@ export class ChatStore {
   }
 
   /** resume 결과를 받아들인다. 목록은 그대로 두고(RD2) 받는 길만 다시 연다 */
-  private adopt(S: Session, info: SessionInfo, stored: string) {
+  /** 저장 번호가 없는 세션의 저장 대화. 서버가 아는 세션 번호(live_session_id)가 같은 줄, 서버가 다시 시작돼 그 번호를 모르면
+   *  첫 질문(preview)이 같은 AAS 대화. 이 탭의 다른 세션이 연 대화는 고르지 않는다 */
+  private storedOf(S: Session, rows: StoredSession[]): string | undefined {
+    const byLive = rows.find((x) => x.live_session_id === S.id);
+    if (byLive) return byLive.id;
+    const first = S.items.find((x) => x.kind === 'user')?.text?.trim();
+    if (!first) return undefined;
+    const taken = new Set(Object.values(this.sessions).map((x) => x.storedId).filter(Boolean));
+    return rows.find((x) => {
+      const head = (x.preview ?? '').trim().replace(/…$/, '');
+      return x.source === 'aas' && !x.live_session_id && !taken.has(x.id) && !!head && first.startsWith(head);
+    })?.id;
+  }
+
+  private adopt(S: Session, info: SessionInfo, stored: string | undefined) {
     const R = S.reconnect!;
     const old = S.id;
     const id = info.session_id;
@@ -735,7 +892,8 @@ export class ChatStore {
     S.storedId = stored;
     S.closed = false;
     S.busy = !!info.running; // 답하는 중이면 보내기를 막는다(M5)
-    if (info.history || (!info.reused && info.history === undefined)) {
+    if (!S.busy) S.sentAt = undefined;
+    if (stored && (info.history || (!info.reused && info.history === undefined))) {
       // 서버가 기록을 다시 보낸다 — 번호가 1 부터 다시 시작하고, 기록은 목록에 합친다
       S.lastSeq = 0;
       S.merging = true;
@@ -820,7 +978,7 @@ export class ChatStore {
     if (!applyEvent(S, ev)) return;
     this.lastAt[S.id] = Date.now();
     if (S.id !== this.currentId && (ev.type === 'message.complete' || ev.type.endsWith('.request'))) S.unread++;
-    this.notify();
+    this.notifySoon();
   }
 
   private podBody(): { pod?: string } {
@@ -865,7 +1023,11 @@ export class ChatStore {
     this.notice = '';                       // 앞선 실패의 안내를 새 대화에 끌고 오지 않는다
     const at = this.status?.pod;
     try {
-      return this.openSession(await post<SessionInfo>('/api/chat/session', { profile: this.profile, ...this.podBody() }), at);
+      const info = await post<SessionInfo>('/api/chat/session', { profile: this.profile, ...this.podBody() });
+      // 서버가 이름을 바꿔 열었으면(default → 주 에이전트 main) 화면도 그 이름으로 옮긴다. 안 옮기면 세션이 화면에 붙지 않아
+      // 보낸 말이 보이지 않고 보낼 때마다 새 세션이 생겼다 — 다시 띄운 직후 작업공간 상태를 못 읽어 default 로 연 때(OMAI-2056)
+      if (info.profile && info.profile !== this.profile && this.status?.pod === at) this.profile = info.profile;
+      return this.openSession(info, at);
     } catch (e) {
       this.notice = (e as Error).message;
       if (e instanceof ApiError && e.data.code === 'profile_not_found') void this.refresh(); // 없어진 프로파일(재검토 R2-4) — 목록을 맞춘다
@@ -932,6 +1094,7 @@ export class ChatStore {
       this.notice = '';
       this.restoreDraft();
       this.follow();
+      if (S.parked) this.unpark(S);
       this.notify();
       if (S.closed && !S.reconnect && !S.ended) this.reopenNow(S);
       return true;
@@ -1307,29 +1470,87 @@ export class ChatStore {
   /** skill: 입력창이 고른 스킬(스펙 2026-10-19-012 R7). 글은 친 그대로 보내고 서버가 그 낱말만 떼어 펼친다 */
   /** 'rejected': 서버가 첨부 하나를 거절했다(400 + path) — 보내지 않은 것으로 보고 글·첨부를 그대로 두고 그 뱃지만 실패로(DD5) */
   /** 'reconnecting': 다시 잇는 중이거나 연결을 기다리는 중이라 보내지 않았다(Q2). 글·첨부는 그대로 둔다 */
+  /** 보내는 글 앞에 붙일 것을 정한다(위젯의 페이지 맥락, 스펙 2026-11-15-002 A1). 실패해 다시 보낼 때는 친 글만 쓴다 */
+  outgoing: ((text: string) => string) | null = null;
+
+  /** 지금 대화의 글이 아직 「보내는 중」인가(#24 의 보내기 잠금이 걸려 있고, 그 대화에 「보내는 중」 말풍선이 남아 있다). 무시된 Enter 의 이유 표시가 쓴다
+   * (스펙 2026-11-19-003 D7). 잠금은 HTTP 왕복이 끝나야 풀리는데 OKE 에서는 그 전에 aas.user 가 와서 답이 시작된다 — 그때는 「답하는 중」이다 */
+  sending(S?: Session | null): boolean {
+    if (!this.inflight.has(this.draftKey())) return false;
+    return !S || S.items.some((x) => x.kind === 'user' && !!x.pending);
+  }
+
   async send(raw: string, retryFiles?: string[], skill?: string): Promise<'sent' | 'busy' | 'empty' | 'failed' | 'uploading' | 'rejected' | 'reconnecting'> {
     if (this.blocked(this.current())) return 'reconnecting';
     const text = raw.trim();
     if (retryFiles === undefined && this.uploading()) return 'uploading';
     const files = retryFiles ?? this.uploads.filter((u) => u.state === 'done' && u.path).map((u) => u.path as string);
     if ((!text && !files.length) || !this.profile) return 'empty';
-    let S = this.current();
+    const S = this.current();
     if (S?.busy) return 'busy';
     if (S?.ended) return 'rejected'; // 끝난 대화 — 새 대화는 에이전트를 골라 연다(디자인 3C). 없어진 프로파일로 새로 열지 않는다
+    // 보내는 중이면 받지 않는다(이슈 #22). 세션 만들기·보내기 왕복이 끝나기 전의 두 번째 Enter 가 세션을 또 열고 같은 글을 또 보냈다
+    const key = this.draftKey();
+    if (this.inflight.has(key)) return 'busy';
+    this.inflight.add(key);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // 상한을 넘기면 「보내기 실패」 경로로 잠금을 푼다. 그 뒤에 요청이 끝나 실제로 보내졌을 수 있으므로 문구는 확인을 권한다
+    // 세션을 만드는 중에 멈췄으면 붙일 대화가 없다 — rejected 로 돌려 화면이 입력칸에 글을 되돌리게 한다
+    const late = new Promise<'failed' | 'rejected'>((done) => {
+      timer = setTimeout(() => {
+        const cur = this.current();
+        if (cur) {
+          const i = cur.items.findIndex((x) => x.kind === 'user' && x.pending && x.text === text);
+          if (i >= 0) cur.items.splice(i, 1);
+          cur.items.push({ kind: 'error', text: t('chat.sendTimeout'), retry: text || ' ', ...(files.length ? { retryFiles: files } : {}), ...(skill ? { retrySkill: skill } : {}), t: Date.now() });
+        }
+        this.inflight.delete(key);
+        this.notify();
+        done(cur ? 'failed' : 'rejected');
+      }, ChatStore.sendLockMs);
+    });
+    try {
+      return await Promise.race([this.sendNow(S, raw, text, files, retryFiles, skill), late]);
+    } finally {
+      clearTimeout(timer);
+      this.inflight.delete(key);
+    }
+  }
+
+  private async sendNow(S0: Session | null, raw: string, text: string, files: string[], retryFiles: string[] | undefined, skill: string | undefined): Promise<'sent' | 'failed' | 'rejected'> {
+    let S = S0;
+    // 말풍선은 서버의 aas.user 를 기다리지 않고 지금 그린다(보내는 중 표시). aas.user 가 오면 이 줄을 그 내용으로 바꾼다(lib/chat.ts)
+    // 첨부 칩은 aas.user 가 가져온다(서버가 이름·크기를 붙인다). 그때까지는 글만 보인다
+    const mine: Item = { kind: 'user', text, pending: true, t: Date.now() };
+    const show = (s: Session) => {
+      if (text) s.items.push(mine);
+      this.notify();
+    };
+    const unshow = (s: Session) => {
+      const i = s.items.indexOf(mine);
+      if (i >= 0) s.items.splice(i, 1);
+    };
+    if (S && !S.closed) show(S);
     if (!S || S.closed) {
       S = await this.startSession();
       if (!S) return 'failed';
+      show(S);
     }
     this.draft = '';
     const kept = this.uploads;
     if (retryFiles === undefined) this.uploads = this.uploads.filter((u) => u.state === 'fail');
     const pod = S.pod ? { pod: S.pod } : {};
+    S.sentAt = Date.now();
+    this.notify();
     try {
       const sk = skill ? { skill } : {};
-      await post('/api/chat/send', files.length ? { session_id: S.id, text, files, ...pod, ...sk } : { session_id: S.id, text, ...pod, ...sk });
+      const out = text && this.outgoing ? this.outgoing(text) : text;
+      await post('/api/chat/send', files.length ? { session_id: S.id, text: out, files, ...pod, ...sk } : { session_id: S.id, text: out, ...pod, ...sk });
       return 'sent';
     } catch (e) {
       S.busy = false;
+      S.sentAt = undefined;
+      unshow(S);
       const bad = e instanceof ApiError && e.status === 400 && typeof e.data.path === 'string' ? (e.data.path as string) : '';
       if (bad && retryFiles === undefined && kept.some((u) => u.path === bad)) {
         this.uploads = kept.map((u) => (u.path === bad ? { ...u, state: 'fail' as const, code: String(e instanceof ApiError ? e.data.code || 'unknown' : 'unknown') } : u));

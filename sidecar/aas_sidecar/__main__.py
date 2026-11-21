@@ -3,7 +3,8 @@
 """python -m aas_sidecar serve | check
 
 환경: AAS_SIDECAR_ROOT(기본 /opt/data), AAS_SIDECAR_TOKEN 또는 AAS_SIDECAR_TOKEN_FILE(필수), AAS_SIDECAR_PORT(기본 17950),
-AAS_SIDECAR_MAX_ENTRIES(한 번의 목록 상한, 기본 50,000 — 스펙 2026-11-03-003 R1).
+AAS_SIDECAR_MAX_ENTRIES(한 번의 목록 상한, 기본 50,000 — 스펙 2026-11-03-003 R1),
+AAS_SIDECAR_INDEX_EVERY(변경 색인 뒤 훑기 간격 초, 기본 20, 0 이면 물을 때 훑기 — 스펙 2026-11-20-001 §3-8).
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from .ops import Ops, max_entries_from_env
+from .ops import Ops, index_every_from_env, max_entries_from_env
 from .server import make_server
 
 
@@ -42,9 +43,9 @@ def main(argv=None) -> int:
         except OSError:
             return 1
     root = Path(os.environ.get("AAS_SIDECAR_ROOT", "/opt/data"))
-    ops = Ops(root, max_entries=max_entries_from_env(os.environ))
+    ops = Ops(root, max_entries=max_entries_from_env(os.environ), index_every=index_every_from_env(os.environ))
     httpd = make_server(args.host, args.port, ops, _token())
-    print(f"aas-sidecar: {args.host}:{args.port} root={root} max_entries={ops.max_entries}", flush=True)
+    print(f"aas-sidecar: {args.host}:{args.port} root={root} max_entries={ops.max_entries} index_every={ops.index._every:g}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

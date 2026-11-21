@@ -171,6 +171,19 @@ class SidecarDownMemoTest(unittest.TestCase):
             self.backend.read(["config.yaml", "SOUL.md"])
         self.assertEqual(self.backend._down_at, 0.0)
 
+    def test_한도를_늘린_sqlite_시간_초과는_기억하지_않는다(self):
+        """사용 집계의 긴 읽기(max_seconds)는 사이드카가 멀쩡해도 늦을 수 있다. 「응답 없음」을 켜면 같은 POD 의 다른 화면이 30초 동안
+        깨진다(스펙 2026-11-19-005 리뷰 2회차 실현성 1)."""
+        late = remote.SidecarError("timed out")
+        late.timed_out = True
+        with mock.patch.object(self.backend, "_send", side_effect=late):
+            with self.assertRaises(remote.SidecarError):
+                self.backend.sqlite("state.db", "SELECT 1", [], max_seconds=20)
+            self.assertEqual(self.backend._down_at, 0.0)
+            with self.assertRaises(remote.SidecarError):
+                self.backend.sqlite("state.db", "SELECT 1", [])
+        self.assertGreater(self.backend._down_at, 0.0)
+
     def test_파일_하나_read_시간_초과는_기억한다(self):
         with self.assertRaises(remote.SidecarError):
             self.backend.read(["config.yaml"])
@@ -247,7 +260,7 @@ class ChannelsBatchReadTest(unittest.TestCase):
                 got = channels.collect(remote.RemotePath(backend, ""))
                 self.assertEqual(got, channels.collect(home))
                 self.assertEqual(calls.count("/v1/read"), 1, calls)
-                self.assertLessEqual(len(calls), 4, calls)            # 프로파일 목록(stat·list) + read 한 번. 고치기 전 33번
+                self.assertLessEqual(len(calls), 5, calls)            # 프로파일 목록(stat·list) + 표시 파일 목록(profiles/*/* 한 번, 프로파일 수와 무관) + read 한 번. 고치기 전 33번
             finally:
                 httpd.shutdown()
                 httpd.server_close()
@@ -535,6 +548,51 @@ class RemoteSqliteParityTest(RemoteBase):
         with self.assertRaises(sqlite3.Error):
             remote.connect(dead).execute("SELECT 1")
 
+    def test_limited_reads_raise_distinct_kinds(self):
+        """잘림·시간 초과·잠금을 문장 비교 없이 가른다(스펙 2026-11-19-005 U1). 모두 sqlite3.OperationalError 의 하위 종류라
+        지금 호출부(except sqlite3.Error)는 그대로 동작한다."""
+        conn = remote.connect(self.remote / "state.db")
+        with self.assertRaises(remote.SqlTruncated):
+            conn.execute("SELECT id FROM sessions", (), max_bytes=1)
+        slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT COUNT(*) FROM c"
+        with self.assertRaises(remote.SqlTimeout):
+            conn.execute(slow, (), max_seconds=0.2)
+        for kind in (remote.SqlTruncated, remote.SqlTimeout, remote.SqlBusy):
+            self.assertTrue(issubclass(kind, sqlite3.OperationalError))
+        self.assertTrue(self.backend.has_sql_limits())
+
+    def test_busy_and_timeout_from_the_transport(self):
+        conn = remote.connect(self.remote / "state.db")
+        busy = remote.SidecarError("HTTP 503")
+        busy.status = 503
+        with mock.patch.object(self.backend, "sqlite", side_effect=busy), self.assertRaises(remote.SqlBusy):
+            conn.execute("SELECT 1")
+        late = remote.SidecarError("timed out")
+        late.timed_out = True
+        with mock.patch.object(self.backend, "sqlite", side_effect=late), self.assertRaises(remote.SqlTimeout):
+            conn.execute("SELECT 1")
+        other = remote.SidecarError("HTTP 500")
+        other.status = 500
+        with mock.patch.object(self.backend, "sqlite", side_effect=other), self.assertRaises(sqlite3.OperationalError) as cm:
+            conn.execute("SELECT 1")
+        self.assertNotIsInstance(cm.exception, (remote.SqlTruncated, remote.SqlTimeout, remote.SqlBusy))
+
+    def test_limits_are_sent_and_socket_waits_longer(self):
+        seen = {}
+        real = self.backend._call
+
+        def spy(method, path, body=None, timeout=None):
+            seen.update(body=body, timeout=timeout)
+            return real(method, path, body) if timeout is None else real(method, path, body, timeout)
+        with mock.patch.object(self.backend, "_call", side_effect=spy):
+            remote.connect(self.remote / "state.db").execute("SELECT 1", (), max_seconds=20, max_bytes=1000)
+        self.assertEqual((seen["body"]["max_seconds"], seen["body"]["max_bytes"]), (20, 1000))
+        self.assertEqual(seen["timeout"], 25)
+        with mock.patch.object(self.backend, "_call", side_effect=spy):
+            remote.connect(self.remote / "state.db").execute("SELECT 1")
+        self.assertNotIn("max_seconds", seen["body"])
+        self.assertIsNone(seen["timeout"])
+
     def test_blob_roundtrip(self):
         db = sqlite3.connect(self.local / "blob.db")
         db.execute("CREATE TABLE t (b BLOB)")
@@ -684,6 +742,12 @@ class ServerEndToEndTest(RemoteBase):
         return r.status, json.loads(body)
 
     def test_same_answers_from_local_and_remote_pods(self):
+        # 스킬 기간 사용(스펙 2026-11-19-005)은 뒤에서 도는 사용 집계가 AAS DB 에 쌓은 값이다. 한쪽 POD 만 집계가 끝났을 때 비교하면
+        # 기간 값·readiness 가 달라 가끔 실패했다(2026-11-19) — 두 POD 의 집계를 먼저 끝내고 스킬 상태 캐시를 비운다
+        for pid in ("loc", "rem"):
+            pod = next(p for p in self.server._registry.pods if p.id == pid)
+            self.server._observed(pod)
+            self.server._cache.pop(self.server._lang_key(f"{pid}:skill_states", False), None)
         for path in ("/api/health", "/api/skills", "/api/activity?days=7", "/api/credentials", "/api/tools"):
             with self.subTest(path=path):
                 lcode, lbody = self.api(path, "loc")
@@ -727,6 +791,7 @@ class TombstonedProfileTest(unittest.TestCase):
         self.home = Path(self.tmp.name)
         for name in ("alive", "gone"):
             (self.home / "profiles" / name).mkdir(parents=True)
+            (self.home / "profiles" / name / "config.yaml").write_text("model: x\n", encoding="utf-8")   # 표시 파일이 없으면 프로파일이 아니다
         (self.home / "profiles" / ".deleted").mkdir()
         (self.home / "profiles" / ".deleted" / "gone").write_text("deleted", encoding="utf-8")
         self.httpd = sc_server.make_server("127.0.0.1", 0, sc_ops.Ops(self.home), TOKEN)
@@ -750,5 +815,89 @@ class TombstonedProfileTest(unittest.TestCase):
         self.assertEqual([p.name for p in hr.profiles(self.remote)], ["default", "alive", "gone"])
 
 
+class ShellFolderProfileTest(unittest.TestCase):
+    """Hermes 는 표시 파일(config.yaml·.env·SOUL.md·profile.yaml·auth.json·state.db)이 하나도 없는 폴더를 프로파일로 치지 않는다.
+    이름을 바꾼 뒤 Hermes 가 옛 경로의 세션 DB 를 닫으며 profiles/<옛 이름>/logs 를 다시 만들어, 스킬 화면 선택 목록에 옛 이름이 남았다."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        pdir = self.home / "profiles"
+        (pdir / "renamed" / "logs").mkdir(parents=True)                       # 이름을 바꾼 뒤 남은 껍데기
+        (pdir / "renamed" / "logs" / "errors.log").write_text("SessionDB did not settle at close\n", encoding="utf-8")
+        (pdir / "empty").mkdir()
+        for name, marker in (("by-config", "config.yaml"), ("by-env", ".env"), ("by-state", "state.db")):
+            (pdir / name).mkdir()
+            (pdir / name / marker).write_text("x", encoding="utf-8")
+        # 끊긴 심링크 표시 파일은 Hermes 는 프로파일로 치지만 사이드카 목록이 끊긴 링크를 빼므로 원격에서는 빠진다.
+        # 정상 프로파일은 늘 config.yaml 이 있어 그 경우만으로 남는 일이 없다 — 시험하지 않는다
+        self.httpd = sc_server.make_server("127.0.0.1", 0, sc_ops.Ops(self.home), TOKEN)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.remote = remote.RemotePath(remote.RemoteBackend(f"http://127.0.0.1:{self.httpd.server_port}", TOKEN, label="t"), "")
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def test_folder_without_marker_is_not_listed(self):
+        from aas.hermes import hermes_reader as hr
+        want = ["default", "by-config", "by-env", "by-state"]
+        self.assertEqual([p.name for p in hr.profiles(self.home)], want)
+        self.assertEqual([p.name for p in hr.profiles(self.remote)], want)
+
+    def test_folder_listed_again_once_marker_appears(self):
+        """같은 이름으로 다시 만들면 Hermes 가 config.yaml 을 쓰므로 다시 목록에 나온다."""
+        from aas.hermes import hermes_reader as hr
+        (self.home / "profiles" / "renamed" / "config.yaml").write_text("model: x\n", encoding="utf-8")
+        self.assertIn("renamed", [p.name for p in hr.profiles(self.remote)])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class SymlinkedHomeLocalTest(RemoteBase):
+    """프로파일의 home/.local 이 공유 폴더를 가리키는 심링크일 때(2026-11-17 COP 김영주 에이전트: profiles/ma/home/.local ->
+    yjshared/home/.local). 사이드카 glob 이 심링크를 푼 경로(yjshared/...)를 돌려주어 라이브러리 목록의 relative_to 가
+    ValueError 를 냈고, 스킬 연결도가 통째로 뜨지 않았다. 로컬과 원격이 같은 결과를 내야 한다."""
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory()
+        local = make_home(Path(tmp.name))
+        site = local / "shared" / "home" / ".local" / "lib" / "python3.11" / "site-packages" / "httpx-0.27.0.dist-info"
+        site.mkdir(parents=True)
+        (site / "top_level.txt").write_text("httpx\n", encoding="utf-8")
+        (local / "profiles" / "alpha" / "home").mkdir(parents=True, exist_ok=True)
+        (local / "profiles" / "alpha" / "home" / ".local").symlink_to(local / "shared" / "home" / ".local")
+        cls.tmp, cls.local = tmp, local
+        cls.httpd = sc_server.make_server("127.0.0.1", 0, sc_ops.Ops(local), TOKEN)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.backend = remote.RemoteBackend(f"http://127.0.0.1:{cls.httpd.server_port}", TOKEN, label="t")
+        cls.remote = remote.RemotePath(cls.backend, "")
+
+    def test_libraries_and_flow_through_symlinked_home_local(self):
+        from aas.assets import flow, inventory
+        os.environ.setdefault("AAS_HERMES_COMPOSE_ENV", str(Path(self.tmp.name) / "no-compose-env"))
+        got = inventory.libraries(self.remote)
+        self.assertEqual(json.dumps(got["envs"], sort_keys=True), json.dumps(inventory.libraries(self.local)["envs"], sort_keys=True))
+        self.assertIn("profiles/alpha/home/.local", [e["env"] for e in got["envs"]])
+        self.assertIn("httpx", [i["name"] for i in got["items"]])
+        self.assertTrue(flow.build(home=self.remote))
+
+    def test_old_sidecar_that_returns_the_resolved_path_does_not_break_libraries(self):
+        """서버만 먼저 바뀌고 사이드카는 옛 판일 때: 결과 앞머리가 심링크를 푼 경로(shared/...)여도 라이브러리 목록이 뜬다."""
+        from aas.assets import inventory
+
+        def old_rel_under(self_ops, base, p, asked):                 # 2026-11-17 전 사이드카: 앞머리가 심링크를 푼 경로
+            r = Path(os.path.normpath(p)).relative_to(base).as_posix()
+            pre = self_ops._rel(base)
+            return f"{pre}/{r}" if pre else r
+
+        os.environ.setdefault("AAS_HERMES_COMPOSE_ENV", str(Path(self.tmp.name) / "no-compose-env"))
+        with mock.patch.object(sc_ops.Ops, "_rel_under", old_rel_under):
+            got = remote.RemotePath(remote.RemoteBackend(f"http://127.0.0.1:{self.httpd.server_port}", TOKEN, label="old"), "")
+            libs = inventory.libraries(got)
+        self.assertIn("shared/home/.local", [e["env"] for e in libs["envs"]])
+        self.assertIn("httpx", [i["name"] for i in libs["items"]])

@@ -71,12 +71,21 @@ describe('FileViewer', () => {
   });
 
   it('그림은 종류 형식으로 다시 감싼 Blob 을 쓰고, 닫으면 Blob 주소를 놓는다(F1)', async () => {
-    open(file('p.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>', { 'Content-Length': '40' });
-    const dlg = await screen.findByRole('dialog', { name: 'p.svg' });
-    expect(await within(dlg).findByRole('img', { name: 'p.svg' })).toBeTruthy();
-    expect(created[0].type).toBe('image/svg+xml');
+    open(file('p.png'), 'PNG', { 'Content-Length': '3' });
+    const dlg = await screen.findByRole('dialog', { name: 'p.png' });
+    expect(await within(dlg).findByRole('img', { name: 'p.png' })).toBeTruthy();
+    expect(created[0].type).toBe('image/png');
     act(() => closeViewer(false));
     await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalled());
+  });
+
+  it('SVG 그림은 Blob 주소가 아니라 data: 주소로 보인다 — 새 탭으로 열어도 AAS 출처에서 스크립트가 돌지 않는다(스펙 2026-11-14-017)', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+    open(file('p.svg'), svg, { 'Content-Length': String(svg.length) });
+    const dlg = await screen.findByRole('dialog', { name: 'p.svg' });
+    const img = (await within(dlg).findByRole('img', { name: 'p.svg' })) as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe('data:image/svg+xml;base64,' + btoa(svg));
+    expect(created).toHaveLength(0);                                       // blob: 주소를 만들지 않는다
   });
 
   it('HTML 보기는 권한 없는 sandbox iframe 에 정리한 문서(R5) — 원문으로 바꿀 수 있다', async () => {

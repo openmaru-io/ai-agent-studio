@@ -104,8 +104,12 @@ function mount(initial = '/chat', status: unknown = STATUS(), me?: unknown, extr
   );
   return fn;
 }
+// 실시간 이벤트 알림은 다음 화면 갱신 때 간다(스펙 2026-11-06-006 6절) — 보낸 뒤 한 번 기다린다
 const emit = (i: number, type: string, payload: Record<string, unknown> = {}) =>
-  act(() => FakeES.all[i].emit(type, payload));
+  act(async () => {
+    FakeES.all[i].emit(type, payload);
+    await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+  });
 /** 에이전트 칸에서 AI 에이전트를 고르고(세션 칸 거름) 세션 칸의 「새 세션」으로 대화를 연다(2026-11-06 — 줄을 누르면 고르기만 한다) */
 const openRow = async (user: ReturnType<typeof userEvent.setup>, name: RegExp, hidden = false) => {
   await user.click(await screen.findByRole('button', { name, hidden }));
@@ -285,6 +289,26 @@ describe('Chat: 보내기와 답', () => {
     await waitFor(() => expect(within(log).getByRole('status')).toHaveTextContent('복사했습니다'));
   });
 
+  it('질문부터 완료까지 한 화면 갱신에 묶인 짧은 차례도 답이 도착했다고 알린다', async () => {
+    const { user } = await open();
+    await user.type(input(), '안녕{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: '안녕' });
+    await emit(0, 'message.complete', { text: '첫 답' });
+    const log = screen.getByRole('log', { name: '대화 내용' });
+    const said = () => within(log).getByRole('status').textContent;
+    const first = said(); // 같은 글을 다시 읽히려고 알릴 때마다 끝 공백을 바꾼다
+    await act(async () => {
+      FakeES.all[0].emit('aas.user', { text: '또' });
+      FakeES.all[0].emit('message.delta', { text: '네' });
+      FakeES.all[0].emit('message.complete', { text: '네' });
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+    });
+    expect(within(log).getByText('네')).toBeInTheDocument();
+    expect(said()).toContain('답이 도착했습니다');
+    expect(said()).not.toBe(first);
+  });
+
   it('본문을 위로 올리면 뜨는 「맨 아래로」 버튼은 바탕이 비치지 않는 불투명한 칠이다(본문 글자와 겹쳐 안 보이던 문제)', async () => {
     const { user } = await open();
     await user.type(input(), '안녕{Enter}');
@@ -308,6 +332,31 @@ describe('Chat: 보내기와 답', () => {
     await user.click(stop);
     await waitFor(() => expect(postedTo(fn, '/api/chat/interrupt')).toEqual([{ session_id: 's-ma' }]));
     expect(screen.getByText('응답을 만드는 중…')).toBeInTheDocument();
+  });
+
+  // 스펙 2026-11-19-003 D7: 답하는 중에 친 글의 Enter 는 무시된다. 이유를 키 안내 줄에 보이고 글은 그대로 둔다
+  it('답하는 중에 Enter 를 누르면 이유를 알리고 입력한 글을 그대로 둔다', async () => {
+    const { user } = await open();
+    await user.type(input(), 'q{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: 'q' });
+    await screen.findByRole('button', { name: '답변 중단' });
+    await user.type(input(), '다음 질문{Enter}');
+    expect(await screen.findByText('답하는 중입니다. 입력한 글은 그대로 있습니다. 끝난 뒤 보내거나 멈추세요')).toBeInTheDocument();
+    expect(input()).toHaveValue('다음 질문');
+  });
+
+  // OKE 실화면(2026-11-19): 보내기 요청이 끝나기 전에 답이 시작되면(aas.user 로 「보내는 중」 말풍선이 바뀜) 이유는 「답하는 중」이다.
+  // 보내기 잠금만 보고 「보내는 중입니다」를 보이면 이미 보낸 글을 아직 안 보낸 것처럼 알린다
+  it('보내기 요청이 아직 끝나지 않았어도 답이 시작됐으면 Enter 이유는 답하는 중이다', async () => {
+    const { user, fn } = await open();
+    vi.stubGlobal('fetch', (u: string, i?: RequestInit) => (String(u).startsWith('/api/chat/send') ? new Promise(() => {}) : fn(u, i)));
+    await user.type(input(), 'q{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: 'q' });
+    await user.type(input(), '다음{Enter}');
+    expect(await screen.findByText('답하는 중입니다. 입력한 글은 그대로 있습니다. 끝난 뒤 보내거나 멈추세요')).toBeInTheDocument();
+    expect(screen.queryByText('보내는 중입니다')).not.toBeInTheDocument();
   });
 
   it('진행 단계는 접혀 있다가 눌러 펼친다', async () => {
@@ -387,6 +436,8 @@ describe('Chat: 보내기와 답', () => {
     mountScreen(<Chat store={store} />, '/chat');
     await openRow(user, /^마케팅 세션 보기/);
     await waitFor(() => expect(FakeES.all.length).toBeGreaterThan(0));
+    // 첫 답 뒤의 저장 번호 — 끊긴 그 대화를 다시 연다(저장 번호가 없는 세션은 다른 대화를 붙이지 않는다, OMAI-1870)
+    await emit(FakeES.all.length - 1, 'session.title', { session_id: 'old1' });
     const resumes = () => fn.mock.calls.filter(([u]) => String(u).startsWith('/api/chat/resume')).length;
     const before = resumes();
     FakeES.all.at(-1)!.onerror?.();
@@ -419,6 +470,7 @@ describe('Chat: 보내기와 답', () => {
     mountScreen(<Chat store={store} />, '/chat');
     await openRow(user, /^마케팅 세션 보기/);
     await waitFor(() => expect(FakeES.all.length).toBeGreaterThan(0));
+    await emit(FakeES.all.length - 1, 'session.title', { session_id: 'old1' }); // 저장 번호가 있는 대화(OMAI-1870)
     FakeES.all.at(-1)!.onerror?.();
     expect(await screen.findByRole('alert')).toHaveTextContent('이 대화를 찾을 수 없습니다');
     await user.click(screen.getByRole('button', { name: '새 대화' }));
@@ -448,6 +500,20 @@ describe('Chat: 승인과 되묻기', () => {
     await emit(0, 'aas.approval.answered', { choice: 'once' });
     expect(screen.queryByRole('group', { name: '승인 요청' })).not.toBeInTheDocument();
     expect(screen.getByText(/승인 요청에 「한 번 허용」\(으\)로 답함/)).toBeInTheDocument();
+  });
+
+  it('승인할 수 없는 사람(can_approve=false)에게는 단추 대신 「소유자 승인을 기다리는 중」을 보인다(스펙 2026-11-17-008 §3-3)', async () => {
+    const user = userEvent.setup();
+    mount('/chat', STATUS({ can_approve: false }));
+    await openRow(user, /^마케팅 세션 보기/);
+    await user.type(await screen.findByRole('textbox', { name: /에게 보낼 메시지/ }), 'q{Enter}');
+    await waitFor(() => expect(FakeES.all).toHaveLength(1));
+    await emit(0, 'aas.user', { text: 'q' });
+    await emit(0, 'approval.request', { request_id: 'r1', command: 'rm -rf /tmp/x', description: '파일 삭제' });
+    const card = await screen.findByRole('group', { name: '승인 요청' });
+    expect(within(card).getByText('rm -rf /tmp/x')).toBeInTheDocument();
+    expect(within(card).getByText(/소유자 승인을 기다리는 중입니다/)).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: '한 번 허용' })).not.toBeInTheDocument();
   });
 
   it('승인 카드가 나타날 때 숨은 role=alert 로 알리고(디자인 리뷰 6-2), 답하면 포커스가 입력칸으로 돌아온다(3-1)', async () => {

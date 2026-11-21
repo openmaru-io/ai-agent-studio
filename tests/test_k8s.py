@@ -1493,8 +1493,10 @@ class MarketDispatchTest(K8sBase):
     def test_묶음은_같은_입력이면_같은_바이트고_너무_크면_거절한다(self):
         from aas.market import market_stage
         req = {"namespace": "free", "name": "web-search", "version": "1.0.0", "profile": "ma", "kind": "skill", "mode": "install", "package": "free/web-search"}
-        a, _ = market_stage.build_payload(req)
-        b, _ = market_stage.build_payload(req)
+        # 파일 시각은 만든 순간(int(time.time()))이라 두 번 부르는 사이에 초가 바뀌면 바이트가 달라진다 — 시각을 고정한다(Jenkins #550)
+        with mock.patch.object(market_stage.time, "time", return_value=1_794_000_000.0):
+            a, _ = market_stage.build_payload(req)
+            b, _ = market_stage.build_payload(req)
         self.assertEqual(a, b)
         old = dict(FakeSkillHub.files)
         import os as _os
@@ -2109,3 +2111,63 @@ class EmailPatternTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryStatusTest(K8sBase):
+    """스펙 2026-11-17-001 O4·§4-3: 오퍼레이터가 쓴 ConfigMap aas-registry-status 를 관리자 응답 최상위 registry 로 싣는다."""
+    D1 = "sha256:" + "1" * 64
+
+    def setUp(self):
+        super().setUp()
+        from aas.fleet import rollouts
+        rollouts.forget_registry()
+        self.addCleanup(rollouts.forget_registry)
+        FakeAPI.agents = {"hag-a": agent("hag-a", "a@x.com"), "hag-b": agent("hag-b", "b@x.com")}
+        self.reg = pods.Registry(Path(TMP.name) / "없는-등록부.json")
+
+    def cm(self, state="ok", checked=2, missing=(), last=None, error=None):
+        from datetime import datetime, timezone
+        last = last or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        st = {"state": state, "lastCheckedTime": last, "checkedImages": checked, **({"lastError": error} if error else {})}
+        FakeAPI.configmaps["aas-registry-status"] = {"registryCheck": json.dumps(st), "missingImages": json.dumps(list(missing))}
+
+    def test_관리자_응답에_지워진_digest_와_상태가_실린다(self):
+        self.cm(missing=[{"repo": "reg.local/images/cogentai-aas-sidecar", "digest": self.D1, "agents": ["hag-a"], "since": "2026-11-17T00:00:00Z"}])
+        self.reg.refresh(ttl=0)
+        out = server._agents_list(self.reg, {"email": "admin@x.com"}, True)["registry"]
+        self.assertEqual((out["check"], out["missing_images"][0]["digest"], out["missing_images"][0]["agents"], out["missing_images"][0]["namespace"]),
+                         ("ok", self.D1, ["hag-a"], NS))
+        self.assertNotIn("registry", server._agents_list(self.reg, {"email": "a@x.com"}, True))     # 일반 사용자 응답에는 없다
+
+    def test_실패한_복구_롤아웃이_최신이어도_지워진_digest_가_보인다(self):
+        # 복구 롤아웃이 O2 로 Failed 가 되어 최신 롤아웃이 바뀌어도 경고가 보이게 롤아웃 요약 밖에 둔다
+        self.cm(missing=[{"repo": "reg.local/s", "digest": self.D1, "agents": ["hag-a"], "since": "x"}])
+        FakeAPI.rollouts = {"r9": rollout("r9", "Failed", st_reason="ImageMissing",
+                                          st_unavailableTargets=[{"repo": "reg.local/s", "digest": self.D1, "container": "sidecar", "field": "target", "agents": ["hag-a"]}])}
+        self.reg.refresh(ttl=0)
+        out = server._agents_list(self.reg, {"email": "admin@x.com"}, True)
+        self.assertEqual(len(out["registry"]["missing_images"]), 1)
+        ro = out["rollout"]
+        self.assertEqual((ro["reason"], ro["unavailable_targets"][0]["field"], ro["unavailable_targets"][0]["container"]), ("ImageMissing", "target", "sidecar"))
+
+    def test_읽지_못하면_unknown_이고_멈춘_ok_는_unavailable(self):
+        from aas.fleet import rollouts
+        self.assertEqual(rollouts.registry_status(k8s.client(), fresh=True)["check"], "unknown")    # ConfigMap 없음(옛 오퍼레이터)
+        self.cm(last="2026-01-01T00:00:00Z")
+        out = rollouts.registry_status(k8s.client(), fresh=True)
+        self.assertEqual((out["check"], out["stalled"]), ("unavailable", True))                     # 40분 넘게 그대로인 ok
+        self.cm(state="unavailable", error={"host": "reg.local", "errClass": "x509", "message": "unknown authority"})
+        self.assertEqual(rollouts.registry_status(k8s.client(), fresh=True)["last_error"]["errClass"], "x509")
+        self.cm(state="disabled", missing=[{"repo": "r", "digest": self.D1}])
+        out = rollouts.registry_status(k8s.client(), fresh=True)
+        self.assertEqual((out["check"], out["missing_images"]), ("disabled", []))
+        self.cm(checked=0)                                                                       # 확인할 digest 가 없는 설치: 띠 없음
+        self.assertEqual(rollouts.registry_status(k8s.client(), fresh=True)["check"], "")
+        FakeAPI.configmaps["aas-registry-status"] = {"registryCheck": "{깨짐", "missingImages": "[]"}
+        self.assertEqual(rollouts.registry_status(k8s.client(), fresh=True)["check"], "unknown")
+
+    def test_행마다_대체_이미지_표시(self):
+        FakeAPI.agents["hag-a"]["metadata"]["annotations"] = {"aas.openmaru.io/image-fallback": "sidecar"}
+        self.reg.refresh(ttl=0)
+        rows = {a["name"]: a for a in server._agents_list(self.reg, {"email": "admin@x.com"}, True)["agents"]}
+        self.assertEqual((rows["hag-a"]["image_fallback"], rows["hag-b"]["image_fallback"]), ("sidecar", ""))

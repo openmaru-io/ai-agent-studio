@@ -109,6 +109,13 @@ describe('에어갭 검사', () => {
     expect(run(build({ 'assets/vendor-avatar-abc.js': 'fetch("https://api.example.com/x")' })).status).toBe(1);
   });
 
+  it('채팅 위젯 파일(aas-widget.js, OMAI-1873)은 Markdown·다이어그램·차트·MUI 묶음의 주소와 MemoryRouter 의 가짜 기준 주소만 허용한다', () => {
+    const lib = 'a="https://github.com/x";b="https://chevrotain.io/docs";c="http://fb.me/use-check-prop-types";d=new URL(p,"http://localhost")';
+    expect(run(build({ 'js/aas-widget.js': lib })).status).toBe(0);
+    expect(run(build({ 'assets/index-abc.js': 'new URL(p,"http://localhost")' })).status).toBe(1);
+    expect(run(build({ 'js/aas-widget.js': 'fetch("https://cdn.jsdelivr.net/npm/x")' })).status).toBe(1);
+  });
+
   it('빌드 폴더를 안 주면 사용법을 알리고 2로 끝난다', () => {
     const r = spawnSync('node', [script], { encoding: 'utf8' });
     expect(r.status).toBe(2);

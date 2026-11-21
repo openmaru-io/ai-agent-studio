@@ -45,6 +45,7 @@ import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import InputOutlinedIcon from '@mui/icons-material/InputOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
+import LoginOutlinedIcon from '@mui/icons-material/LoginOutlined';
 import ManageAccountsOutlinedIcon from '@mui/icons-material/ManageAccountsOutlined';
 import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined';
 import PaletteOutlinedIcon from '@mui/icons-material/PaletteOutlined';
@@ -56,6 +57,7 @@ import RuleOutlinedIcon from '@mui/icons-material/RuleOutlined';
 import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import StarOutlineIcon from '@mui/icons-material/StarOutline';
 import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
 import SwapHorizOutlinedIcon from '@mui/icons-material/SwapHorizOutlined';
@@ -91,6 +93,7 @@ export const SECTION_ICONS: Record<string, SvgIconComponent> = {
   'activity.whereFrom': InputOutlinedIcon,
   // 에이전트
   'agents.ownerLimit': DataUsageOutlinedIcon,
+  'agents.share.title': ShareOutlinedIcon,   // 작업공간 공유(스펙 2026-11-17-008 §3-4)
   // 채널
   'channels.channelsTitle': HubOutlinedIcon,
   'profiles.chan.linkedTitle': HubOutlinedIcon, // 프로파일 「메신저 연결」 탭의 연결한 메신저(채널 화면의 채널 구역과 같은 아이콘)
@@ -150,10 +153,12 @@ export const SECTION_ICONS: Record<string, SvgIconComponent> = {
   'settings.companyTitle': DomainOutlinedIcon,
   'settings.identityTitle': BadgeOutlinedIcon,
   'settings.goalTitle': CampaignOutlinedIcon,
+  'loginAlias.title': LoginOutlinedIcon,          // 설정 › 로그인 도메인(스펙 2026-11-15-005)
   'conn.commandTitle': CodeOutlinedIcon,
   'conn.oauthTitle': LinkOutlinedIcon,
   'conn.patTitle': VpnKeyOutlinedIcon,
   'settings.teamTitle': GroupsOutlinedIcon,
+  'settings.sharing.title': ShareOutlinedIcon,   // 작업공간 공유(스펙 2026-11-17-008 §3-6)
   'prefs.theme': PaletteOutlinedIcon,
   // 스킬
   'skills.cronJobs': ScheduleOutlinedIcon,

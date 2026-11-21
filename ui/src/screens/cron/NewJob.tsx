@@ -13,16 +13,20 @@ import { Link as RouterLink, useNavigate } from 'react-router-dom';
 
 import { AgentPicker } from '@/components/AgentPicker';
 import { Section, useOpenInDrawer } from '@/components/bits';
+import { useMessengerLinks } from '@/components/MessengerLink';
 import { SkillPicker } from '@/components/SkillPicker';
 import { useUi } from '@/components/UiContext';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
 import { nextRuns } from '@/lib/cronmath';
+import { useMe } from '@/lib/data';
 import { summaryLine } from '@/lib/schedule';
 import { useFocusOnMount } from '@/lib/useFocusOnMount';
 
 import { Explain, ScheduleEditor } from './JobDrawer';
 
+
+const ME = '@me';
 export function NewJobBody({
   profiles,
   preset,
@@ -74,7 +78,12 @@ export function NewJobBody({
         { id: 'telegram', label: t('schedule.targetTelegram') },
         { id: 'buzz', label: t('schedule.targetBuzz') },
       ];
+  // 「나에게(메신저 DM)」: 이 프로파일 봇에 내 메신저 계정을 이었으면 고를 수 있다. 서버가 내 연결 줄에서 대화방을 고른다(스펙 2026-11-17-008 §6-3)
+  const pod = useMe().data?.pod?.id;
+  const links = useMessengerLinks(officeAlias ? undefined : pod);
+  if ((links.data?.mine ?? []).some((l) => l.profile === profile)) targets.push({ id: ME, label: t('cronJob.newDeliverMe') });
   const deliver = targets.some((x) => x.id === deliverPick) ? deliverPick : 'local';
+  const deliverShown = deliver === ME ? t('cronJob.newDeliverMe') : deliver;
   const setDeliver = setDeliverPick;
   const [expr, setExpr] = useState('0 9 * * *');
   const [error, setError] = useState('');
@@ -82,9 +91,9 @@ export function NewJobBody({
   // 설명 조회는 입력이 멎은 뒤에 한 번만 한다
   const [asked, setAsked] = useState({ profile, skill: skill.trim(), deliver });
   useEffect(() => {
-    const id = setTimeout(() => setAsked({ profile, skill: skill.trim(), deliver }), 350);
+    const id = setTimeout(() => setAsked({ profile, skill: skill.trim(), deliver: deliverShown }), 350);
     return () => clearTimeout(id);
-  }, [profile, skill, deliver]);
+  }, [profile, skill, deliverShown]);
 
   const tooOften = minutesBetween(expr);
   const who = (p: string) => (agent ? t('cronJob.profileOfAgent', { agent, profile: p }) : p);
@@ -108,7 +117,7 @@ export function NewJobBody({
           schedule: expr,
           skill: skill.trim(),
           prompt,
-          deliver,
+          ...(deliver === ME ? { deliver: '', deliver_to: 'me' } : { deliver }),
         });
       enqueueSnackbar(t('cronJob.newCreated', { name: name.trim() }), { variant: 'success' });
       await Promise.all(
@@ -190,7 +199,7 @@ export function NewJobBody({
         />
       </Section>
       <Section title={t('cronJob.newReview')}>
-        <Typography>{summaryLine({ profile: who(profile), schedule: expr, skill: skill.trim(), deliver })}</Typography>
+        <Typography>{summaryLine({ profile: who(profile), schedule: expr, skill: skill.trim(), deliver: deliverShown })}</Typography>
       </Section>
       {tooOften !== null && <Alert severity="warning">{t('cronJob.newTooOften', { n: tooOften })}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}

@@ -37,6 +37,7 @@ export const SCREENS: Record<string, ComponentType> = {
   settings: Settings,
   skills: named(() => import('@/screens/Skills'), 'Skills'),
   notices: named(() => import('@/screens/Notices'), 'Notices'),
+  'embed-apps': named(() => import('@/screens/EmbedApps'), 'EmbedApps'),
   'soul-templates': named(() => import('@/screens/settings/SoulTemplates'), 'SoulTemplates'),
   tools: named(() => import('@/screens/Inventory'), 'Tools'),
   users: named(() => import('@/screens/Users'), 'Users'),

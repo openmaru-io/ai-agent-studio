@@ -26,6 +26,7 @@ def b64(obj) -> str:
 class FakeIdP(BaseHTTPRequestHandler):
     claims: dict = {}
     last_token_request: dict = {}
+    fail_token = False                                  # 참이면 토큰 끝점이 500 을 준다(token_exchange_failed 시험)
 
     def do_GET(self):
         base = f"http://127.0.0.1:{self.server.server_port}"
@@ -37,12 +38,28 @@ class FakeIdP(BaseHTTPRequestHandler):
     def do_POST(self):
         form = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
         FakeIdP.last_token_request = {k: v[0] for k, v in form.items()}
+        if FakeIdP.fail_token:
+            self.send_response(500); self.send_header("Content-Length", "0"); self.end_headers()
+            return
         body = json.dumps({"id_token": f"{b64({'alg': 'none'})}.{b64(FakeIdP.claims)}.x"}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body)
 
     def log_message(self, *a):
         pass
+
+
+def set_cookies(r) -> list[str]:
+    return r.msg.get_all("Set-Cookie") or []
+
+
+def state_cookie(r) -> str:
+    """/auth/oidc 응답의 state 쿠키(이름=값). 콜백 요청의 Cookie 로 넘긴다(스펙 2026-11-14-002 F2)."""
+    return next(c.split(";")[0] for c in set_cookies(r) if c.startswith("aas_oidc_"))
+
+
+def has_session(r) -> bool:
+    return any(c.startswith("aas_session=") and not c.startswith("aas_session=;") for c in set_cookies(r))
 
 
 def start(server):
@@ -61,6 +78,7 @@ class AuthFlowTest(unittest.TestCase):
         root = Path(TMP.name)
         for name in ("home_a", "home_b"):
             (root / name / "profiles" / ("p_" + name)).mkdir(parents=True)
+            (root / name / "profiles" / ("p_" + name) / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일로 친다
         reg = root / "pods.json"
         reg.write_text(json.dumps({"admins": ["boss@corp.example"], "pods": [
             {"id": "a", "owner": "alice@corp.example", "hermes_home": str(root / "home_a")},
@@ -92,12 +110,13 @@ class AuthFlowTest(unittest.TestCase):
         self.assertIn("/auth/oidc?next=/", page.decode())
         r, _ = self.req("GET", "/auth/oidc" + ("?popup=1" if popup else ""))
         self.assertEqual(r.status, 302)
+        self.state = state_cookie(r)
         q = parse_qs(urlsplit(r.getheader("Location")).query)
         self.assertEqual((q["client_id"][0], q["code_challenge_method"][0]), ("cid", "S256"))
         self.assertNotIn("hd", q)                                                   # hd 는 구글 발급자일 때만 보낸다
         FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
                           "sub": "sub-" + email, "email": email, "email_verified": True, "name": "N", **extra}
-        r, body = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}")
+        r, body = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}", self.state)
         return r, body, q
 
     def test_unauthenticated_is_blocked(self):
@@ -140,8 +159,8 @@ class AuthFlowTest(unittest.TestCase):
         self.assertEqual(r.status, 403)                                             # 남의 POD 로 못 바꾼다
         r, body = self.req("GET", "/api/me", cookie + "; aas_pod=b")
         self.assertEqual(json.loads(body)["pod"]["id"], "a")                        # 쿠키를 꾸며도 안 된다
-        r, _ = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}")
-        self.assertEqual(r.status, 403)                                             # state 는 한 번만 쓴다
+        r, _ = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}", self.state)
+        self.assertEqual(r.status, 403)                                             # state 는 한 번만 쓴다(쿠키가 맞아도 auth_pending 은 한 번)
         r, _ = self.req("GET", "/auth/logout", cookie)
         self.assertEqual(r.getheader("Location"), "/auth/login?out=1")
         r2, page = self.req("GET", "/auth/login?out=1", headers={"Host": "localhost:%d" % self.port})
@@ -219,7 +238,8 @@ class AuthFlowTest(unittest.TestCase):
                              ("eve@corp.example", {"nonce": "wrong"}), ("eve@corp.example", {"exp": 1})):
             r, _, _ = self.login(email, **extra)
             self.assertEqual(r.status, 403, (email, extra))
-            self.assertIsNone(r.getheader("Set-Cookie"))
+            self.assertFalse(has_session(r), (email, extra))                          # 세션은 없고
+            self.assertTrue(any(c.startswith("aas_oidc_") and "Max-Age=0" in c for c in set_cookies(r)))   # state 쿠키는 지운다
         r, body, _ = self.login("carol@corp.example")                               # 도메인은 맞지만 POD 가 없다
         cookie = r.getheader("Set-Cookie").split(";")[0]
         r, body = self.req("GET", "/api/health", cookie)
@@ -306,13 +326,16 @@ class AuthFlowTest(unittest.TestCase):
             self.assertEqual((r.status, r.getheader("Location")), (302, "/auth/login"))
             os.environ["AAS_TRUSTED_PROXY"] = "true"
             r, _ = self.req("GET", "/auth/oidc?next=/", headers=fwd)
+            sc = state_cookie(r)
+            self.assertTrue(all("; Secure" in c for c in set_cookies(r)))                    # state 쿠키도 https 면 Secure
             q = parse_qs(urlsplit(r.getheader("Location")).query)
             self.assertEqual(q["redirect_uri"][0], "https://aas.example.com/auth/callback")
             FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
                               "sub": "s-alice", "email": "alice@corp.example", "email_verified": True}
-            r, _ = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}", headers=fwd)
+            r, _ = self.req("GET", f"/auth/callback?code=abc&state={q['state'][0]}", sc, headers=fwd)
             self.assertEqual(r.status, 302)
             self.assertIn("; Secure", r.getheader("Set-Cookie"))
+            self.assertTrue(all("; Secure" in c for c in set_cookies(r)))                    # 지우는 쿠키도 같은 속성
             r, _ = self.req("GET", "/auth/oidc", headers={"Host": "aas.example.com"})        # 신뢰가 켜져도 헤더가 없으면 http
             self.assertEqual((r.status, r.getheader("Location")), (302, "/auth/login"))
             r, body = self.req("GET", "/auth/login", headers={"Host": "aas.example.com", "X-Forwarded-Proto": "https"})
@@ -332,18 +355,20 @@ class AuthFlowTest(unittest.TestCase):
         self.server._auth.cfg["public_urls"] = ["https://aas.example.com"]
         ctx = ssl.create_default_context(cafile=str(d / "c.pem")); ctx.check_hostname = False
 
-        def get(path, host="aas.example.com"):
+        def get(path, host="aas.example.com", cookie=""):
             c = http.client.HTTPSConnection("127.0.0.1", tls.server_port, timeout=10, context=ctx)
-            c.request("GET", path, headers={"Host": host})
+            c.request("GET", path, headers={"Host": host, **({"Cookie": cookie} if cookie else {})})
             r = c.getresponse(); body = r.read(); c.close()
             return r, body
         try:
             r, _ = get("/auth/oidc?next=/")
+            sc = state_cookie(r)
+            self.assertIn("; Secure", next(c for c in set_cookies(r) if c.startswith("aas_oidc_")))
             q = parse_qs(urlsplit(r.getheader("Location")).query)
             self.assertEqual(q["redirect_uri"][0], "https://aas.example.com/auth/callback")
             FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
                               "sub": "s-alice", "email": "alice@corp.example", "email_verified": True}
-            r, _ = get(f"/auth/callback?code=abc&state={q['state'][0]}")
+            r, _ = get(f"/auth/callback?code=abc&state={q['state'][0]}", cookie=sc)
             self.assertEqual(r.status, 302)
             self.assertIn("; Secure", r.getheader("Set-Cookie"))
             self.assertEqual(FakeIdP.last_token_request["redirect_uri"], "https://aas.example.com/auth/callback")
@@ -422,7 +447,8 @@ class AuthFlowTest(unittest.TestCase):
         self.assertNotIn("Set-Cookie", "".join(f"{k}: {v}" for k, v in r.getheaders()))
         r, _ = self.req("GET", "/auth/oidc?next=/x%0d%0aSet-Cookie:%20a=b")              # 이동하는 쪽도 헤더가 갈라지지 않는다
         self.assertEqual(r.status, 302)
-        self.assertIsNone(r.getheader("Set-Cookie"))
+        cookies = set_cookies(r)
+        self.assertEqual(len(cookies), 1); self.assertTrue(cookies[0].startswith("aas_oidc_"))   # state 쿠키 하나뿐, a=b 는 없다
         self.assertNotIn("\n", r.getheader("Location"))
 
     def test_host_allowlist(self):
@@ -444,12 +470,316 @@ class AuthFlowTest(unittest.TestCase):
         return r, r.read()
 
     def test_open_redirect_is_refused(self):
-        r, _ = self.req("GET", "/auth/oidc?next=//evil.example/x")
+        for nxt in ("//evil.example/x", "/%5Cevil.example", "/%09/evil.example"):          # 역슬래시·탭도 다른 호스트가 된다(스펙 2026-11-14-002 F1)
+            r, _ = self.req("GET", "/auth/oidc?next=" + nxt)
+            sc = state_cookie(r)
+            q = parse_qs(urlsplit(r.getheader("Location")).query)
+            FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
+                              "sub": "s-alice", "email": "alice@corp.example", "email_verified": True}
+            r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+            self.assertEqual(r.getheader("Location"), "/", nxt)
+
+    def test_password_login_refuses_backslash_next(self):
+        """F1: 비밀번호 로그인도 /\\evil 을 / 로 바꾼다. 브라우저는 \\ 를 / 로 읽어 //evil 이 된다."""
+        from aas.auth import auth
+        users = Path(TMP.name) / "users-next.json"
+        auth.save_user("alice@corp.example", "correct horse battery", users)
+        self.server._auth.cfg["users_file"] = users
+        try:
+            for nxt in ("/%5Cevil.example", "/%09/evil.example", "/%ED%95%9C"):
+                r, _ = self.raw("POST", "/auth/password", f"email=alice@corp.example&password=correct+horse+battery&next={nxt}", {})
+                self.assertEqual((r.status, r.getheader("Location")), (302, "/"), nxt)
+            r, _ = self.raw("POST", "/auth/password", "email=alice@corp.example&password=correct+horse+battery&next=/%23/office", {})
+            self.assertEqual(r.getheader("Location"), "/#/office")                       # 같은 출처 경로는 그대로
+        finally:
+            self.server._auth.cfg.pop("users_file", None); self.server._auth._tries.clear()
+
+    def test_login_page_sanitizes_next_before_rendering(self):
+        """F1: 팝업 로그인의 원래 창은 finish 를 거치지 않고 data-next 로 바로 이동한다. 그래서 화면에 넣기 전에 거른다."""
+        r, page = self.req("GET", "/auth/login?next=/%5Cevil.example", headers={"Host": "localhost:%d" % self.port})
+        text = page.decode()
+        self.assertEqual(r.status, 200)
+        self.assertNotIn("evil", text)
+        self.assertIn("data-next='/'", text)
+
+    def test_finish_sanitizes_a_stored_next(self):
+        """F1 나가는 곳: 배포 전에 auth_pending 에 들어간 나쁜 next 도 finish 가 / 로 바꾼다."""
+        from aas.auth import auth
+        a = self.server._auth
+        r, _ = self.req("GET", "/auth/oidc")
         q = parse_qs(urlsplit(r.getheader("Location")).query)
+        state = q["state"][0]
+        from aas.common import store
+        with store.connect() as conn:
+            row = conn.execute("SELECT data FROM auth_pending WHERE state=?", (state,)).fetchone()
+            data = json.loads(row[0]); data["next"] = "/\\evil.example"
+            conn.execute("UPDATE auth_pending SET data=? WHERE state=?", (json.dumps(data), state))
         FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
                           "sub": "s-alice", "email": "alice@corp.example", "email_verified": True}
-        r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}")
-        self.assertEqual(r.getheader("Location"), "/")
+        token, nxt = a.finish("c", state)
+        self.assertEqual(nxt, "/")
+        self.assertTrue(token)
+
+
+    # ---- F2: OIDC state 를 로그인을 시작한 브라우저 쿠키에 묶는다(스펙 2026-11-14-002 3-1, 로그인 CSRF) ----
+    def oidc(self, query="", headers=None):
+        r, _ = self.req("GET", "/auth/oidc" + query, headers=headers)
+        q = parse_qs(urlsplit(r.getheader("Location") or "").query)
+        return r, q
+
+    def claims_for(self, q, email="alice@corp.example", **extra):
+        FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0],
+                          "sub": "sub-" + email, "email": email, "email_verified": True, "name": "N", **extra}
+
+    def test_oidc_sets_a_state_cookie_bound_to_this_browser(self):
+        import hashlib
+        r, q = self.oidc()
+        h = hashlib.sha256(q["state"][0].encode()).hexdigest()
+        cookie = next(c for c in set_cookies(r) if c.startswith("aas_oidc_"))
+        self.assertTrue(cookie.startswith(f"aas_oidc_{h[:16]}={h};"))
+        for attr in ("Path=/auth/callback", "HttpOnly", "SameSite=Lax", "Max-Age=600"):
+            self.assertIn(attr, cookie)
+        self.assertNotIn("Secure", cookie)                                           # http 시험 서버
+        self.assertNotIn("__Host-", cookie)
+        self.assertNotIn("response_mode", q)                                         # SameSite=Lax 쿠키는 최상위 GET 으로 돌아올 때만 따라간다
+
+    def test_callback_without_the_state_cookie_is_refused(self):
+        r, q = self.oidc()
+        self.claims_for(q)
+        with self.assertLogs("aas.auth", level="WARNING") as logs:
+            r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}")
+        page = body.decode()
+        self.assertEqual(r.status, 403)
+        self.assertFalse(has_session(r))
+        self.assertTrue(any(c.startswith("aas_oidc_") and "Max-Age=0" in c and "Path=/auth/callback" in c for c in set_cookies(r)))
+        self.assertIn("로그인 확인 정보가 없거나 만료됐습니다", page)
+        self.assertIn("href='/auth/login'", page)
+        ref = page.split("data-ref='")[1].split("'")[0]
+        self.assertRegex(ref, "^[0-9a-f]{8}$")
+        self.assertIn(f"oidc_callback_rejected reason=no_state_cookie ref={ref}", logs.output[0])
+        self.assertNotIn(q["state"][0], "".join(logs.output))                        # state 값은 남기지 않는다
+
+    def test_attacker_row_does_not_choose_the_relogin_destination(self):
+        r, q = self.oidc("?next=/oauth/connect/x")                                   # 공격자가 시작한 로그인(피해자에게는 쿠키가 없다)
+        self.claims_for(q)
+        r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}")
+        self.assertEqual(r.status, 403)
+        self.assertNotIn("oauth/connect", body.decode())
+        self.assertIn("href='/auth/login'", body.decode())
+
+    def test_callback_with_another_states_cookie_is_refused(self):
+        r1, _ = self.oidc()
+        other = state_cookie(r1)
+        r, q = self.oidc()
+        self.claims_for(q)
+        with self.assertLogs("aas.auth", level="WARNING") as logs:
+            r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", other)
+        self.assertEqual(r.status, 403)
+        self.assertFalse(has_session(r))
+        self.assertIn("reason=no_state_cookie", logs.output[0])                      # 이 state 의 이름을 가진 쿠키가 없다
+        name = state_cookie(r).split("=")[0] if any(c.startswith("aas_oidc_") for c in set_cookies(r)) else ""
+        forged = name + "=" + "0" * 64
+        with self.assertLogs("aas.auth", level="WARNING") as logs:
+            r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", forged)
+        self.assertEqual(r.status, 403)
+        self.assertIn("reason=state_mismatch", logs.output[0])                       # 이름은 맞는데 값이 다르다
+
+    def test_matching_cookie_logs_in_and_clears_the_state_cookie_after_the_session(self):
+        r, q = self.oidc()
+        sc = state_cookie(r)
+        self.claims_for(q)
+        r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+        self.assertEqual(r.status, 302)
+        cookies = set_cookies(r)
+        self.assertTrue(cookies[0].startswith("aas_session="))                       # 세션 쿠키가 먼저(시험 26곳이 첫 Set-Cookie 를 읽는다)
+        self.assertTrue(cookies[1].startswith(sc.split("=")[0] + "=;") and "Max-Age=0" in cookies[1])
+
+    def test_popup_success_sends_the_session_and_the_clear(self):
+        r, body, _ = self.login("alice@corp.example", popup=True)
+        cookies = set_cookies(r)
+        self.assertEqual(r.status, 200)
+        self.assertTrue(cookies[0].startswith("aas_session="))
+        self.assertTrue(any(c.startswith("aas_oidc_") and "Max-Age=0" in c for c in cookies))
+
+    def test_empty_state_is_refused_without_any_cookie(self):
+        for path in ("/auth/callback?code=c&state=", "/auth/callback?error=access_denied&state="):
+            with self.assertLogs("aas.auth", level="INFO") as logs:
+                r, body = self.req("GET", path)
+            self.assertEqual(r.status, 403, path)
+            self.assertEqual(set_cookies(r), [], path)                               # 이름을 만들 수 없어 지울 쿠키도 없다
+            self.assertIn("로그인 확인 정보가 없거나 만료됐습니다", body.decode())
+            self.assertIn("reason=empty_state", logs.output[0])
+            self.assertTrue(logs.output[0].startswith("INFO:"))                     # 아무나 만들 수 있어 INFO
+
+    def test_cancelled_login_clears_the_state_cookie(self):
+        r, q = self.oidc()
+        r, body = self.req("GET", f"/auth/callback?error=access_denied&state={q['state'][0]}")
+        self.assertEqual(r.status, 403)
+        self.assertIn("로그인이 취소됐습니다", body.decode())
+        self.assertTrue(any(c.startswith("aas_oidc_") and "Max-Age=0" in c for c in set_cookies(r)))
+
+    def test_matching_cookie_but_used_state_is_pending_missing(self):
+        r, q = self.oidc()
+        sc = state_cookie(r)
+        self.server._auth._take_pending(q["state"][0])                               # 이미 쓴 state
+        with self.assertLogs("aas.auth", level="WARNING") as logs:
+            r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+        self.assertEqual(r.status, 403)
+        self.assertFalse(has_session(r))
+        self.assertTrue(any(c.startswith("aas_oidc_") and "Max-Age=0" in c for c in set_cookies(r)))
+        self.assertIn("로그인 확인 정보가 없거나 만료됐습니다", body.decode())
+        self.assertIn("reason=pending_missing", logs.output[0])
+
+    def test_policy_rejection_keeps_its_message(self):
+        """엔지니어링 리뷰 E1: 그룹·도메인 거부는 관리자에게 무엇을 요청할지 알려 준다 — 고정 문구로 덮지 않는다."""
+        self.server._auth.cfg["users_group"] = "aas-users"
+        try:
+            r, q = self.oidc()
+            sc = state_cookie(r)
+            self.claims_for(q, groups=["others"])
+            with self.assertLogs("aas.auth", level="WARNING") as logs:
+                r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+        finally:
+            self.server._auth.cfg.pop("users_group", None)
+        self.assertEqual(r.status, 403)
+        self.assertIn("aas-users 그룹에 속한 계정만", body.decode())
+        self.assertNotIn("로그인 확인 정보가 없거나", body.decode())
+        self.assertIn("reason=access_denied_policy", logs.output[0])
+
+    def test_token_failure_in_popup_closes_the_popup_and_tells_the_opener(self):
+        r, q = self.oidc("?popup=1")
+        sc = state_cookie(r)
+        self.claims_for(q)
+        FakeIdP.fail_token = True
+        try:
+            with self.assertLogs("aas.auth", level="WARNING") as logs:
+                r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+        finally:
+            FakeIdP.fail_token = False
+        page = body.decode()
+        self.assertEqual(r.status, 403)
+        self.assertIn("window.close()", page); self.assertIn("aasLogin:'failed'", page)
+        self.assertIn("reason=token_exchange_failed", logs.output[0])
+        self.assertIn("HTTP 500", logs.output[0])                                    # 예상하지 못한 실패는 원인을 함께 남긴다
+
+    def test_finish_failure_link_keeps_the_encoded_next(self):
+        r, q = self.oidc("?next=/%23/office")
+        sc = state_cookie(r)
+        self.claims_for(q, nonce="wrong")
+        r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", sc)
+        self.assertEqual(r.status, 403)
+        self.assertIn("href='/auth/login?next=/%23/office'", body.decode())         # # 뒤가 떨어지지 않게 인코딩한다
+
+    def test_already_signed_in_user_is_told_and_sent_home(self):
+        token = self.server._auth._new_session("x<y@corp.example", "N", "sub-x", False, "")
+        r, q = self.oidc()
+        self.claims_for(q)
+        r, body = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}", f"aas_session={token}")
+        page = body.decode()
+        self.assertEqual(r.status, 403)
+        self.assertIn("x&lt;y@corp.example", page); self.assertNotIn("x<y@", page)
+        self.assertIn("href='/'", page)
+        self.assertFalse(has_session(r))                                             # 세션 쿠키는 건드리지 않는다
+
+    def test_state_cookie_path_follows_the_public_url_path(self):
+        a = self.server._auth
+        old = a.cfg["public_url"]
+        a.cfg["public_url"] = old + "/aas"
+        try:
+            r, q = self.oidc(headers={"Host": urlsplit(old).netloc})
+            self.assertEqual(q["redirect_uri"][0], old + "/aas/auth/callback")
+            self.assertIn("Path=/aas/auth/callback", next(c for c in set_cookies(r) if c.startswith("aas_oidc_")))
+            r, _ = self.req("GET", f"/auth/callback?code=c&state={q['state'][0]}")
+            self.assertIn("Path=/aas/auth/callback", next(c for c in set_cookies(r) if c.startswith("aas_oidc_")))
+        finally:
+            a.cfg["public_url"] = old
+
+    def test_unregistered_localhost_moves_to_the_public_url_first(self):
+        local = {"Host": "localhost:%d" % self.port}
+        r, _ = self.req("GET", "/auth/oidc?next=/kanban", headers=local)
+        self.assertEqual(r.status, 302)
+        loc = r.getheader("Location")
+        self.assertTrue(loc.startswith(self.server._auth.cfg["public_url"] + "/auth/oidc?"), loc)
+        self.assertEqual(parse_qs(urlsplit(loc).query)["hop"], ["1"])
+        self.assertEqual(parse_qs(urlsplit(loc).query)["next"], ["/kanban"])
+        self.assertEqual(set_cookies(r), [])                                         # 쿠키는 이동한 호스트에서 준다
+        r, _ = self.req("GET", urlsplit(loc).path + "?" + urlsplit(loc).query)       # 등록된 주소로 다시
+        self.assertTrue(any(c.startswith("aas_oidc_") for c in set_cookies(r)))
+        with self.assertLogs("aas.auth", level="WARNING"):
+            r, body = self.req("GET", "/auth/oidc?hop=1", headers=local)            # 프록시가 Host 를 바꿔 다시 들어온 경우
+        self.assertEqual(r.status, 503)
+        self.assertEqual(set_cookies(r), [])
+        self.assertIn("등록된 접속 주소", body.decode())
+
+    def test_login_page_popup_script_handles_failure(self):
+        r, page = self.req("GET", "/auth/login", headers={"Host": "localhost:%d" % self.port})
+        text = page.decode()
+        self.assertIn("aasLogin==='failed'", text)
+        self.assertIn("data-failed=", text)
+        self.assertIn("role','alert'", text)
+
+
+class AdminRoleSourceTest(unittest.TestCase):
+    """관리자 역할은 realm 역할과 AAS 로그인 client 역할에서만 읽는다(스펙 2026-11-14-013, OMAI-2025).
+    같은 realm 의 다른 client 에 aas-admin 역할을 만들 수 있는 사람이 AAS 관리자가 되지 않게."""
+
+    def make(self, users_group=""):
+        from aas.auth import auth
+        return auth.Auth({"issuer": "http://127.0.0.1:1", "client_id": "aas", "client_secret": "s", "domain": "",
+                          "public_url": "http://x", "hours": 1, "admin_role": "aas-admin", "users_group": users_group})
+
+    def test_admin_role_from_another_client_is_ignored_and_warned(self):
+        a = self.make()
+        with self.assertLogs("aas.auth", level="WARNING") as logs:
+            allowed, admin = a._access({"resource_access": {"other-app": {"roles": ["aas-admin"]}}})
+        self.assertEqual((allowed, admin), (True, False))                           # 그룹 조건이 없는 설치라 들어오기는 한다
+        self.assertEqual(logs.output, ["WARNING:aas.auth:admin_role_from_other_client_ignored client=other-app"])
+
+    def test_another_clients_role_does_not_bypass_the_users_group(self):
+        a = self.make(users_group="aas-users")
+        with self.assertLogs("aas.auth", level="WARNING"):
+            self.assertEqual(a._access({"resource_access": {"other-app": {"roles": ["aas-admin"]}}}), (False, False))
+        with self.assertLogs("aas.auth", level="WARNING"):
+            self.assertEqual(a._access({"resource_access": {"other-app": {"roles": ["aas-admin"]}}, "groups": ["/aas-users"]}),
+                             (True, False))                                         # 사용자 그룹이면 일반 사용자
+
+    def test_realm_role_and_own_client_role_make_an_admin_without_warning(self):
+        a = self.make(users_group="aas-users")
+        with self.assertNoLogs("aas.auth", level="WARNING"):
+            self.assertEqual(a._access({"realm_access": {"roles": ["aas-admin"]}}), (True, True))
+            self.assertEqual(a._access({"resource_access": {"aas": {"roles": ["aas-admin"]}}}), (True, True))
+            self.assertEqual(a._access({"realm_access": {"roles": ["aas-admin"]},
+                                        "resource_access": {"other-app": {"roles": ["aas-admin"]}}}), (True, True))
+            self.assertEqual(a._access({"realm_access": {"roles": ["x"]}, "resource_access": {"other-app": {"roles": ["y"]}}}),
+                             (False, False))
+
+    def test_empty_admin_role_makes_no_admin(self):
+        a = self.make()
+        a.cfg["admin_role"] = ""
+        with self.assertNoLogs("aas.auth", level="WARNING"):
+            self.assertEqual(a._access({"realm_access": {"roles": ["aas-admin"]}}), (True, False))
+
+
+class SafeNextTest(unittest.TestCase):
+    """스펙 2026-11-14-002 F1: 로그인 뒤 이동 주소는 같은 출처 경로만 받는다."""
+
+    def test_rejects_paths_a_browser_reads_as_another_host(self):
+        from aas.auth.auth import safe_next
+        for bad in ("/\\evil", "/\\/evil", "/\t/evil", "/\n/evil", "/\x7f", "//evil", "https://evil", "evil",
+                    "/한글", "", None, 3, "/\x00"):
+            self.assertEqual(safe_next(bad), "/", repr(bad))
+
+    def test_keeps_same_origin_paths(self):
+        from aas.auth.auth import safe_next
+        for ok in ("/", "/ok?x=1", "/#/office", "/oauth/connect/x?y=1", "/#/office/%ED%9A%8C", "/kanban"):
+            self.assertEqual(safe_next(ok), ok)
+
+    def test_logs_only_the_reason(self):
+        from aas.auth.auth import safe_next
+        with self.assertLogs("aas.auth", level="DEBUG") as logs:
+            safe_next("/\\secret-host")
+        self.assertIn("next_rejected reason=backslash", logs.output[0])
+        self.assertNotIn("secret-host", "".join(logs.output))
 
 
 class KeycloakUsersTest(unittest.TestCase):
@@ -518,11 +848,12 @@ class KeycloakUsersTest(unittest.TestCase):
 
     def login(self, email, sub, admin=False):
         r, _ = self.req_raw("/auth/oidc")
+        sc = state_cookie(r)
         q = parse_qs(urlsplit(r.getheader("Location")).query)
         FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0], "sub": sub,
                           "email": email, "email_verified": True, "name": "N",
                           **({"realm_access": {"roles": ["aas-admin"]}} if admin else {})}
-        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}")
+        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}", sc)
         return r.getheader("Set-Cookie").split(";")[0]
 
     def req_raw(self, path, cookie=""):

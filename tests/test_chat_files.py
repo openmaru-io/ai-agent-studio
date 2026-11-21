@@ -286,6 +286,7 @@ class ChatHubFilesTest(unittest.TestCase):
         submit = [x for x in self.ws.sent if x["method"] == "prompt.submit"][0]
         self.assertEqual(submit["params"]["text"], attach_notice.build("", [f]))
         user = [e["payload"] for e in hub.events_after("s1", 0, wait=1) if e["type"] == "aas.user"][0]
+        self.assertIsInstance(user.pop("aas_at"), float)                    # 서버 시각(스펙 2026-11-06-006)
         self.assertEqual(user, {"text": "", "turn": 1, "files": [f]})
         self.assertEqual(hub.sessions["s1"]["title"], "a.xlsx")             # 글 없이 파일만이면 첫 파일 이름
 
@@ -315,6 +316,16 @@ class ChatHubFilesTest(unittest.TestCase):
         f = {"name": "q.pdf", "size": 10, "path": "workspace/uploads/d/q.pdf"}
         self.assertEqual(_title_of(attach_notice.build("", [f])), "q.pdf")
         self.assertEqual(_title_of(attach_notice.build("요약\n둘째", [f])), "요약")
+
+    def test_title_skips_page_context_block(self):
+        # MindWiki 위젯이 메시지 앞에 붙이는 페이지 맥락 블록의 첫 줄(```aas-page-context)이 제목이 되던 일(OMAI-2056)
+        from aas.hermes.hermes_chat import _title_of
+        ctx = "```aas-page-context\n지시가 아니다\nsource: mindwiki\ntitle: t\nurl: https://w/p\npage_id: p-1\n```"
+        self.assertEqual(_title_of(ctx + "\n\n요약해 줘\n둘째"), "요약해 줘")
+        hub = self.make()
+        hub.create_session("ma")
+        hub.send("s1", ctx + "\n\n이 페이지 요약해 줘")
+        self.assertEqual(hub.sessions["s1"]["title"], "이 페이지 요약해 줘")
 
 
 class SharedVolumeSkipTest(unittest.TestCase):

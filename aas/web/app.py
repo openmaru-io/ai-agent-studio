@@ -89,6 +89,9 @@ def create_app(background: bool = True) -> Starlette:
         anyio.to_thread.current_default_thread_limiter().total_tokens = _int_env("AAS_THREADPOOL", 64)
         if background:
             server.start_background()
+        from ..ops import mindwiki_connect
+        if mindwiki_connect.config_warning():
+            print(mindwiki_connect.config_warning(), flush=True)
         yield
 
     routes = [Route("/healthz", healthz), Route("/readyz", readyz)]
@@ -115,8 +118,20 @@ def create_app(background: bool = True) -> Starlette:
     routes += mcp_server.routes()
     from . import mcp_oauth             # 그 OAuth(메타데이터·등록·동의 화면·토큰)
     routes += mcp_oauth.routes()
+    from . import embed_routes          # 채팅 임베드 위젯(OMAI-1873) — 토큰 교환·폐기·인증서 확인·위젯 파일. 레거시 Mount 앞
+    routes += embed_routes.routes()
+    from . import embed_format          # 위젯 답 저장(스펙 2026-11-18-012) — 위젯 채우기·관리자 형식 경로. 레거시 Mount 앞(/api/admin/embed-apps 를 레거시도 받는다)
+    routes += embed_format.routes()
+    from . import mindwiki_save         # 「MindWiki 에 저장」(스펙 2026-11-15-002 A4) — 파일을 흘려보내야 해서 레거시 Mount 앞
+    routes += mindwiki_save.routes()
+    from . import mindwiki_webhook      # MindWiki 자동화 웹훅(스펙 2026-11-15-002 A5) — 로그인 없이 HMAC 서명으로만 받는다. 레거시 Mount 앞
+    routes += mindwiki_webhook.routes()
+    from . import csp                   # 주 화면 CSP 위반 보고(스펙 2026-11-14-018). 레거시 Mount 앞 — X-AAS 검사 없이 받는다
+    routes += csp.routes()
     routes.append(Mount("/", app=legacy.app))
     app = Starlette(routes=routes, lifespan=lifespan)
+    app.add_middleware(csp.CSPMiddleware)              # HTML 응답에 Report-Only 정책과 nonce(스펙 2026-11-14-018). 임베드가 정책을 붙인 응답은 그대로
+    app.add_middleware(embed_routes.EmbedMiddleware)   # 임베드 토큰 → 요청 사용자·CORS. LangMiddleware 가 바깥이다
     app.add_middleware(LangMiddleware)
     return app
 

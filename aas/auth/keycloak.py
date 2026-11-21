@@ -262,6 +262,15 @@ class KeycloakAdmin:
         self._request(token, "PUT", f"/users/{self._q(user_id)}", rep)
         return rep
 
+    def set_email(self, user_id: str, email: str, token: str | None = None) -> dict:
+        """이메일을 바꾸고 확인된 것으로 둔다(스펙 2026-11-15-005, 로그인 도메인 → 회사 도메인). update_user 와 같이 전체 표현을 GET 해 고쳐
+        PUT 한다. 아이디(username)는 그대로다(영역 editUsernameAllowed=false). 같은 이메일이 이미 있으면 KeycloakError 409."""
+        token = token or self.token()
+        rep = self.get_user(user_id, token)
+        rep["email"], rep["emailVerified"] = email, True
+        self._request(token, "PUT", f"/users/{self._q(user_id)}", rep)
+        return rep
+
     def set_member(self, user_id: str, on: bool, token: str | None = None) -> None:
         """사용자 그룹(들어올 자격)에 넣거나 뺀다(K8 「AAS 에 추가」)."""
         token = token or self.token()

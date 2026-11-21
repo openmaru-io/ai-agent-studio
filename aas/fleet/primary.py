@@ -270,6 +270,28 @@ def _false_flag_patch(text: str, section: str, key: str) -> str | None:
     return out if ok else None
 
 
+def max_live_patch(text: str, cap: int) -> str | None:
+    """config.yaml 글 끝에 최상위 `max_live_sessions: <cap>` 한 줄을 더한 새 글. 이미 정했거나(최상위·gateway 절) 글을 읽을 수 없으면 None.
+    Hermes 는 이 값이 없으면 메모리에 두는 세션 수에 상한이 없다(기본 0). 상한은 연결이 끊긴 세션만 걷어내므로, AAS 서버가 다시 시작하거나
+    다시 붙어 주인을 잃은 세션이 6시간(Hermes 기본 TTL) 동안 폴러 스레드를 돌리지 않게 한다(OMAI-1884). Hermes 는 실행 루트의 글만 읽는다."""
+    import yaml
+    try:
+        doc = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict) or "max_live_sessions" in doc:
+        return None
+    if isinstance(doc.get("gateway"), dict) and "max_live_sessions" in doc["gateway"]:
+        return None
+    body = text if text.endswith("\n") or not text else text + "\n"
+    out = body + f"max_live_sessions: {int(cap)}\n"
+    try:
+        ok = (yaml.safe_load(out) or {}).get("max_live_sessions") == int(cap)
+    except yaml.YAMLError:
+        ok = False
+    return out if ok else None
+
+
 def hide_root(pod_id: str, admin: bool, known: dict[str, dict] | None = None) -> str:
     """프로파일 목록에서 루트를 어떻게 다룰지: 'show'(지금처럼), 'hidden'(관리자에게 「루트(숨김)」 읽기 전용), 'drop'(빼기).
     대상 기록이 없는 POD 는 지금처럼 보인다(리뷰 D8·D11)."""

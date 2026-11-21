@@ -24,6 +24,18 @@ describe('화면 용어', () => {
     expect(found(dictionaries.en, (v) => /(?<!AI )\bagents?\b/i.test(v.replace(/AGENTS(\.md)?/g, '')))).toEqual([]);
   });
 
+  // 「작업공간」·workspace 만 쓰는 줄임도 막는다(스펙 2026-11-18-009, WRITING_STYLE §6-b).
+  // 대화 목록 둘째 줄의 짧은 칩(chat.currentAgentShort)은 이름을 밀어내지 않게 줄였다(2026-11-06). en 의 MindWiki workspace 는 MindWiki 쪽 개념이다.
+  const SHORT_OK = new Set(['chat.currentAgentShort']);
+  it('한국어 값에 「작업공간」만 쓴 줄임이 없다', () => {
+    expect(found(dictionaries.ko, (v) => /(?<!AI 에이전트 )작업공간/.test(v)).filter((k) => !SHORT_OK.has(k))).toEqual([]);
+  });
+
+  it('영어 값에 workspace 만 쓴 줄임이 없다', () => {
+    const short = (v: string) => /(?<!AI Agent )(?<![\w-])workspaces?\b(?!-)/i.test(v.replace(/MindWiki workspaces?|several workspaces/g, ''));
+    expect(found(dictionaries.en, short).filter((k) => !SHORT_OK.has(k))).toEqual([]);
+  });
+
   it('조사·겹침·관사 오류가 없다', () => {
     const ko = /작업공간(가|를|는|와|로\b)|에이전트(을|은|과)|에이전트이 |AI AI|작업공간 작업공간/;
     expect(found(dictionaries.ko, (v) => ko.test(v))).toEqual([]);

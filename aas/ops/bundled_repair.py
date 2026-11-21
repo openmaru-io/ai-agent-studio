@@ -20,7 +20,7 @@ from ..common import store
 
 KIND = "SkillBundledRepair"
 PREFIX = "bundled_repair:"
-PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")   # CRD 의 profile 패턴(hermestask_types.go) — 밖이면 생성이 422 로 거절된다
+PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}\Z")   # CRD 의 profile 패턴(hermestask_types.go) — 밖이면 생성이 422 로 거절된다
 SHOW_DAYS = 7                                             # 안내 띠는 7일 안의 기록만 보인다. 기록 자체는 지우지 않는다(재검토, R13 과 충돌하지 않게)
 _REPAIRED = re.compile(r"\[REPAIRED\]\s*(\d+)")
 

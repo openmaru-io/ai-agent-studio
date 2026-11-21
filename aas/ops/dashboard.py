@@ -53,7 +53,7 @@ def record_round(pods: list, health: dict, read=pod_values) -> None:
     checked = _now().isoformat(timespec="seconds")
     failed = {f["pod"]: f.get("reason", "") for f in (health.get("pods") or {}).get("failed", [])}
     single = len(pods) == 1
-    got = collect_all.map_pods([p for p in pods if p.id not in failed], read)
+    got = collect_all.map_pods([p for p in pods if p.id not in failed], read, workers=collect_all.BACKGROUND_WORKERS)
     for p in pods:
         if p.id in failed:
             store.save_pod_summary(p.id, checked, None, str(failed[p.id]))
@@ -92,7 +92,7 @@ def record_usage(pods: list, now: datetime | None = None, read=activity.daily) -
         last = store.usage_last_day(p.id)
         start = max(oldest, datetime.fromisoformat(last).replace(tzinfo=today.tzinfo)) if last else oldest
         return read(start.timestamp(), today.timestamp(), home=p.hermes_home)
-    for pid, (ok, value) in collect_all.map_pods(pods, one).items():
+    for pid, (ok, value) in collect_all.map_pods(pods, one, workers=collect_all.BACKGROUND_WORKERS).items():
         if ok:
             store.save_usage_days(pid, value)
         else:

@@ -12,7 +12,7 @@ import { GridColumn, nameColumn, Pill } from '@/components/DataGrid';
 import type { PageOf } from '@/components/drawerPages';
 import { useDrawerGuard, useDrawerHead } from '@/components/drawerScope';
 import { ListView } from '@/components/ListView';
-import { TagBar, tagCounts, tagLabel, tagMatches } from '@/components/TagBar';
+import { TagBar, tagCounts, tagLabel, tagMatches, toggleTag } from '@/components/TagBar';
 import { useUi } from '@/components/UiContext';
 import { useOpenParam, useParamPatch, useRouteDrawer } from '@/components/useRouteDrawer';
 import { t } from '@/i18n';
@@ -89,7 +89,7 @@ function Picker() {
           counts={counts}
           total={items.length}
           active={active}
-          onToggle={(id) => setTags(active.includes(id) ? active.filter((x) => x !== id) : [...active, id])}
+          onToggle={(id) => setTags(toggleTag(active, id))}
           onClear={() => setTags([])}
         />
       ),

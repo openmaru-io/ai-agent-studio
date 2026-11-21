@@ -203,7 +203,8 @@ def make_server(host: str, port: int, ops: Ops, token: str) -> ThreadingHTTPServ
                 return ops.check(body["path"])
             if op == "sqlite_batch":
                 return ops.sqlite_batch(body["queries"])
-            return ops.sqlite(body["path"], body["sql"], body.get("params", []))
+            return ops.sqlite(body["path"], body["sql"], body.get("params", []),
+                              max_seconds=body.get("max_seconds"), max_bytes=body.get("max_bytes"))
 
         def _method_not_allowed(self):
             if not self._authed():

@@ -21,7 +21,7 @@ class ChatSessionMetaTest(unittest.TestCase):
         m.opened("csm-a", "s1", "", "main", "Kim@corp", "token", "skill-test", now=1000.0)
         self.assertEqual(m.for_stored("csm-a", ["st1"], now=1001.0), {})                 # 저장 번호를 아직 모른다
         self.assertTrue(m.touch("csm-a", "s1", "st1", now=1001.0))                       # 첫 제목 뒤에 채운다
-        self.assertEqual(m.for_stored("csm-a", ["st1"], now=1080.0), {"st1": {"via": "token", "purpose": "skill-test", "active": True}})
+        self.assertEqual(m.for_stored("csm-a", ["st1"], now=1080.0), {"st1": {"via": "token", "purpose": "skill-test", "active": True, "by": "kim@corp"}})
         self.assertFalse(m.for_stored("csm-a", ["st1"], now=1091.0)["st1"]["active"])
         self.assertFalse(m.touch("csm-a", "s1", "", now=1030.0))                        # 50초 안에는 다시 쓰지 않는다
         self.assertTrue(m.touch("csm-a", "s1", "", now=1100.0))

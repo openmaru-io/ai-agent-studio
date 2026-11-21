@@ -27,6 +27,7 @@ HOMES = {"yj": Path(TMP.name) / "yj", "scdf": Path(TMP.name) / "scdf"}
 for _home, _profiles in ((HOMES["yj"], ("sa", "ma")), (HOMES["scdf"], ("scdf-doc",))):
     for _p in _profiles:
         (_home / "profiles" / _p).mkdir(parents=True, exist_ok=True)
+        (_home / "profiles" / _p / "config.yaml").write_text("model: x\n")       # 표시 파일이 있어야 프로파일로 친다
 
 
 class Reg:
@@ -268,6 +269,27 @@ class VisibilityTest(AccessBase):
             for who in (A, ADMIN):                                               # 주인·관리자는 막지 않는다
                 server._office_route(acc(who), "POST", "/api/office/chat/send", {}, {"alias": "sa", "text": "써 줘"}, who)
                 self.assertNotIn("blocked_tools", start.call_args.kwargs)
+
+    def test_관리하지_않는_구성원은_플러그인_명령을_글로_보내지_못한다(self):
+        """스펙 2026-11-19-003 §3-1 #15: 「/」 목록의 플러그인 명령은 글로 보내 Hermes 플러그인이 실행한다. 명령 권한이 없는 방 구성원이
+        「/<플러그인 명령>」 을 쳐서 보내면 서버가 막는다. 주인·관리자와 일반 글은 그대로 간다."""
+        from unittest import mock
+        from aas.hermes import skill_commands
+        turn = relay.Turn("run_p", "sa", "ofc")
+        turn.add("final", "ok")
+        bridge = server._auto.bridge
+        got = {"plugins": [{"command": "/작업", "name": "작업"}]}
+        with mock.patch.object(bridge, "start", return_value=turn) as start, mock.patch.object(server.store, "log_usage"), \
+                mock.patch.object(skill_commands, "cached", return_value=got) as listed:
+            with self.assertRaises(office_access.Denied) as cm:
+                server._office_route(acc(C), "POST", "/api/office/chat/send", {}, {"alias": "sa", "text": "/작업 보고서"}, C)
+            self.assertEqual(cm.exception.code, 403)
+            start.assert_not_called()
+            server._office_route(acc(C), "POST", "/api/office/chat/send", {}, {"alias": "sa", "text": "작업 보고서 써 줘"}, C)
+            self.assertEqual(listed.call_count, 1)                               # 「/」 로 시작하지 않으면 목록을 읽지 않는다
+            for who in (A, ADMIN):
+                server._office_route(acc(who), "POST", "/api/office/chat/send", {}, {"alias": "sa", "text": "/작업 보고서"}, who)
+            self.assertEqual(start.call_count, 3)
 
     def test_개요는_보이는_것만_주고_구성원_이메일은_관리자만_본다(self):
         c = server._office(Reg, {"email": C}, True)

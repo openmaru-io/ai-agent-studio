@@ -104,7 +104,7 @@ export function buildMenus({ health, creds, waiting = 0, admin = true, owner = f
     group('skill', [screen('skills'), screen('market', n(marketUpdates, 'neutral')), screen('flows')]),
     group('automation', [screen('cron', n(cronBad, 'bad')), screen('channels')], n(cronBad, 'bad')),
     group('records', [screen('activity'), ...changesMenu()]),
-    ...(admin ? [group('admin', [screen('users'), screen('soul-templates'), screen('notices')])] : []),
+    ...(admin ? [group('admin', [screen('users'), screen('soul-templates'), screen('notices'), screen('embed-apps')])] : []),
     // 일반(내 화면)·회사 정보(일반 사용자는 자기 부서 문구만, OMAI-1230)는 모두에게
     group(
       'settings',

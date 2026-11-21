@@ -47,6 +47,8 @@ interface ChangeRow {
   by_team_manager?: boolean;
   /** 주인·팀 관리자·관리자가 아닌 사람(접근 권한만 받은 사람·TFT 방 구성원 등)이 한 줄(D15). 이름은 보이고 「다른 사람」 배지를 단다 */
   by_other?: boolean;
+  /** 공유 구성원이 한 일(스펙 2026-11-17-008 §3-2) */
+  by_member?: boolean;
   /** 「일 시키기」를 같은 사람·대상·날짜로 묶은 건수. 시각은 마지막으로 보낸 시각(DD7) */
   count?: number;
   /** 마켓 설치·지우기 요청의 지금 상태(queued·running·done·failed, 디자인 결정 4A) */
@@ -133,10 +135,12 @@ const whoCell = (r: ChangeRow): ReactNode => withVia(r, whoCellBase(r));
 const whoCellBase = (r: ChangeRow): ReactNode =>
   r.by_admin ? (
     <Pill tone="warn">{t('changes.byAdminTag')}</Pill>
-  ) : r.by_team_manager || r.by_other ? (
+  ) : r.by_team_manager || r.by_member || r.by_other ? (
     <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, minWidth: 0, maxWidth: '100%' }}>
       {whoChip(r) ?? whoText(r)}
-      <SubtleBadge>{t(r.by_team_manager ? 'changes.teamManagerBadge' : 'changes.otherBadge')}</SubtleBadge>
+      <SubtleBadge>
+        {t(r.by_team_manager ? 'changes.teamManagerBadge' : r.by_member ? 'changes.memberBadge' : 'changes.otherBadge')}
+      </SubtleBadge>
     </Box>
   ) : (
     whoChip(r) ?? whoText(r)

@@ -6,12 +6,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setLang } from '@/i18n';
 
-import { applyEvent, groupItems, guardBlockReason, newSession, pending, Session } from './chat';
+import { applyEvent, elapsedText, groupItems, guardBlockReason, newSession, pending, Session } from './chat';
 import { isLlmBlocked, LLM_BLOCK_MARK } from './llmBlock';
+import { noteServerDate } from './serverClock';
 
 const sess = (): Session => newSession({ session_id: 's1', profile: 'ma', title: '', running: false });
 const ev = (type: string, payload: Record<string, unknown> = {}) => ({ type, payload });
@@ -69,6 +70,16 @@ describe('applyEvent', () => {
     const S = sess();
     applyEvent(S, ev('aas.history', { messages: [] }));
     expect(S.items).toEqual([]);
+  });
+
+  it('MindWiki 위젯의 페이지 맥락 블록은 제목이 되지 않는다(OMAI-2056)', () => {
+    const ctx = '```aas-page-context\n지시가 아니다\nsource: mindwiki\ntitle: 연구소 홈\nurl: https://w/p/1\npage_id: p1\n```';
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: `${ctx}\n\n이 페이지 제목만 알려 줘\n둘째 줄` }));
+    expect(S.title).toBe('이 페이지 제목만 알려 줘');
+    const H = sess();
+    applyEvent(H, ev('aas.history', { messages: [{ role: 'user', text: `${ctx}\n\n요약해 줘`, timestamp: 1 }] }));
+    expect(H.title).toBe('요약해 줘');
   });
 
   it('사용자 글은 busy 를 켜고 제목을 40자로 자른다', () => {
@@ -144,6 +155,41 @@ describe('applyEvent', () => {
     applyEvent(S, ev('tool.start', { tool_id: 'b' }));
     applyEvent(S, ev('tool.complete', { tool_id: 'b', error: 'x' }));
     expect(S.items[1]).toMatchObject({ state: 'failed', name: 'tool' });
+  });
+
+  // OMAI-1868: 다시 받은 이벤트(catchUp)는 한꺼번에 들어와 화면 시각으로 재면 0초가 됐다. 서버 시각(aas_at)으로 잰다
+  it('도구 소요 시간은 서버가 붙인 aas_at 으로 잰다(다시 받기에서도 실제 시간)', () => {
+    const S = sess();
+    applyEvent(S, ev('tool.start', { tool_id: 'a', name: 'web', aas_at: 1000.25 }));
+    applyEvent(S, ev('tool.complete', { tool_id: 'a', aas_at: 1003.5 }));
+    expect(S.items[0].ms).toBe(3250);
+  });
+
+  // OMAI-1868: 다시 이어진 대화는 기록으로 도구 줄을 다시 만들어 이미 잰 시간이 사라졌다
+  it('기록으로 합칠 때 이미 잰 도구 소요 시간을 옮긴다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', turn: 1 }));
+    applyEvent(S, ev('tool.start', { tool_id: 'a', name: 'tool_call', aas_at: 10 }));
+    applyEvent(S, ev('tool.complete', { tool_id: 'a', aas_at: 12.5 }));
+    applyEvent(S, ev('tool.start', { tool_id: 'b', name: 'tool_call', aas_at: 13 }));
+    applyEvent(S, ev('tool.complete', { tool_id: 'b', aas_at: 20 }));
+    S.merging = true;
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: '질문', timestamp: 1 },
+          { role: 'tool', name: 'tool_call', context: 'x', timestamp: 2 },
+          { role: 'tool', name: 'tool_call', context: 'y', timestamp: 2 },
+          { role: 'assistant', text: '답', timestamp: 3 },
+        ],
+      })
+    );
+    const tools = S.items.filter((x) => x.kind === 'tool');
+    expect(tools.map((x) => [x.context, x.ms])).toEqual([
+      ['x', 2500],
+      ['y', 7000],
+    ]);
   });
 
   it('안전장치(hardline·거절 규칙)가 막은 도구는 막힘과 이유를 남긴다(스펙 2026-10-24-004)', () => {
@@ -318,6 +364,17 @@ describe('applyEvent: 다시 연 대화의 기록 합치기', () => {
     applyEvent(S, ev('message.delta', { text: '7\n8\n9' }));
     applyEvent(S, ev('message.complete', { text: '1\n2\n3\n4\n5\n6\n7\n8\n9' }));
     expect(S.items.map((i) => [i.kind, i.text])).toEqual([['user', '1부터 9까지'], ['assistant', '1\n2\n3\n4\n5\n6\n7\n8\n9']]);
+  });
+
+  it('Hermes 가 최종 글을 바꿨으면(response_transformed) 받은 조각 대신 끝 글로 바꾼다(OMAI-1863)', () => {
+    // Hermes 패치 tool-result-verbatim 이 도구가 완성한 답(SQL·표·차트)을 모델 글 앞에 붙인다. 모델 글은 끝 공백까지 달라 접미 비교가 맞지 않았다
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '2025년 시도별 공급세대수' }));
+    applyEvent(S, ev('message.delta', { text: '조회가 완료되었습니다. ' }));
+    applyEvent(S, ev('message.complete', { text: '## SQL\n...\n\n조회가 완료되었습니다.', response_transformed: true }));
+    expect(S.items.map((i) => [i.kind, i.text])).toEqual([
+      ['user', '2025년 시도별 공급세대수'], ['assistant', '## SQL\n...\n\n조회가 완료되었습니다.'],
+    ]);
   });
 
   it('조각을 다 받았으면 끝 글이 달라도 받은 글을 그대로 둔다', () => {
@@ -572,5 +629,327 @@ describe('다시 연 대화의 원인 줄(2026-11-07-001 ①③)', () => {
     applyEvent(D, ev('aas.reconnect.failed', { code: 'profile_deleting' }));
     expect(D.ended).toBeUndefined();
     expect(D.items.map((x) => [x.kind, x.code])).toEqual([['notice', 'profile_deleting']]);
+  });
+});
+
+describe('응답 시간(스펙 2026-11-06-006)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('질문부터 응답 완료까지를 마지막 답에만 붙인다', () => {
+    const S = sess();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    applyEvent(S, ev('aas.user', { text: '질문' }));
+    applyEvent(S, ev('message.delta', { text: '확인한다' }));
+    applyEvent(S, ev('tool.start', { tool_id: 't1', name: 'query' }));
+    applyEvent(S, ev('message.delta', { text: '최종 답' }));
+    now.mockReturnValue(1_065_000);
+    applyEvent(S, ev('message.complete', { text: '최종 답' }));
+    expect(S.items.filter((x) => x.kind === 'assistant').map((x) => x.elapsedMs)).toEqual([undefined, 65000]);
+  });
+
+  it('서버 시각(aas_at)이 있으면 그것으로 잰다 — 새로 고쳐 다시 받아도 같은 값', () => {
+    const S = sess();
+    vi.spyOn(Date, 'now').mockReturnValue(9_999_000);
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1065 }));
+    expect(S.items.find((x) => x.kind === 'assistant')?.elapsedMs).toBe(65000);
+  });
+
+  it('오류·중지로 끝난 차례와 Hermes 가 스스로 시작한 차례에는 붙이지 않는다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1 }));
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { status: 'error', text: '실패', aas_at: 5 }));
+    applyEvent(S, ev('aas.user', { text: '긴 질문', aas_at: 10 }));
+    applyEvent(S, ev('message.delta', { text: '1 2 3' }));
+    applyEvent(S, ev('message.complete', { status: 'interrupted', text: '1 2 3', aas_at: 15 }));
+    applyEvent(S, ev('aas.turn.auto', { reason: 'goal' }));
+    applyEvent(S, ev('message.delta', { text: '자동 차례 답' }));
+    applyEvent(S, ev('message.complete', { text: '자동 차례 답' }));
+    expect(S.items.some((x) => x.elapsedMs !== undefined)).toBe(false);
+  });
+
+  it('지난 대화: 질문과 마지막 답의 저장 시각 차이를 마지막 답에만 붙인다', () => {
+    const S = sess();
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: '질문', timestamp: 100 },
+          { role: 'assistant', text: '확인한다', timestamp: 106 },
+          { role: 'tool', name: 'query', timestamp: 110 },
+          { role: 'assistant', text: '최종 답', timestamp: 165 },
+          { role: 'user', text: '다음 질문', timestamp: 200 },
+          { role: 'assistant', text: '두 번째 답', timestamp: 251 },
+        ],
+      })
+    );
+    expect(S.items.filter((x) => x.kind === 'assistant').map((x) => x.elapsedMs)).toEqual([undefined, 65000, 51000]);
+  });
+
+  it('지난 대화: 아직 답하는 중인 마지막 차례에는 붙이지 않는다', () => {
+    const S = newSession({ session_id: 's1', profile: 'ma', title: '', running: true });
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: '질문', timestamp: 100 },
+          { role: 'assistant', text: '확인한다', timestamp: 106 },
+        ],
+      })
+    );
+    expect(S.items.some((x) => x.elapsedMs !== undefined)).toBe(false);
+  });
+
+  // 5절: 마우스를 올리면 모델·MCP·그 밖의 도구 시간(R1~R5). 값은 정수 초, 세 줄 합 = 보이는 총 시간
+  const parts = (S: Session) => S.items.filter((x) => x.kind === 'assistant').at(-1)?.elapsedParts;
+  const tool = (S: Session, id: string, name: string, from: number, to?: number) => {
+    applyEvent(S, ev('tool.start', { tool_id: id, name, aas_at: from }));
+    if (to !== undefined) applyEvent(S, ev('tool.complete', { tool_id: id, aas_at: to }));
+  };
+
+  it('MCP 만 쓴 차례: 모델 = 총 − MCP, 화면 시계와 관계없다', () => {
+    const S = sess();
+    vi.spyOn(Date, 'now').mockReturnValue(9_999_000);
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1012);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(parts(S)).toEqual({ model: 41, mcp: 10, other: 0 });
+  });
+
+  it('겹쳐 돈 도구는 한 번만 센다(MCP 끼리, MCP 와 그 밖의 도구)', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1012);
+    tool(S, 'b', 'mcp__db__chart', 1010, 1011);
+    tool(S, 'c', 'terminal', 1008, 1020);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(parts(S)).toEqual({ model: 33, mcp: 10, other: 8 });
+  });
+
+  it('반올림해도 세 줄 합이 보이는 총 시간과 같다(1초 미만 소수는 반올림 오차)', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 100 }));
+    tool(S, 'a', 'mcp__db__query', 100, 100.6);
+    tool(S, 'b', 'terminal', 100.7, 101.3);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 101.4 }));
+    const it = S.items.find((x) => x.kind === 'assistant')!;
+    const p = it.elapsedParts!;
+    const whole = (n: number) => (n < 1 ? 0 : n);
+    expect(whole(p.model) + whole(p.mcp) + whole(p.other)).toBe(Math.round(it.elapsedMs! / 1000));
+    expect(Object.values(p).every((n) => n >= 0)).toBe(true);
+  });
+
+  it('총이 1초 미만이면 모델 시간도 0.1초 단위라 합을 넘지 않는다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1000.8 }));
+    expect(parts(S)).toEqual({ model: 0.8, mcp: 0, other: 0 });
+  });
+
+  it('다시 연결해 기록으로 바뀐 질문: 저장 시각과 실시간 완료(서버 시각)로 잰다 — PC 시계와 섞지 않는다', () => {
+    const S = sess();
+    S.merging = true; // 화면에 없던 질문이라 기록으로 통째로 바뀐다
+    applyEvent(S, ev('aas.history', { messages: [{ role: 'user', text: '질문', timestamp: 1000 }] }));
+    expect(S.items.map((x) => x.kind)).toEqual(['user']);
+    vi.spyOn(Date, 'now').mockReturnValue(1_180_000_000); // PC 시계가 크게 어긋나 있다
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(S.items.find((x) => x.kind === 'assistant')?.elapsedMs).toBe(51000);
+  });
+
+  it('질문 줄의 시각은 화면 시계다(서버 시각은 응답 시간 재기에만)', () => {
+    const S = sess();
+    vi.spyOn(Date, 'now').mockReturnValue(5_000_000);
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    expect(S.items[0]).toMatchObject({ t: 5_000_000, at0: 1000 });
+  });
+
+  it('1초 미만 도구 시간은 0 이 아니라 0.1초 단위로 둔다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1002.3);
+    tool(S, 'b', 'terminal', 1003, 1003.01);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1068 }));
+    expect(parts(S)).toEqual({ model: 68, mcp: 0.3, other: 0.1 });
+  });
+
+  it('시간을 모르는 도구가 섞이거나 질문·완료에 서버 시각이 없으면 세부를 만들지 않는다', () => {
+    const noEnd = sess();
+    applyEvent(noEnd, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(noEnd, 'a', 'mcp__db__query', 1002); // 완료 신호 없음
+    applyEvent(noEnd, ev('message.delta', { text: '답' }));
+    applyEvent(noEnd, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(parts(noEnd)).toBeUndefined();
+    expect(noEnd.items.find((x) => x.kind === 'assistant')?.elapsedMs).toBe(51000);
+
+    const screenClock = sess();
+    applyEvent(screenClock, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    applyEvent(screenClock, ev('tool.start', { tool_id: 'a', name: 'mcp__db__query', aas_at: 1002 }));
+    applyEvent(screenClock, ev('tool.complete', { tool_id: 'a' })); // 옛 서버: 화면 시계로 잰 ms
+    applyEvent(screenClock, ev('message.delta', { text: '답' }));
+    applyEvent(screenClock, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(parts(screenClock)).toBeUndefined();
+
+    const oldPod = sess();
+    applyEvent(oldPod, ev('aas.user', { text: '질문' })); // 질문·완료에 서버 시각 없음
+    tool(oldPod, 'a', 'mcp__db__query', 1002, 1012);
+    applyEvent(oldPod, ev('message.delta', { text: '답' }));
+    applyEvent(oldPod, ev('message.complete', { text: '답' }));
+    expect(parts(oldPod)).toBeUndefined();
+  });
+
+  const history = (S: Session, tools: string[], answer = true) => {
+    S.merging = true;
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: '질문', timestamp: 1 },
+          ...tools.map((name) => ({ role: 'tool', name, timestamp: 2 })),
+          ...(answer ? [{ role: 'assistant', text: '답', timestamp: 3 }] : []),
+        ],
+      })
+    );
+  };
+
+  it('끝난 뒤 다시 연결해 기록과 합쳐도 실시간 총·세부 시간이 남는다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1012);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    history(S, ['mcp__db__query']);
+    const it = S.items.filter((x) => x.kind === 'assistant').at(-1)!;
+    expect(it.elapsedMs).toBe(51000); // 기록 저장 시각 차이(2초)가 아니다
+    expect(it.elapsedParts).toEqual({ model: 41, mcp: 10, other: 0 });
+    expect(S.items.find((x) => x.kind === 'tool')).toMatchObject({ at0: 1002, at1: 1012, ms: 10000 });
+  });
+
+  it('끊긴 동안 Hermes 가 시작한 차례가 있어도 실시간 시간은 그 질문의 답에만 붙는다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    S.merging = true;
+    applyEvent(
+      S,
+      ev('aas.history', {
+        messages: [
+          { role: 'user', text: '질문', timestamp: 1 },
+          { role: 'assistant', text: '답', timestamp: 3 },
+          { role: 'auto', reason: 'cron', timestamp: 4 },
+          { role: 'assistant', text: '스스로 한 답', timestamp: 9 },
+        ],
+      })
+    );
+    const answers = S.items.filter((x) => x.kind === 'assistant');
+    expect(answers.map((x) => x.text)).toEqual(['답', '스스로 한 답']);
+    expect(answers[0].elapsedMs).toBe(51000);
+    expect(answers[1].elapsedMs).not.toBe(51000);
+  });
+
+  it('답하는 중 다시 연결해 기록에 그 차례 도구가 없으면 세부를 만들지 않는다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1012);
+    S.busy = true;
+    history(S, [], false); // Hermes 는 차례가 끝날 때 기록을 저장한다
+    tool(S, 'b', 'mcp__db__chart', 1020, 1022);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(S.items.find((x) => x.kind === 'assistant')?.elapsedMs).toBe(51000);
+    expect(parts(S)).toBeUndefined();
+  });
+
+  it('답하는 중 다시 연결해 기록에 같은 도구가 있으면 시각을 옮겨 세부를 만든다', () => {
+    const S = sess();
+    applyEvent(S, ev('aas.user', { text: '질문', aas_at: 1000 }));
+    tool(S, 'a', 'mcp__db__query', 1002, 1012);
+    S.busy = true;
+    history(S, ['mcp__db__query'], false);
+    applyEvent(S, ev('message.delta', { text: '답' }));
+    applyEvent(S, ev('message.complete', { text: '답', aas_at: 1051 }));
+    expect(parts(S)).toEqual({ model: 41, mcp: 10, other: 0 });
+  });
+
+  it('기록만 있는 지난 대화에는 세부가 없다', () => {
+    const S = sess();
+    history(S, ['mcp__db__query']);
+    expect(S.items.find((x) => x.kind === 'assistant')?.elapsedMs).toBe(2000);
+    expect(parts(S)).toBeUndefined();
+  });
+
+  it('글: 1초 미만은 0.N초, 1분 미만은 초, 그 위는 분·초', () => {
+    expect(elapsedText(51_400)).toBe('51초');
+    expect(elapsedText(65_000)).toBe('1분 5초');
+    expect(elapsedText(300)).toBe('0.3초');
+    expect(elapsedText(20)).toBe('0.1초');
+    expect(elapsedText(0)).toBe('0초');
+    setLang('en');
+    expect(elapsedText(65_000)).toBe('1 min 5 s');
+  });
+});
+
+describe('질문 시각(답하는 중 흐르는 시간)', () => {
+  beforeEach(() => noteServerDate(new Date().toUTCString()));
+
+  it('지난 이벤트를 따라잡을 때(새로 고침) 답하는 중인 질문은 서버 질문 시각부터 센다', () => {
+    const S = sess();
+    S.catchUp = 9;
+    applyEvent(S, { type: 'aas.user', payload: { text: '앞', aas_at: 100 } });
+    applyEvent(S, { type: 'message.complete', payload: { text: '답' } });
+    expect(S.sentAt).toBeUndefined();
+    applyEvent(S, { type: 'aas.user', payload: { text: '지금', aas_at: 200.5 } });
+    expect(S.sentAt).toBe(200_500);
+  });
+
+  it('서버 시계가 PC 보다 3분 늦으면 그만큼 옮겨 센다(ds-cop4 실화면)', () => {
+    const now = Date.now();
+    noteServerDate(new Date(now - 180_000).toUTCString());
+    try {
+      const S = sess();
+      S.catchUp = 9;
+      applyEvent(S, { type: 'aas.user', payload: { text: '지금', aas_at: (now - 180_000 - 10_000) / 1000 } });
+      const secs = (Date.now() - S.sentAt!) / 1000;
+      expect(secs).toBeGreaterThan(8);
+      expect(secs).toBeLessThan(12);
+    } finally {
+      noteServerDate(new Date().toUTCString());
+    }
+  });
+
+  it('따라잡을 때 끝 이벤트가 빠진 앞 질문이 있으면 마지막 질문 시각으로 센다', () => {
+    const S = sess();
+    S.catchUp = 9;
+    applyEvent(S, { type: 'aas.user', payload: { text: '앞', aas_at: 100 } });
+    applyEvent(S, { type: 'aas.user', payload: { text: '지금', aas_at: 200 } });
+    expect(S.sentAt).toBe(200_000);
+  });
+
+  it('따라잡기가 끝난 뒤 늦게 온 질문도 서버 시각이 있으면 그것부터 센다', () => {
+    const S = sess();
+    applyEvent(S, { type: 'aas.user', payload: { text: '지금', aas_at: 200 } });
+    expect(S.sentAt).toBe(200_000);
+  });
+
+  it('실시간 질문에 서버 시각이 없으면 받은 때부터 센다', () => {
+    const S = sess();
+    const before = Date.now();
+    applyEvent(S, { type: 'aas.user', payload: { text: '지금' } });
+    expect(S.sentAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('따라잡을 때 서버 시각이 없는 질문(옛 서버)은 세지 않는다', () => {
+    const S = sess();
+    S.catchUp = 9;
+    applyEvent(S, { type: 'aas.user', payload: { text: '지금' } });
+    expect(S.sentAt).toBeUndefined();
   });
 });

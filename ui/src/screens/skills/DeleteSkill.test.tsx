@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mountScreen, postedTo, stubApi } from '@/test/mountScreen';
 
-import { DeletableSkill, DeleteMode, deleteMode, SkillRowDelete, useSkillDelete } from './DeleteSkill';
+import { BulkDeleteDialog, DeletableSkill, DeleteMode, deleteMode, SkillRowDelete, useSkillDelete } from './DeleteSkill';
 
 const why = (m: DeleteMode) => ('disabled' in m ? m.disabled : undefined);
 
@@ -87,6 +87,46 @@ describe('지우기 확인 창(DD1·DD4~DD7)', () => {
     await waitFor(() => expect(postedTo(fn, '/api/skill/delete')).toEqual([{ id: MINE.id }]));
     expect(await screen.findByText('weekly 스킬을 지웠습니다')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '보관됨 보기' })).toBeInTheDocument();          // 되살릴 곳으로 바로(DD6)
+  });
+
+  // 스펙 2026-11-19-003 §3-3: 창을 열 때는 색인이 없어 몰랐던 부르는 곳을, 지울 때 서버가 409 in_use 로 알려 주면 그 목록을 보인다.
+  // 줄마다 예약 작업은 자동화 화면의 그 작업, 스킬은 스킬 화면의 그 스킬로 간다
+  it('지울 때 서버가 부르는 곳으로 막으면 그 목록을 링크로 보인다', async () => {
+    const user = userEvent.setup();
+    const block = [
+      { kind: 'cron', id: 'j1', label: '아침 수집', profile: 'ma' },
+      { kind: 'skill', id: 'ma:profiles/ma/skills/digest', label: 'digest', profile: 'ma' },
+    ];
+    api({
+      '/api/skill/delete': () =>
+        new Response(JSON.stringify({ error: '부르고 있어 지울 수 없습니다', reason: 'in_use', dependents: { block, warn: [], agents: [], checked: true, n_block: 2 } }), { status: 409 }),
+    });
+    mountScreen(<Harness rows={[MINE]} />, '/skills');
+    await user.click(await screen.findByRole('button', { name: 'weekly 스킬 지우기' }));
+    const dlg = await screen.findByRole('dialog');
+    await user.click(within(dlg).getByRole('button', { name: '지우기' }));
+    const blocked = await within(dlg).findByText(/예약 작업 · 아침 수집/);
+    expect(blocked.closest('[data-delete-blocked]')).not.toBeNull();
+    await user.click(blocked);
+    await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('open=ma%2Fj1'));
+  });
+
+  it('묶어 지우기는 끝에 지운 수와 막힌 수를 이유별로 요약한다', async () => {
+    const user = userEvent.setup();
+    const two: DeletableSkill = { ...MINE, id: 'ma:profiles/ma/skills/uploaded/b', name: 'b' };
+    const three: DeletableSkill = { ...MINE, id: 'ma:profiles/ma/skills/uploaded/c', name: 'c' };
+    api({
+      '/api/skill/delete': (_u: string, b: Record<string, unknown>) =>
+        b.id === two.id
+          ? new Response(JSON.stringify({ error: '부르고 있음', reason: 'in_use' }), { status: 409 })
+          : b.id === three.id
+            ? new Response(JSON.stringify({ error: '확인 중', reason: 'checking', retry_after: 10 }), { status: 409 })
+            : { ok: true },
+    });
+    mountScreen(<BulkDeleteDialog skills={[MINE, two, three]} onClose={() => {}} />, '/skills');
+    await user.click(await screen.findByRole('button', { name: '3개 지우기' }));
+    const sum = await screen.findByText(/1개 지움, 2개 막힘/);
+    expect(sum).toHaveTextContent('부르는 곳 있음 1 · 부르는 곳 확인 중 1');
   });
 
   it('실패하면 창을 열어 둔 채 한국어 문장과 접힌 원문을 보인다(DD5)', async () => {

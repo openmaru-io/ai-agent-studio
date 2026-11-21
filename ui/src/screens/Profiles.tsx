@@ -15,14 +15,16 @@ import {
   Checkbox,
   FormControlLabel,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
   useMediaQuery,
 } from '@mui/material';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { AddIconButton } from '@/components/AddIconButton';
@@ -49,6 +51,7 @@ import { ProfileDetail } from './profiles/Detail';
 import { DoNotUsePill } from './profiles/DoNotUse';
 import { channelText, channelTone, gatewayText, gatewayTone, modelLabel } from './profiles/shared';
 import type { ProfileSpot } from './profiles/spot';
+import { CREATE_DRAWER_ID, TemplateInstall } from './profiles/TemplateInstall';
 import type { ProfileRow } from './profiles/types';
 
 /** 모은 목록(/api/profiles?all=1)의 에이전트 묶음(스펙 2026-10-19-018 A1·리뷰 D3). 프로파일이 0개인 에이전트·멈춘 에이전트도 묶음으로 온다 */
@@ -118,9 +121,44 @@ const creatable = (groups: ProfileGroup[]) => groups.filter((g) => g.can_create 
 
 /** 새 프로파일 서랍. 맨 위에서 만들 에이전트를 고르고(스펙 2026-10-19-018 B1), 아래 칸(복제 원본·상한·가져오기 후보)은 고른 에이전트 기준이다(B2·리뷰 I6·I7).
  *  owner: 관리자가 아닌 주인 — 주 프로파일 복제만, 스킬 포함, 에이전트마다 상한(스펙 2026-10-15-011 D5) */
-function CreateBody({ groups, rows, current, owner, initial }: { groups: ProfileGroup[]; rows: AllRow[]; current: string; owner?: boolean; initial?: string }) {
+// 새 프로파일의 스킬 선택 체크박스. 무엇이 복사되고 무엇이 이어지는지를 체크 전에 읽을 수 있게 설명을 늘 아래에 둔다(스펙 2026-11-18-003).
+// 설명은 체크박스 글자 왼쪽 끝에 맞추고(이 테마에서 잰 값 36px) aria-describedby 로 잇는다. 한국어가 낱말 중간에서 끊기지 않게 keep-all
+function SkillOption({ checked, disabled, onChange, label, note }: { checked: boolean; disabled?: boolean; onChange: (on: boolean) => void; label: string; note?: string }) {
+  const noteId = useId();
+  return (
+    <Box>
+      <FormControlLabel
+        control={<Checkbox checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} inputProps={note ? { 'aria-describedby': noteId } : undefined} />}
+        label={label}
+      />
+      {note && (
+        <Typography id={noteId} variant="caption" component="p" sx={{ m: 0, mt: -0.5, pl: '36px', lineHeight: 1.55, wordBreak: 'keep-all', color: disabled ? 'text.disabled' : 'text.secondary' }}>
+          {note}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+function CreateBody({
+  groups,
+  rows,
+  current,
+  owner,
+  initial,
+  template,
+}: {
+  groups: ProfileGroup[];
+  rows: AllRow[];
+  current: string;
+  owner?: boolean;
+  initial?: string;
+  /** 스킬 허브 서랍에서 온 템플릿 id(ns/name). 템플릿 탭으로 열고 그 템플릿을 미리 고른다(스펙 2026-11-18-014) */
+  template?: string;
+}) {
   const { closeDrawer } = useUi();
   const { enqueueSnackbar } = useSnackbar();
+  const qc = useQueryClient();
   const patchParams = useParamPatch();
   const go = useSwitchToSameName();
   const choices0 = creatable(groups);
@@ -151,6 +189,9 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 「템플릿에서」 탭(스펙 2026-11-18-002 §4-2 1). 설치는 지금 에이전트에 한다 — 다른 에이전트를 골랐으면 탭을 끈다
+  const [mode, setMode] = useState<'blank' | 'template'>(template ? 'template' : 'blank');
+  const templateOk = !target || target === current;
   const first = useFocusOnMount<HTMLInputElement>();
   const full = isFull(g);
   const label = g ? groupLabel(g) : '';
@@ -172,7 +213,7 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
         name: name.trim(),
         action: 'create',
         clone_from: owner ? primary ?? '' : from,
-        no_skills: owner ? false : noSkills && !share && !imported,
+        no_skills: owner ? false : !!from && noSkills && !share && !imported,
         share_skills: !imported && share && (owner || !!from),
         ...(imported ? { import_from: { pod: impPod, profile: impProfile } } : {}),
         description,
@@ -180,6 +221,9 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
         ...(target ? { target_pod: target } : {}),
       });
       closeDrawer();
+      // 만들기는 useProfileAct 를 거치지 않는다 — 같은 규칙(OMAI-1855)으로 스킬 화면 프로파일 고르기에 새 프로파일이 곧바로 나오게 한다
+      void qc.invalidateQueries({ queryKey: ['skills'] });
+      void qc.invalidateQueries({ queryKey: ['profiles'] });
       enqueueSnackbar(t('profiles.created', { name: r.name }), { variant: 'success' });
       if (r.share_error) enqueueSnackbar(t('profiles.shareFailed', { error: r.share_error }), { variant: 'warning' });
       if (r.copy_error) enqueueSnackbar(t('profiles.copyFailed', { error: r.copy_error }), { variant: 'warning' });
@@ -193,8 +237,35 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
       setBusy(false);
     }
   };
+  const tabs = (
+    <Tabs value={mode} onChange={(_, v) => setMode(v)} aria-label={t('profiles.tpl.tabs')}>
+      <Tab value="blank" label={t('profiles.tpl.tabBlank')} />
+      <Tab value="template" label={t('profiles.tpl.tabTemplate')} disabled={!templateOk} />
+    </Tabs>
+  );
+  if (mode === 'template' && templateOk)
+    return (
+      <Stack spacing={1.5}>
+        {tabs}
+        <TemplateInstall
+          preselect={template}
+          onDone={(n: string) => {
+            closeDrawer();
+            void qc.invalidateQueries({ queryKey: ['profiles'] });
+            void qc.invalidateQueries({ queryKey: ['skills'] });
+            patchParams({ name: n, pane: null });
+          }}
+        />
+      </Stack>
+    );
   return (
     <Stack spacing={1.5}>
+      {tabs}
+      {!templateOk && (
+        <Typography variant="caption" color="text.secondary">
+          {t('profiles.tpl.otherAgent')}
+        </Typography>
+      )}
       {choices0.length > 1 ? (
         <Box>
           <AgentPicker
@@ -237,11 +308,12 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
       {owner ? (
         <>
           <Typography variant="body2">{t('profiles.cloneMainOnly', { name: primary ?? '' })}</Typography>
-          <FormControlLabel
-            control={<Checkbox checked={share} onChange={(e) => setShare(e.target.checked)} />}
+          <SkillOption
+            checked={share}
+            onChange={setShare}
             label={t('profiles.shareSkills', { name: primary ?? '' })}
+            note={t('profiles.shareSkillsNote', { name: primary ?? '' })}
           />
-          {share && <Typography variant="caption" color="text.secondary">{t('profiles.shareSkillsNote')}</Typography>}
         </>
       ) : (
         <>
@@ -252,17 +324,24 @@ function CreateBody({ groups, rows, current, owner, initial }: { groups: Profile
             options={names.map((n) => ({ value: n, label: t('profiles.cloneOf', { name: n }) }))}
             emptyLabel={t('profiles.startEmpty')}
           />
-          <FormControlLabel
-            control={<Checkbox checked={noSkills && !share} disabled={share} onChange={(e) => setNoSkills(e.target.checked)} />}
-            label={t('profiles.noSkills')}
-          />
+          {/* 스킬 선택은 원본을 골랐을 때만. 빈 프로파일로 시작하면 서버가 no_skills 를 쓰지 않아 고를 것이 없다(스펙 2026-11-18-003 §3) */}
           {from && (
-            <FormControlLabel
-              control={<Checkbox checked={share} onChange={(e) => setShare(e.target.checked)} />}
-              label={t('profiles.shareSkills', { name: from })}
-            />
+            <>
+              <SkillOption
+                checked={noSkills && !share}
+                disabled={share}
+                onChange={setNoSkills}
+                label={t('profiles.noSkills')}
+                note={t('profiles.noSkillsNote', { name: from })}
+              />
+              <SkillOption
+                checked={share}
+                onChange={setShare}
+                label={t('profiles.shareSkills', { name: from })}
+                note={t('profiles.shareSkillsNote', { name: from })}
+              />
+            </>
           )}
-          {from && share && <Typography variant="caption" color="text.secondary">{t('profiles.shareSkillsNote')}</Typography>}
         </>
       )}
       {choices.length > 0 && (
@@ -510,6 +589,16 @@ function ProfileList() {
   // 「지금 에이전트 먼저」의 기준은 화면에 들어올 때의 에이전트로 고정한다 — 줄을 눌러 바꾼 뒤 다시 정렬하면 서랍 뒤에서 표가 뒤섞였다(디자인 DD4)
   const anchor = useRef('');
   if (!anchor.current && current) anchor.current = current;
+  // 스킬 허브 서랍의 「이 AI 에이전트 템플릿으로 AI 에이전트 만들기」(?template=ns/name): 목록을 받은 뒤 만들기 서랍을 그 템플릿으로 한 번 열고 주소에서 지운다(스펙 2026-11-18-014)
+  const patchParams = useParamPatch();
+  const tplParam = params.get('template') ?? '';
+  const createRef = useRef<((initial?: string, template?: string) => void) | null>(null);
+  useEffect(() => {
+    if (!tplParam || !q.data || !createRef.current) return;
+    createRef.current(undefined, tplParam);
+    patchParams({ template: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tplParam, !!q.data]);
   if (!q.data) return <ScreenLoading title={t('profiles.title')} error={q.error?.message} />;
   const d = normalize(q.data, current, me?.pod?.name, me?.primary?.profile);
   const groupOf = (pod: string) => d.groups.find((g) => g.pod === pod);
@@ -535,12 +624,14 @@ function ProfileList() {
   const other = (r: AllRow) => !!r.pod && !!current && r.pod !== current;
   const labelOf = (r: AllRow) => (groupOf(r.pod) ? groupLabel(groupOf(r.pod) as ProfileGroup) : r.pod);
   const agentKnown = (pod: string) => !!agents?.some((a) => a.name === pod);
-  const openCreate = (initial?: string) =>
+  const openCreate = (initial?: string, template?: string) =>
     openDrawer({
+      id: CREATE_DRAWER_ID,
       title: t('profiles.newProfile'),
       sub: t('profiles.newProfileSub'),
-      body: <CreateBody groups={d.groups} rows={rows} current={current} owner={!d.can_edit} initial={initial} />,
+      body: <CreateBody groups={d.groups} rows={rows} current={current} owner={!d.can_edit} initial={initial} template={template} />,
     });
+  createRef.current = openCreate;
   const open = (r: AllRow) => {
     if (!other(r)) return openName({ name: r.name, pane: null });
     // 다른 에이전트의 줄: 그 에이전트로 바꾼 뒤 서랍을 연다(A3). 서랍 안 쓰기는 쿠키의 에이전트로 가기 때문이다(2026-10-19-011 R1)

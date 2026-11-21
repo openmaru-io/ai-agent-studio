@@ -61,6 +61,16 @@ class ParseAnswerTest(unittest.TestCase):
         self.assertEqual(got["strengths"], ["좋다"])                 # 문자열이 아닌 항목은 버린다
         self.assertEqual(got["requires"], [])
 
+    def test_long_english_line_is_cut_at_a_word_with_an_ellipsis(self):
+        """영어 한 줄이 120자에서 단어 중간에 끊겨 「…like chat, fil」로 보였다(2026-11-19 매뉴얼 촬영, 스펙 2026-11-19-004 §4)."""
+        long = "Provides step-by-step instructions for navigating and using the CogentAI AAS interface, covering features like chat, files, skills, scheduled jobs, messengers and settings in detail for new users who open AAS for the first time"
+        got = summary.parse_answer(json.dumps({**GOOD, "one_line": long}))["one_line"]
+        self.assertLessEqual(len(got), summary.ONE_LINE_MAX)
+        self.assertTrue(got.endswith("…"), got)
+        self.assertTrue(long.startswith(got[:-1]) and long[len(got) - 1] == " ", got)    # 단어 경계에서 잘랐다
+        short = "Makes weekly reports from the calendar."
+        self.assertEqual(summary.parse_answer(json.dumps({**GOOD, "one_line": short}))["one_line"], short)
+
     def test_unusable_answers_are_none(self):
         for text in ("", "요약할 수 없습니다", "[1, 2]", '{"one_line": ""}', '{"one_line": "x"}', "{broken"):
             self.assertIsNone(summary.parse_answer(text), text)
@@ -116,6 +126,47 @@ class MakeTest(Base):
         saved = json.loads(self.path.read_text(encoding="utf-8"))["market:community/weekly"]["ko"]
         self.assertNotIn("u@x.com", json.dumps(saved))                # 만든 사람은 저장하지 않는다(사용자 결정)
         self.assertEqual(saved["src"], "0.0.1")
+
+    def test_template_summary_reads_the_template_not_only_its_one_line_readme(self):
+        """템플릿(에이전트 패키지)은 SKILL.md 가 한 줄뿐이라 모델이 목록을 비워 bad_answer 가 났다(2026-11-18 OKE my-template).
+        상세의 SOUL·작업 지침·MCP·예약 작업·KEY·예시로 원문을 만들고, 프롬프트도 템플릿을 설명하게 한다. 키·판은 마켓 규칙 그대로"""
+        pkg = {**PKG, "name": "my-template", "kind": "agent", "body": "# my-template\n\nmy-template 입니다."}
+        detail = {"description": "영업 제안서를 돕는 프로파일", "soul": "나는 영업 도우미다", "agents": "제안서는 표로 쓴다",
+                  "env_requires": [{"name": "JIRA_TOKEN", "required": True}], "mcp": [{"name": "jira", "url": "https://jira.example/mcp"}],
+                  "cron": [{"name": "주간보고서", "schedule": "0 9 * * 1"}], "hub_skills": [{"name": "brand-guidelines", "version": "0.0.1"}],
+                  "skills": 2, "examples": ["이번 주 제안서 초안"], "files": ["양식.md"], "model_hint": ""}
+        t = summary.market_target(pkg, template=detail)
+        self.assertEqual((t.key, t.src), ("market:community/my-template", "0.0.1"))
+        msgs = summary.prompt(t, "ko")
+        self.assertIn("template", msgs[0]["content"])
+        src = msgs[1]["content"]
+        for word in ("kind: agent-template", "나는 영업 도우미다", "제안서는 표로 쓴다", "JIRA_TOKEN", "jira", "주간보고서", "brand-guidelines", "이번 주 제안서 초안"):
+            self.assertIn(word, src)
+        self.assertNotIn("template", summary.prompt(summary.market_target(PKG), "ko")[0]["content"])   # 스킬 요약 프롬프트는 그대로
+
+    def test_server_uses_the_template_detail_for_an_agent_package(self):
+        pkg = {**PKG, "name": "my-template", "kind": "agent"}
+        detail = {"soul": "나는 영업 도우미다", "agents": "", "env_requires": [], "mcp": [], "cron": [], "hub_skills": [], "skills": 0, "examples": [], "files": []}
+        with mock.patch.object(marketplace, "package", return_value=pkg), mock.patch.object(server.market_templates, "detail", return_value=detail) as det:
+            t = server._summary_target(None, {"ns": "community", "name": "my-template"})
+        det.assert_called_once_with("community", "my-template", "0.0.1")
+        self.assertEqual(t.kind, "template")
+        with mock.patch.object(marketplace, "package", return_value=pkg), \
+                mock.patch.object(server.market_templates, "detail", side_effect=marketplace.MarketError("x", 404)):
+            self.assertEqual(server._summary_target(None, {"ns": "community", "name": "my-template"}).kind, "skill")   # 템플릿이 아니면 지금처럼
+
+    def test_a_summary_cut_by_the_old_limit_is_stale_and_made_again(self):
+        """옛 상한 120자에서 잘려 저장된 한 줄은 판이 같아도 다시 만든다. 문장으로 끝나는 120자는 그대로 둔다."""
+        t = summary.market_target(PKG)
+        cut = {**GOOD, "one_line": ("Provides step-by-step instructions for navigating " * 3)[:120]}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({t.key: {"ko": {"body": cut, "src": t.src, "ts": 1}}}), encoding="utf-8")
+        self.assertTrue(summary.view(t)["stale"])
+        out, calls = self.make(t)
+        self.assertEqual((len(calls), out["stale"], out["summary"]), (1, False, GOOD))
+        whole = {**GOOD, "one_line": "x" * 119 + "."}
+        self.path.write_text(json.dumps({t.key: {"ko": {"body": whole, "src": t.src, "ts": 1}}}), encoding="utf-8")
+        self.assertFalse(summary.view(t)["stale"])
 
     def test_a_new_package_version_is_stale_and_opening_the_drawer_summarizes_it_again(self):
         self.make(summary.market_target(PKG))
@@ -191,6 +242,7 @@ class RouteTest(Base):
         for prof, name in (("ma", "weekly"), ("mb", "weekly"), ("ma", "fromhub")):
             d = cls.home / "profiles" / prof / "skills" / "ops" / name
             d.mkdir(parents=True, exist_ok=True)
+            (cls.home / "profiles" / prof / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
             (d / "SKILL.md").write_text(f'---\nname: {name}\ndescription: "주간 보고를 만든다"\n---\n\n# {name}\n', encoding="utf-8")
         reg = root / "pods-summary.json"
         # POD id 는 다른 시험과 겹치지 않게 한다 — 스킬 목록 캐시가 POD id 로 묶여 같은 id 면 남의 스킬이 보인다

@@ -290,3 +290,39 @@ describe('프로파일 서랍 「메신저 연결」 탭: 연결한 메신저 �
     expect(postedTo(fn, '/api/profile/action').filter((b) => b.action === 'channel_save')).toHaveLength(0);
   });
 });
+
+describe('메신저 연결 탭: 공유한 작업공간(스펙 2026-11-17-008 §5-3)', () => {
+  const ME = { auth_enabled: true, admin: false, user: { email: 'kim@x.com', name: '김소유' }, pod: { id: 'kim', owner: 'kim@x.com' } };
+  const MEMBERS = { members: [{ email: 'lee@x.com', name: '이팀원', role: 'use' }], owner: 'kim@x.com', owner_name: '김소유' };
+  function mountShared(data: unknown = DATA) {
+    const fn = stubApi({
+      '/api/me': ME,
+      '/api/agents/members': MEMBERS,
+      '/api/channels/platforms': data,
+      '/api/profile/action': (_u: string, b: Record<string, unknown>) =>
+        b.action === 'channel_save' ? { ok: true, hot_served: false, restart_needed: ['ma'] } : { ok: true },
+    });
+    mountScreen(<ChannelPane d={D({ can_edit: false, manages: true } as Partial<ProfileDetailData>)} />, '/profiles');
+    return fn;
+  }
+
+  it('대기 요청을 승인하며 누구인지 고르면 member_email 을 보낸다', async () => {
+    const fn = mountShared();
+    const dlg = await openPick('Telegram');
+    await userEvent.selectOptions(await within(dlg).findByRole('combobox', { name: 'kim 은(는) 누구인가요' }), 'lee@x.com');
+    await userEvent.click(within(dlg).getByRole('button', { name: '승인' }));
+    await waitFor(() =>
+      expect(postedTo(fn, '/api/profile/action')).toContainEqual(expect.objectContaining({ action: 'pairing_approve', request_id: 'r1', member_email: 'lee@x.com' }))
+    );
+  });
+
+  it('허용된 사용자 옆에 연결한 사람 이름, 없으면 「AAS 사용자 아님」, 대기 비우기', async () => {
+    const data = { ...DATA, pairing: { ...DATA.pairing, approved: [{ platform: 'telegram', request_id: '', user_id: '7', user_name: '@lee', aas_name: '이팀원' }, { platform: 'telegram', request_id: '', user_id: '8', user_name: '@ext' }] } };
+    const fn = mountShared(data);
+    const dlg = await openPick('Telegram');
+    expect(await within(dlg).findByText(/이팀원 님이 연결/)).toBeInTheDocument();
+    expect(within(dlg).getByText(/AAS 사용자 아님/)).toBeInTheDocument();
+    await userEvent.click(within(dlg).getByRole('button', { name: '연결 대기 비우기' }));
+    await waitFor(() => expect(postedTo(fn, '/api/profile/action')).toContainEqual(expect.objectContaining({ action: 'pairing_clear' })));
+  });
+});

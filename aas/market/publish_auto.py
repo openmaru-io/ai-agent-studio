@@ -158,6 +158,22 @@ def eligible(row: dict, owner: bool, admin: bool) -> tuple[bool, str]:
     return True, ""
 
 
+def predict(row: dict, owner: bool, admin: bool, namespaces: list[str], refs: list[str] | None = None) -> dict:
+    """자동 승인 판정 하나 — 게시 전 점검(미리 알림)과 요청 뒤 자동 승인(_maybe_auto_publish)이 같이 쓴다(스펙 2026-11-20-009 §3-3).
+    {will, reason, namespace, public}. reason: eligible 의 코드, 설정 꺼짐 off, 공개 대상인데 공개본에 사내 주소가 있으면 internal_refs.
+    refs 는 공개본 기준(market_publish.public_refs) — 게시 단계(_publish)가 거절하는 것과 같다."""
+    from .market_publish import VISIBILITY
+    cfg = config(namespaces)
+    ok, reason = eligible(row, owner, admin)
+    if not cfg["auto"]:
+        ok, reason = False, "off"
+    ns = row.get("want_namespace") or cfg["namespace"]
+    public = ns in VISIBILITY
+    if ok and public and refs:
+        ok, reason = False, "internal_refs"
+    return {"will": ok, "reason": reason, "namespace": ns, "public": public}
+
+
 def internal_refs(files: list[tuple[str, bytes]], domains: list[str]) -> list[str]:
     """사내 도메인·사설 IP 가 든 곳 「파일:줄」 목록(최대 20)."""
     out: list[str] = []

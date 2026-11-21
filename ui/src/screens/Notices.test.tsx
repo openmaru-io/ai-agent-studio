@@ -168,6 +168,20 @@ describe('공지 관리', () => {
     expect(postedTo(fn, '/api/notices').filter((b) => b.action === 'remove')).toEqual([]);
   });
 
+  it('내용은 여러 줄로 적고, 줄바꿈 그대로 저장을 보낸다', async () => {
+    const user = userEvent.setup();
+    const fn = stub(() => LIST([]));
+    mountScreen(<Notices />, '/notices');
+    await user.click(await screen.findByRole('button', { name: /새 공지/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: '제목' }), { target: { value: '점검' } });
+    const body = screen.getByRole('textbox', { name: '내용' });
+    await user.type(body, '- 일시: 12:30{Enter}- 영향: 없음');
+    expect(body).toHaveValue('- 일시: 12:30\n- 영향: 없음');
+    await user.click(screen.getByRole('button', { name: '저장' }));
+    await waitFor(() => expect(postedTo(fn, '/api/notices').filter((b) => b.action === 'save')).toHaveLength(1));
+    expect(postedTo(fn, '/api/notices').find((b) => b.action === 'save')?.body).toBe('- 일시: 12:30\n- 영향: 없음');
+  });
+
   it('저장하면 보이는 중이면 대상 사람 수를 토스트로 알린다(2C)', async () => {
     const user = userEvent.setup();
     stub(

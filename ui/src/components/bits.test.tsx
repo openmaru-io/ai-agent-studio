@@ -118,6 +118,20 @@ describe('bits', () => {
     expect(screen.getByText('이상 없음')).toBeInTheDocument();
   });
 
+  it('IssueList 는 retry 가 있는 항목에만 「다시 하기」를 두고 onRetry 로 그 항목을 넘긴다(스펙 2026-11-18-002)', async () => {
+    const onRetry = vi.fn();
+    const issues = [
+      { level: 'bad', text: '참고 파일을 넣지 못함', code: 'template_post', retry: 'r1' },
+      { level: 'warn', text: '다른 것' },
+    ];
+    const { rerender } = render(<IssueList issues={issues} onRetry={onRetry} />);
+    await userEvent.click(screen.getByRole('button', { name: '다시 하기' }));
+    expect(onRetry).toHaveBeenCalledWith(issues[0]);
+    expect(screen.getAllByRole('button', { name: '다시 하기' })).toHaveLength(1);
+    rerender(<IssueList issues={issues} />);
+    expect(screen.queryByRole('button', { name: '다시 하기' })).toBeNull();
+  });
+
   it('IssueList 는 ack 안내에만 확인 버튼을 두고, onAck 가 없으면 두지 않는다', async () => {
     const onAck = vi.fn();
     const issues = [

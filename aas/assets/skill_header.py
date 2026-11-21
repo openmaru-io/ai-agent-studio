@@ -21,7 +21,7 @@ MAX_ENV = 10
 MAX_RELATED = 10
 MAX_TAGS = 8
 MAX_TAG_LEN = 30
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")       # skill_setup._ENV_NAME·Hermes _ENV_VAR_NAME_RE 와 같다
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")       # skill_setup._ENV_NAME·Hermes _ENV_VAR_NAME_RE 와 같다
 
 
 def _q(value: str) -> str:

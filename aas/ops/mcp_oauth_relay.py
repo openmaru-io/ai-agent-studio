@@ -109,7 +109,7 @@ def ensure_redirect(api: HermesAPI, prof: str | None, server: str, callback: str
         if current < LOGIN_CONNECT_TIMEOUT:                      # 더 길게 둔 값은 그대로 둔다
             entry["connect_timeout"] = LOGIN_CONNECT_TIMEOUT
         return entry
-    return bool(mcp_servers.replace_server(api, prof, server, build, pod=pod, by=by, note="MCP OAuth 콜백 주소 맞추기")["changed"])   # i18n-ignore: 판 메모
+    return bool(mcp_servers.replace_server(api, prof, server, build, pod=pod, by=by, note="MCP OAuth 콜백 주소 맞추기", record=False)["changed"])   # i18n-ignore: 판 메모
 
 
 def _cancel_pending(api: HermesAPI, pod: str, profile: str, server: str, now: float) -> int:
@@ -422,12 +422,15 @@ def oauth_servers(home) -> dict[str, dict]:
     return out
 
 
-def login_items(pod: str, root, profiles: list[tuple[str, object]], alias_of, now: float | None = None) -> list[dict]:
+def login_items(pod: str, root, profiles, alias_of, now: float | None = None) -> list[dict]:
     """한 파드의 「MCP 로그인 필요」 항목. 읽을 때 계산하므로 로그인하면 다음 읽기에서 사라진다(V14). 서버마다 Hermes API 를 부르지 않는다(O7).
-    profiles: (프로파일 이름, 홈). 게이트웨이 상태 파일이 없는 옛 이미지는 건너뛴다(O9). 읽지 못하면 OSError."""
+    profiles: (프로파일 이름, 홈) 목록, 또는 그 목록을 돌려주는 함수 — 함수면 게이트웨이 상태 파일이 있을 때만 부른다
+    (옛 이미지에서 프로파일 폴더를 훑지 않게). 게이트웨이 상태 파일이 없는 옛 이미지는 건너뛴다(O9). 읽지 못하면 OSError."""
     records = gateway_records(root)
     if records is None:
         return []
+    if callable(profiles):
+        profiles = profiles()
     now = time.time() if now is None else now
     items = []
     for name, home in profiles:

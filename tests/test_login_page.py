@@ -106,11 +106,28 @@ class LoginPageTest(unittest.TestCase):
         self.assertIn("window.open(a.href+'&popup=1'", body)
         self.assertIn("/api/me", body)                                            # 끝난 것을 세션으로도 알아챈다
         self.assertIn("e.origin===location.origin", body)                         # 메시지는 같은 출처만 믿는다
-        self.assertEqual(body.count("<script"), 3)                                # 테마 한 줄 + 팝업 + 테마·언어 고르기
+        self.assertEqual(body.count("<script"), 4)                                # 테마 한 줄 + hash 이동 주소 + 팝업 + 테마·언어 고르기
         self.assertIsNone(EXTERNAL.search(body))
         self.assertIn("새 창에서 로그인합니다", body)
         _, none = render_login(oidc=False, password=True)
         self.assertNotIn("window.open", none)                                     # SSO 가 없으면 스크립트도 없다
+
+    def test_hash_becomes_the_next_path_when_the_server_had_none(self):
+        """스펙 2026-11-14-015: 로그아웃 상태에서 /#/office 를 열면 서버는 # 뒤를 못 받고 / → /auth/login 으로 보낸다.
+        브라우저가 남긴 hash 를 로그인 화면 스크립트가 이동 주소로 쓴다(SSO 링크·팝업 data-next·비밀번호 숨은 칸·언어 고르기)."""
+        for kw in ({"oidc": True}, {"oidc": False, "password": True}, {"oidc": True, "password": True}):
+            _, body = render_login(**kw)
+            self.assertIn(server._HASH_NEXT_SCRIPT, body, kw)
+            script = server._HASH_NEXT_SCRIPT
+            self.assertIn("location.hash", script)
+            self.assertIn("'#/'", script)                                            # #/ 로 시작하는 화면 주소만
+            self.assertIn("!=='/'", script)                                           # 서버가 준 이동 주소가 있으면 그것을 쓴다
+            self.assertIn("encodeURIComponent(n)", script)                           # SSO 링크의 next 는 인코딩(서버 safe_next 가 다시 거른다)
+            for target in ("'sso'", "input[name=next]", "'prefs'"):
+                self.assertIn(target, script)
+        _, body = render_login()
+        self.assertLess(body.index(server._HASH_NEXT_SCRIPT), body.index("window.open("))   # 팝업 스크립트가 data-next 를 읽기 전에 바꾼다
+        self.assertIsNone(EXTERNAL.search(body))
 
     def test_logged_out_notice(self):
         _, body = render_login(out=True)

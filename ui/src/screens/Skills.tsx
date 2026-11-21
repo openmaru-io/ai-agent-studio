@@ -29,7 +29,7 @@ import { useDrawerHead } from '@/components/drawerScope';
 import { ListView } from '@/components/ListView';
 import { MarkdownField } from '@/components/MarkdownField';
 import { ALL_PROFILES, ProfileScopePicker, useProfileScope } from '@/components/ProfileScopeSelect';
-import { TagBar, tagCounts, tagLabel, tagMatches } from '@/components/TagBar';
+import { TagBar, tagCounts, tagLabel, tagMatches, toggleTag } from '@/components/TagBar';
 import { TeamTargetNote } from '@/components/TeamTargetNote';
 import { tier1, tier2 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
@@ -45,6 +45,13 @@ import { isMySkill } from '@/screens/profiles/skillOrigin';
 import { agentOrder, AgentSkills, type AgentSkillsData } from '@/screens/skills/AgentSkills';
 import { useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import {
+  isManagedEnv,
+  ManagedEnvLines,
+  RequiredEnv,
+  SkillEnvButton,
+  SkillEnvProvider,
+} from '@/screens/skills/SkillEnvDialog';
 import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
 interface SkillRow {
@@ -107,8 +114,11 @@ interface SkillOne {
   scripts: string[];
   external_scripts: string[];
   tags?: string[];
-  /** 스킬이 SKILL.md 머리에 선언한 필요한 비밀값(스펙 2026-10-16-010 2단계). set 은 그 프로파일 .env 에 값이 있는가 */
-  required_env?: { name: string; prompt?: string; help?: string; required_for?: string; optional?: boolean; set?: boolean }[];
+  /** 스킬이 SKILL.md 머리에 선언한 필요한 비밀값(스펙 2026-10-16-010 2단계). set 은 그 프로파일 .env 에 값이 있는가.
+   *  managed·managed_source 는 AAS 가 주는 LLM 접속값(스펙 2026-11-19-002) */
+  required_env?: RequiredEnv[];
+  /** 선언한 LLM_* 의 출처가 갈림(일부만 프로파일 값) */
+  managed_mixed?: boolean;
 }
 
 const originLabel = (o?: string) => (o ? t(`skills.origin.${o}` as Parameters<typeof t>[0]) : '');
@@ -484,14 +494,30 @@ function SkillDetail({ s0 }: { s0: SkillRow }) {
   const talkTo = s.profile === 'default' ? s.cron[0]?.profile ?? 'default' : s.profile;
   // 「쓰려면 필요한 것」 아래에 붙이는 사실 칩: 모델 답과 섞지 않고 서버가 읽은 값을 그대로 보인다(스펙 2026-10-17-002 §4)
   const env = s.required_env ?? [];
+  const plainEnv = env.filter((e) => !isManagedEnv(e));
+  // 「값 넣기」 창이 받는 스킬 줄. 비어 있는 필수 키가 빠진 키다(서버 skills 목록의 missing_env 와 같은 기준)
+  const envRow = {
+    id: s0.id,
+    name: s.name,
+    profile: s.profile,
+    missing_env: env.filter((e) => !e.set && !e.optional).map((e) => e.name),
+    readiness: env.some((e) => !e.set && !e.optional) ? 'setup' : 'ok',
+  };
   const facts =
     env.length || s.mcp.length || s.rest.length ? (
       <>
-        {env.map((e) => (
-          <Tag key={e.name} tone={e.set ? 'good' : e.optional ? undefined : 'warn'}>
-            {`${e.name} · ${e.set ? t('skills.envSet') : e.optional ? t('skills.envOptional') : t('skills.envNeeded')}`}
-          </Tag>
-        ))}
+        {env.map((e) =>
+          isManagedEnv(e) ? (
+            // AAS 가 주는 LLM 접속값: AAS 값이면 info(초록은 「사용자가 넣어 정상」 전용), 프로파일 값이 덮으면 good(DESIGN.md)
+            <Tag key={e.name} tone={e.managed_source === 'profile' ? 'good' : 'info'}>
+              {`${e.name} · ${e.managed_source === 'profile' ? t('skills.envProfileValue') : t('skills.envProvidedByAas')}`}
+            </Tag>
+          ) : (
+            <Tag key={e.name} tone={e.set ? 'good' : e.optional ? undefined : 'warn'}>
+              {`${e.name} · ${e.set ? t('skills.envSet') : e.optional ? t('skills.envOptional') : t('skills.envNeeded')}`}
+            </Tag>
+          )
+        )}
         {s.mcp.map((m) => (
           <Tag key={'mcp:' + m.server}>{`MCP ${m.server}`}</Tag>
         ))}
@@ -573,37 +599,54 @@ function SkillDetail({ s0 }: { s0: SkillRow }) {
         </Box>
       )}
       {!s.shared_from && <PublishSection s={s} />}
+      {/* 스킬 화면의 「값 넣기」와 같은 창(스펙 2026-11-18-004 §8). 넣을 수 없는 사람에게는 지금처럼 비밀값 탭 링크 */}
       {!!s.required_env?.length && (
-        <Section title={t('skills.envTitle')} count={s.required_env.length}>
-          <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
-            {t('skills.envNote')}
-          </Typography>
-          <RowList>
-            {s.required_env.map((e) => (
-              <Box key={e.name} sx={{ py: 0.5 }}>
-                <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-                  <Mono>{e.name}</Mono>
-                  <Tag tone={e.set ? 'good' : e.optional ? undefined : 'warn'}>
-                    {e.set ? t('skills.envSet') : e.optional ? t('skills.envOptional') : t('skills.envNeeded')}
-                  </Tag>
-                  {!e.set && (
-                    <LinkChip to="profiles" params={{ name: s.profile, pane: 'env', key: e.name }} page>
-                      {t('skills.envFill')}
-                    </LinkChip>
-                  )}
-                </Stack>
-                {(e.prompt || e.required_for || e.help) && (
-                  <Typography variant="caption" color="text.secondary" component="p">
-                    {[e.prompt, e.required_for && t('skills.envFor', { what: e.required_for }), e.help].filter(Boolean).join(' · ')}
-                  </Typography>
-                )}
-              </Box>
-            ))}
-          </RowList>
-          <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
-            {t('skills.chatLoginNote')}
-          </Typography>
-        </Section>
+        <SkillEnvProvider rows={[envRow]} profiles={list.data?.profiles}>
+          {/* 개수·「여기서 넣으세요」는 넣을 것(관리 이름 밖)만 센다. 관리 이름만 선언했으면 아래 한 줄만 보인다(스펙 2026-11-19-002 §4-3) */}
+          <Section title={t('skills.envTitle')} count={plainEnv.length}>
+            {plainEnv.length > 0 && (
+              <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
+                {t('skills.envNote')}
+              </Typography>
+            )}
+            {plainEnv.length > 0 && (
+              <RowList>
+                {plainEnv.map((e) => (
+                  <Box key={e.name} sx={{ py: 0.5 }}>
+                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+                      <Mono>{e.name}</Mono>
+                      <Tag tone={e.set ? 'good' : e.optional ? undefined : 'warn'}>
+                        {e.set ? t('skills.envSet') : e.optional ? t('skills.envOptional') : t('skills.envNeeded')}
+                      </Tag>
+                      {!e.set && (
+                        <SkillEnvButton
+                          row={envRow}
+                          envKey={e.name}
+                          fallback={
+                            <LinkChip to="profiles" params={{ name: s.profile, pane: 'env', key: e.name }} page>
+                              {t('skills.envFill')}
+                            </LinkChip>
+                          }
+                        />
+                      )}
+                    </Stack>
+                    {(e.prompt || e.required_for || e.help) && (
+                      <Typography variant="caption" color="text.secondary" component="p">
+                        {[e.prompt, e.required_for && t('skills.envFor', { what: e.required_for }), e.help].filter(Boolean).join(' · ')}
+                      </Typography>
+                    )}
+                  </Box>
+                ))}
+              </RowList>
+            )}
+            <Box sx={{ mt: plainEnv.length ? 1 : 0 }}>
+              <ManagedEnvLines env={env} mixed={s.managed_mixed} profile={s.profile} />
+            </Box>
+            <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+              {t('skills.chatLoginNote')}
+            </Typography>
+          </Section>
+        </SkillEnvProvider>
       )}
       <Section title={t('skills.flowAndChat')}>
         <LinkChip to="flows" params={{ root: 'skill:' + s0.id }} page={{ kind: 'skillMap', root: 'skill:' + s0.id }}>
@@ -1093,7 +1136,9 @@ export function Skills() {
   const { openDrawer } = useUi();
   const q = useQuery<SkillsData>({ queryKey: ['skills'], queryFn: () => get<SkillsData>('/api/skills'), staleTime: 120000 });
   useMe(); // 표 보기가 붙기 전에 권한 정보를 함께 받아 둔다(관리자 단추가 늦게 뜨지 않게)
-  const table = TABLE_PARAMS.some((k) => params.has(k)) || params.get('profile') === ALL_PROFILES;
+  // ?view=top 은 에이전트 중심 보기의 「많이 쓴 스킬」 칸이다(스펙 2026-11-19-005 U5) — 표로 넘기지 않는다
+  const table =
+    TABLE_PARAMS.some((k) => params.has(k) && !(k === 'view' && params.get('view') === 'top')) || params.get('profile') === ALL_PROFILES;
   if (table) return <SkillsTable />;
   if (!q.data) return <ScreenLoading title={t('skills.title')} error={q.error?.message} />;
   const g = q.data;
@@ -1203,7 +1248,7 @@ function SkillsTable() {
       total={viewAll.length}
       view={tabId === 'all' && scope === ALL ? undefined : viewTags}
       active={activeTags}
-      onToggle={(id) => setTags(activeTags.includes(id) ? activeTags.filter((x) => x !== id) : [...activeTags, id])}
+      onToggle={(id) => setTags(toggleTag(activeTags, id))}
       onClear={() => setTags([])}
       action={
         admin ? (
@@ -1295,7 +1340,7 @@ function SkillsTable() {
       },
       { replace: true }
     );
-  // 부제: 프로파일 선택만(「정적 분석」은 뺌, 디자인 2A) + 호출 대상을 골랐을 때만 그 안내. 자리가 모자라면 안내는 다음 줄, xs 는 선택이 한 줄을 다 쓴다(디자인 10A)
+  // 프로파일 고르기: 표 도구줄의 검색 칸 왼쪽(스펙 2026-11-18-007 R7). 좁은 화면에서는 도구줄 한 줄을 다 쓴다(F12)
   const named = choices.filter((p) => p !== ALL);
   const picker = multi ? (
     <ProfileScopePicker
@@ -1318,13 +1363,8 @@ function SkillsTable() {
       </Button>
     </Box>
   ) : null;
-  const sub =
-    picker || lensNote ? (
-      <Box component="span" sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 1, rowGap: 0.5 }}>
-        {picker}
-        {lensNote}
-      </Box>
-    ) : undefined;
+  // 프로파일 고르기는 표 도구줄(검색 칸 왼쪽)로 옮겼다(스펙 2026-11-18-007 R7). 부제에는 호출 대상 안내만 남는다
+  const sub = lensNote ?? undefined;
   const inMine = (s: SkillRow) => isMySkill(s.origin);
   const inBuiltin = (s: SkillRow) => !isMySkill(s.origin);
 
@@ -1371,6 +1411,7 @@ function SkillsTable() {
         toggles={TOGGLES()}
         toolbar={
           <>
+            {picker}
             <NativeSelect
               value={lens}
               onChange={(e) => setLens(e.target.value)}

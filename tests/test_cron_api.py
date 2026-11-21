@@ -84,6 +84,7 @@ class CronApiTest(unittest.TestCase):
         cls.fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeHermes)
         threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
         home = root / "h"; (home / "profiles" / "ma").mkdir(parents=True)
+        (home / "profiles" / "ma" / "config.yaml").write_text("model: x\n")                # 표시 파일이 있어야 프로파일이다
         (home / "skills" / "ops" / "digest").mkdir(parents=True); (home / "scripts").mkdir()
         cls.md = home / "skills" / "ops" / "digest" / "SKILL.md"
         cls.md.write_text("---\nname: digest\ndescription: 요약\n---\n# digest\n처음 내용\n", encoding="utf-8")
@@ -118,6 +119,36 @@ class CronApiTest(unittest.TestCase):
         self.assertNotIn("supersecretvalue1234", json.dumps(d))
         self.assertNotIn("hermes_home", d["job"])                        # 정해 둔 항목만 내보낸다
         self.assertEqual(d["runs"], [{"id": "cron_j1_20261005_090000", "started_at": 1.0, "ended_at": 31.0}])
+
+    def test_delete_drops_job_from_cached_list_before_rebuild(self):
+        # 지운 작업이 「전체 작업·일정」 목록에 남던 것: 흐름 그림을 다시 만드는 데 30초쯤 걸리는데,
+        # 화면은 지운 직후 목록을 다시 받아 그동안의 옛 그림을 그대로 받았다. 지운 작업은 곧바로 빠져야 한다
+        pod = server._registry.pods[0]
+        ix = {"built_at": "x", "totals": {"nodes": 2, "edges": 1}, "skill_ids": {},
+              "nodes": {"cron:ma/j1": {"id": "cron:ma/j1", "kind": "cron", "label": "digest-daily", "profile": "ma", "sub": "ma · 0 9 * * *", "status": "ok", "badges": []},
+                        "cron:ma/j2": {"id": "cron:ma/j2", "kind": "cron", "label": "keep-me", "profile": "ma", "sub": "ma · 0 9 * * *", "status": "ok", "badges": []},
+                        "skill:x": {"id": "skill:x", "kind": "skill", "label": "digest", "profile": "ma", "sub": "", "status": None, "badges": []}},
+              "out": {"cron:ma/j1": [{"from": "cron:ma/j1", "to": "skill:x", "kind": "runs"}]},
+              "inc": {"skill:x": [{"from": "cron:ma/j1", "to": "skill:x", "kind": "runs"}]}}
+        started = threading.Event()
+        old = server._rebuild_flow
+        server._rebuild_flow = lambda p: started.set()                    # 다시 만들기가 아직 끝나지 않은 상태
+        try:
+            with server._lock:                                             # 앞 시험이 띄운 다시 만들기가 늦게 끝나 이 그림을 덮지 않게
+                server._flow_seq[pod.id] = server._flow_seq.get(pod.id, 0) + 1
+                server._cache[f"{pod.id}:flow"] = (__import__("time").time(), ix)
+            self.assertIn("digest-daily", [s["label"] for s in self.req("GET", "/api/flows")[1]["starts"]])
+            code, _ = self.req("POST", "/api/cron/action", {"profile": "ma", "id": "j1", "action": "delete", "job_name": "digest-daily", "confirm": "digest-daily"}, {"X-AAS": "1"})
+            self.assertEqual(code, 200)
+            self.assertTrue(started.wait(5))
+            labels = [s["label"] for s in self.req("GET", "/api/flows")[1]["starts"]]
+            self.assertNotIn("digest-daily", labels)
+            self.assertIn("keep-me", labels)
+            self.assertIn("cron:ma/j1", ix["nodes"])
+        finally:
+            server._rebuild_flow = old
+            with server._lock:
+                server._cache.pop(f"{pod.id}:flow", None)
 
     def test_actions_go_to_hermes_api_with_profile(self):
         FakeHermes.calls.clear()
@@ -362,3 +393,55 @@ class ObservedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebuildOrderTest(unittest.TestCase):
+    """지우기 전에 시작한 흐름 다시 만들기가 늦게 끝나도, 지운 작업을 되살리지 않는다."""
+
+    def test_older_rebuild_does_not_overwrite_after_delete(self):
+        pod = type("P", (), {"id": "ord", "hermes_home": None})()
+        old_ix = {"nodes": {"cron:ma/j1": {"kind": "cron"}}, "out": {}, "inc": {}, "totals": {}}
+        gate, entered = threading.Event(), threading.Event()
+        real = flow.build
+
+        def slow(home, *_rest):                                         # 사내 flow.build 는 이미지 인자를 더 받는다
+            entered.set(); gate.wait(5)
+            return old_ix                                                  # 지우기 전에 읽은 jobs.json
+        flow.build = slow
+        try:
+            with server._lock:
+                server._cache["ord:flow"] = (0.0, old_ix)
+            t = threading.Thread(target=server._rebuild_flow, args=(pod,)); t.start()
+            self.assertTrue(entered.wait(5))
+            server._drop_deleted_job(pod, "ma", "j1")
+            gate.set(); t.join(5)
+            self.assertNotIn("cron:ma/j1", server._cache["ord:flow"][1]["nodes"])
+        finally:
+            flow.build = real
+            with server._lock:
+                server._cache.pop("ord:flow", None)
+
+    def test_cached_rebuild_started_before_delete_does_not_bring_the_job_back(self):
+        """_flow() 의 캐시 만료(900초·_flow_sig) 뒤 다시 만들기는 _rebuild_flow 의 순번이 아니라 _cached 의 세대로 막힌다.
+        지우기 전에 시작한 그 만들기가 늦게 끝나도 지운 작업을 되살리지 않는다(스펙 2026-11-19-003 리뷰 엔지니어링 F10·F11)."""
+        old_ix = {"nodes": {"cron:ma/j1": {"kind": "cron"}}, "out": {}, "inc": {}, "totals": {}}
+        pod = type("P", (), {"id": "ord2", "hermes_home": None})()
+        gate, entered = threading.Event(), threading.Event()
+
+        def slow():
+            entered.set(); gate.wait(5)
+            return old_ix
+        got = {}
+        t = threading.Thread(target=lambda: got.setdefault("v", server._cached("ord2:flow", 900, slow, per_lang=False)))
+        t.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            server._drop_deleted_job(pod, "ma", "j1")
+            gate.set(); t.join(5)
+            with server._lock:
+                hit = server._cache.get("ord2:flow")
+            self.assertTrue(hit is None or "cron:ma/j1" not in hit[1]["nodes"])
+        finally:
+            gate.set()
+            with server._lock:
+                server._cache.pop("ord2:flow", None)

@@ -148,6 +148,23 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(out["status"], "failed")
         self.assertEqual(out["needs"], {"modified": ["skills/market/hello"], "occupied": []})
 
+    def test_hub_unavailable_closes_the_request_as_transient(self):
+        """허브에 잠깐 닿지 않아 실패한 요청에는 transient 를 남긴다 — 기본 스킬 배달기가 이것을 보고 다시 시도한다(OMAI-2085)."""
+        base = {"id": "20261117160540941787-6a3371", "pod": "p1", "namespace": "free", "name": "cogentai-chart", "package": "free/cogentai-chart",
+                "version": "0.1.7", "profile": "main", "kind": "skill", "mode": "install", "status": "queued"}
+        row = dict(base)
+        err = ms.Unavailable("스킬 허브에 연결할 수 없습니다: URLError")
+        with mock.patch.object(ms, "prepare", side_effect=err), mock.patch.object(market_dispatch.marketplace, "installed", return_value=[]):
+            out = market_dispatch._dispatch(mock.MagicMock(), row, {"p1"}, get_home=lambda pod: Path("/x"))
+        self.assertEqual((out["status"], out.get("transient")), ("failed", True))
+        self.assertEqual(out["message"], "스킬 허브에 연결할 수 없습니다: URLError")
+        other = {**base, "id": "20261117160540941787-6a3372"}                # _dispatch 가 row 를 고치므로 처음 값에서 만든다
+        with mock.patch.object(ms, "prepare", side_effect=ms.Refuse("패키지가 너무 큽니다")), \
+                mock.patch.object(market_dispatch.marketplace, "installed", return_value=[]):
+            out = market_dispatch._dispatch(mock.MagicMock(), other, {"p1"}, get_home=lambda pod: Path("/x"))
+        self.assertEqual(out["status"], "failed")
+        self.assertNotIn("transient", out)
+
     def test_nothing_to_do_closes_as_done_without_a_task(self):
         row = {"id": "20261014090000000002-abcdef", "pod": "p1", "namespace": "free", "name": "hello", "package": "free/hello", "version": "2.0.0",
                "profile": "ma", "kind": "skill", "mode": "update", "status": "queued", "on_modified": "keep"}

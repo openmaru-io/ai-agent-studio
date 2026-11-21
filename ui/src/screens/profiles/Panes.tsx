@@ -47,6 +47,7 @@ import { Pill } from '@/components/DataGrid';
 import { DisclosureButton } from '@/components/DisclosureButton';
 import { useInDrawer } from '@/components/drawerScope';
 import { compactSwitchSx, ItemEmpty, ItemList, ItemRow } from '@/components/ItemRow';
+import { openRestartPending, useProfileRestartPending } from '@/components/RestartPending';
 import { StatusPill } from '@/components/StatusPill';
 import { tier1 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
@@ -63,8 +64,8 @@ import { DeletableSkill, SkillRowDelete, useSkillDelete } from '@/screens/skills
 import { NewJobBody } from '../cron/NewJob';
 import { CredentialFiles } from './CredentialFiles';
 import { type LoginEnd, loginView, useMcpLogin } from './McpLogin';
-import { AddServerDialog } from './McpServers';
-import { calmAlertSx, capWhy, mayManage, PaneUnreadable, useProfileAct } from './shared';
+import { AddServerDialog, MINDWIKI_SERVER, useMindwikiAccount } from './McpServers';
+import { calmAlertSx, capWhy, mayEditTab, mayManage, PaneUnreadable, useProfileAct } from './shared';
 import { isMySkill, skillOriginLabel } from './skillOrigin';
 import { useProfileSpot } from './spot';
 import type { EnvVar, McpItem, ProfileDetailData, SkillItem, ToolsetItem } from './types';
@@ -492,7 +493,7 @@ export function SkillsPane({ d }: { d: ProfileDetailData }) {
                   on={s.enabled}
                   label={t('profiles.skillToggle', { name: s.name })}
                   done={(on) => t(on ? 'profiles.skillOn' : 'profiles.skillOff', { name: s.name })}
-                  disabled={!d.can_edit && !mayManage(d)}
+                  disabled={!mayEditTab(d, 'skills')}
                   change={(on) => act('skill', { target: s.name, enabled: on })}
                   offConfirm={t('profiles.skillOffConfirm', { name: s.name })}
                 />
@@ -769,7 +770,7 @@ function ToolsetRow({ ts, d, name }: { ts: ToolsetItem; d: ProfileDetailData; na
           on={ts.enabled}
           label={t('profiles.toolsetToggle', { label: ts.label })}
           done={(on) => t(on ? 'profiles.toolsetOn' : 'profiles.toolsetOff', { label: ts.label })}
-          disabled={!d.can_edit && !mayManage(d)}
+          disabled={!mayEditTab(d, 'tools')}
           change={(on) => act('toolset', { target: ts.name, enabled: on })}
           offConfirm={t('profiles.toolsetOffConfirm', { label: ts.label })}
         />
@@ -793,23 +794,35 @@ export function ToolsPane({ d }: { d: ProfileDetailData }) {
   const [adding, setAdding] = useState(false);
   const [justAdded, setJustAdded] = useState('');
   const focusServer = useProfileSpot().get('server') ?? ''; // 도구 화면의 MCP 서버 서랍 링크(OMAI-1249 V17)
-  const [changed, setChanged] = useState(false);
-  const confirm = useConfirm();
+  // 「지금 적용」 알림은 서버의 다시 시작 장부를 따른다(스펙 2026-11-18-016 4-5 R6). 화면 상태로 두면 새로 고침·다른 화면에서 사라졌다.
+  // 바꾼 것은 서버가 기록하고 응답을 받은 useProfileAct 가 me 를 다시 읽는다. 여기서는 그 뒤 다시 읽기만 건다
+  const pending = useProfileRestartPending(name, ['mcp', 'config', 'env', 'mindwiki']);
+  const mcpPending = useProfileRestartPending(name, ['mcp', 'config', 'env']);
+  const reread = () => void qc.invalidateQueries({ queryKey: ['me'] });
   const { act: actTools } = useProfileAct(name);
-  const apply = async () => {
-    if (!(await confirm(t('profiles.mcp.applyConfirm')))) return;
+  const mayEdit = d.can_edit || mayManage(d);
+  // MindWiki 키를 서버 뒤 작업이 바꿨으면 화면 안 변경이 없어도 「지금 적용」을 띄운다(스펙 2026-11-14-012 A9)
+  const { account: mwAccount } = useMindwikiAccount(name, mayEdit && (d.mcp ?? []).some((m) => m.name === MINDWIKI_SERVER));
+  // 적용한 뒤에는 그 뒤에 새로 읽은 값만 믿는다. 다시 읽기가 오기 전(게이트웨이가 다시 뜨는 중이면 실패도 한다) 캐시의 needs_apply 로
+  // 「또 바뀌었습니다」가 보였다(OKE 실화면 2026-11-15)
+  // 다시 시작은 대화 상자 하나에서 한다 — 무엇이 함께 반영되는지 보인다(쿠버네티스는 다른 프로파일 기록도 반영된다)
+  const apply = () => openRestartPending({ focusProfile: name });
+  // 자동 첫 연결 안내도 도구 탭에 둔다. 카탈로그 창 안에만 있으면 자동으로 연결된 사람은 창을 열 일이 없어 보지 못했다(OKE 실화면 2026-11-15)
+  // 「그대로 두기」가 성공하면 바로 닫는다. 카탈로그 다시 읽기는 OKE 에서 7초쯤 걸려, 기다리면 그동안 안내와 꺼진 단추가 남았다
+  const [acking, setAcking] = useState(false);
+  const [acked, setAcked] = useState(false);
+  useEffect(() => setAcked(false), [name]); // 다른 프로파일로 바뀌면 그 프로파일의 안내를 다시 본다
+  const ackAuto = async () => {
+    setAcking(true);
     try {
-      await actTools('mcp_apply');
-      setChanged(false);
-      // 게이트웨이가 다시 뜨는 동안 지금 작업공간은 「다시 시작하는 중」이다 — 곧 다시 읽어 띠를 띄운다(스펙 2026-10-23-006).
-      // OKE 에서 NotReady 가 되기까지 약 7초 걸려 두 번 읽는다. 한 번 restarting 을 받으면 useMe 가 5초마다 이어 읽는다
-      for (const ms of [4000, 12000]) window.setTimeout(() => void qc.invalidateQueries({ queryKey: ['me'] }), ms);
-      enqueueSnackbar(t('profiles.mcp.applied'), { variant: 'success' });
+      await actTools('mcp_mindwiki_ack');
+      setAcked(true);
+      void qc.invalidateQueries({ queryKey: ['mcp-catalog', name] });
     } catch (e) {
       enqueueSnackbar((e as Error).message, { variant: 'error' });
     }
+    setAcking(false);
   };
-  const mayEdit = d.can_edit || mayManage(d);
   const added = async (server: string, info?: { oauth: boolean; notes?: string[] }) => {
     setAdding(false);
     setJustAdded(server);
@@ -817,7 +830,7 @@ export function ToolsPane({ d }: { d: ProfileDetailData }) {
     setOnFilter('all');
     // OAuth 서버는 게이트웨이가 다시 시작 없이 설정을 읽고 로그인하면 바로 붙는다(스펙 2026-10-16-010 14-2·14-5·14-16, 결정 D6).
     // 「다시 시작해야 씁니다」 안내는 그 밖의 서버에만 띄운다(토큰·stdio 서버는 다시 시작 없이 붙는지 확인하지 않았다)
-    if (!info?.oauth) setChanged(true);
+    if (!info?.oauth) reread();
     enqueueSnackbar(t('profiles.mcp.added', { name: server }), { variant: 'success' });
     for (const note of info?.notes ?? []) enqueueSnackbar(note, { variant: 'warning' }); // 도구 묶음 끄기·사용 규칙 스킬 설치 실패(설치는 성공)
     await refresh();
@@ -883,7 +896,7 @@ export function ToolsPane({ d }: { d: ProfileDetailData }) {
                 auto={m.name === justAdded}
                 focused={!!focusServer && m.name === focusServer}
                 onRemoved={(info) => enqueueSnackbar(info, { variant: 'success' })}
-                onChanged={() => setChanged(true)}
+                onChanged={reread}
               />
             ))}
           </ItemList>
@@ -899,7 +912,20 @@ export function ToolsPane({ d }: { d: ProfileDetailData }) {
             <Typography color="text.secondary">{t('profiles.mcpUnreadable')}</Typography>
           </PaneUnreadable>
         )}
-        {changed && mayEdit && (
+        {mwAccount?.auto_connected && !acked && mayEdit && (
+          <Alert
+            severity="info"
+            sx={{ ...calmAlertSx, mt: 1 }}
+            action={
+              <Button size="small" color="inherit" onClick={ackAuto} disabled={acking} sx={{ whiteSpace: 'nowrap' }}>
+                {t('profiles.mcp.mindwikiAutoKeep')}
+              </Button>
+            }
+          >
+            {t('profiles.mcp.mindwikiAutoConnected')}
+          </Alert>
+        )}
+        {pending && (
           <Alert
             severity="info"
             sx={{ ...calmAlertSx, mt: 1 }}
@@ -909,14 +935,14 @@ export function ToolsPane({ d }: { d: ProfileDetailData }) {
               </Button>
             }
           >
-            {t('profiles.mcp.applyBanner')}
+            {mcpPending ? t('profiles.mcp.applyBanner') : t('profiles.mcp.mindwikiApplyNeeded')}
           </Alert>
         )}
         <Typography variant="caption" color="text.secondary" component="p">
           {t('profiles.mcpNote')}
         </Typography>
       </Section>
-      <AddServerDialog open={adding} name={name} secure={!!d.secure} callbackUrl={d.mcp_oauth_callback} admin={!!d.can_edit} onClose={() => setAdding(false)} onAdded={added} onChanged={() => setChanged(true)} />
+      <AddServerDialog open={adding} name={name} secure={!!d.secure} callbackUrl={d.mcp_oauth_callback} admin={!!d.can_edit} onClose={() => setAdding(false)} onAdded={added} onChanged={reread} />
       <Section title={t('profiles.toolsetSection')} count={filtering ? toolsetHit.length : (d.toolsets ?? []).length}>
         {d.toolsets ? (
           <ItemList>

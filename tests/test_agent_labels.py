@@ -144,6 +144,21 @@ class OwnerNameTest(AccessBase):
         self.assertEqual(server._pod_label(P(), {"x": "기본"}), {"name": "기본", "owner_name": ""})
         self.assertEqual(server._pod_label(Reg.pods[0], {})["owner_name"], "김에이")
 
+    def test_모델_화면_응답에_어느_에이전트의_것인지_붙는다(self):
+        """스펙 2026-11-17-002: 사용자마다 주 프로파일이 main 이라 모델 화면이 누구의 main 인지 보이도록 pod·name·owner_name 을 준다."""
+        from unittest import mock
+        office.person_touch(A, "김에이")
+        self.addCleanup(self._forget, A)
+        old = office.agent_names_provider
+        office.agent_names_provider = lambda: {"yj": "AAS 관리자"}
+        self.addCleanup(lambda: setattr(office, "agent_names_provider", old))
+        yj, scdf = Reg.pods
+        with mock.patch.object(server, "_models", lambda pod: {"models": [{"id": "m", "primary": ["main"]}], "profiles": []}):
+            got = server._models_view(yj)
+            self.assertEqual((got["pod"], got["name"], got["owner_name"]), ("yj", "AAS 관리자", "김에이"))
+            self.assertEqual(got["models"][0]["primary"], ["main"])          # 집계는 그대로
+            self.assertEqual(server._models_view(scdf)["name"], "")           # 이름을 짓지 않았으면 빈 값(화면이 id 를 쓴다)
+
 
 class ChangeLabelTest(unittest.TestCase):
     """스펙 2026-10-19-003: 변경 기록이 「주인 · 에이전트 이름」을 그릴 값을 주고, 대상 글 안의 설치본 id 를 뺀다."""

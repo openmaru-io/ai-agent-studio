@@ -55,6 +55,32 @@ describe('Models', () => {
     expect(await within(dlg).findByText('10.0.0.151:8000')).toBeInTheDocument();
   });
 
+  it('어느 에이전트의 프로파일인지 머리와 프로파일 칸에 보인다(2026-11-17-002)', async () => {
+    const user = userEvent.setup();
+    mount('/models', { ...DATA, pod: 'aas-agent-1', name: '연구 도우미', owner_name: '김에이' });
+    const head = await screen.findByTestId('models-agent');
+    expect(head).toHaveTextContent('김에이 · 연구 도우미');
+    expect(head).toHaveAttribute('title', '이 화면의 프로파일은 모두 「김에이 · 연구 도우미」 AI 에이전트의 것입니다');
+    const row = await rowByName(/^qwen3/);
+    expect(within(row).getByText('ma, ops')).toBeInTheDocument(); // 이름 글자는 그대로
+    expect(within(row).getAllByText('김에이')).toHaveLength(2); // 주 모델·폴백 칸 옆 주인 이름
+    expect(within(await rowByName(/^spare/)).queryByText('김에이')).toBeNull(); // 쓰는 프로파일이 없으면 붙이지 않는다
+    await user.click(screen.getByRole('tab', { name: /^프로파일별 설정/ }));
+    expect(within(await rowByName(/^ma/)).getByText('김에이')).toBeInTheDocument();
+  });
+
+  it('주인이 없는 설치본은 머리에 에이전트 id 를, 옛 서버(pod 없음)는 아무것도 붙이지 않는다', async () => {
+    mount('/models', { ...DATA, pod: 'local', name: '', owner_name: '' });
+    expect(await screen.findByTestId('models-agent')).toHaveTextContent('local');
+    expect(within(await rowByName(/^qwen3/)).queryByText('local')).toBeNull(); // 칸에는 주인·에이전트 이름이 있을 때만
+  });
+
+  it('옛 서버 응답(pod 없음)에는 머리 뱃지가 없다', async () => {
+    mount();
+    await rowByName(/^qwen3/);
+    expect(screen.queryByTestId('models-agent')).toBeNull();
+  });
+
   it('기본 모델 이름 옆에 「기본 모델」 뱃지를 보인다(2026-10-18)', async () => {
     mount('/models', { ...DATA, default_model: 'qwen3' });
     const row = await rowByName(/^qwen3/);

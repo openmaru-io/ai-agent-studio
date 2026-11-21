@@ -133,9 +133,11 @@ function mount(market = MARKET(), detail: unknown = DETAIL('skill'), initial = '
     '/api/market/archived': { items: [{ profile: 'ma', skill: 'old-skill', dir: 'old-skill-20261001120000' }] },
     '/api/market/grant': { ok: true },
     '/api/market/tags/refresh': { ok: true, queued: 2 },
+    '/api/market/work-prefixes': { ok: true, rules: [] },
     '/api/market/updates/queue': { ok: true, n: 1 },
     '/api/market/updates/skip': { ok: true, n: 1 },
     '/api/market/updates': extra['/api/market/updates'] ?? UPD(),
+    '/api/market/templates': extra['/api/market/templates'] ?? {},     // 템플릿 보기 카드(2026-11-18-011). 기본은 카드 없음
     '/api/market': market,
     '/api/chat/status': { agents: [{ name: 'default' }, { name: 'ma', title: '마' }, { name: 'ops' }] },
     ...extra,
@@ -240,6 +242,24 @@ describe('Market', () => {
     expect(screen.getByRole('tab', { name: /^요청 기록, \d+$/ })).toHaveAccessibleDescription(/^실패 \d+/);
   });
 
+  it('「AI 에이전트 템플릿」 보기 카드는 템플릿 목록에 있는 것만 보이고, 「스킬」 카드는 템플릿을 빼고 센다(2026-11-18-011·013)', async () => {
+    const user = userEvent.setup();
+    mount(MARKET(), DETAIL('skill'), '/market', { '/api/market/templates': { items: [{ namespace: 'paid', name: 'tuner' }] } });
+    const tab = await screen.findByRole('tab', { name: /^AI 에이전트 템플릿, 1$/ });
+    expect(tab).toHaveAccessibleDescription('성격·스킬·도구·예약 작업을 한 번에 담은 묶음');
+    expect(screen.getByRole('tab', { name: /^스킬, 1$/ })).toBeInTheDocument();
+    expect(screen.queryByText('tuner')).toBeNull();
+    await user.click(tab);
+    expect(await screen.findByText('tuner')).toBeInTheDocument();
+    expect(screen.queryByText('report')).toBeNull();
+  });
+
+  it('템플릿 목록을 못 읽으면(설치할 수 없는 사람 403) 「AI 에이전트 템플릿」 카드가 없고 「스킬」이 모두 센다', async () => {
+    mount(MARKET(), DETAIL('skill'), '/market', { '/api/market/templates': new Response(JSON.stringify({ error: 'x' }), { status: 403 }) });
+    await screen.findByRole('tab', { name: /^스킬, 2$/ });
+    expect(screen.queryByRole('tab', { name: /^AI 에이전트 템플릿/ })).toBeNull();
+  });
+
   it('큐레이터가 보관한 스킬은 「보관됨」 탭에서 되살리기를 요청한다(2026-10-14-015)', async () => {
     const user = userEvent.setup();
     const fn = mount(MARKET(), DETAIL('skill'), '/market?tab=arch');
@@ -263,6 +283,35 @@ describe('Market', () => {
     expect(await screen.findByText(/네임스페이스 restricted 에 게시합니다/)).toBeInTheDocument();
     await user.click(await screen.findByRole('button', { name: '확인' }));
     await waitFor(() => expect(bodies(fn, '/api/market/publish/decide')).toEqual([{ id: '20261014100000000000-abcdef', approve: true, namespace: 'paid', reason: '' }]));
+  });
+
+  it('내 요청은 거두기(확인 창 뒤 withdraw), 관리자 본인 요청은 반려를 숨긴다 · 거둔 요청은 「요청자가 거둠」(스펙 2026-11-20-009)', async () => {
+    const user = userEvent.setup();
+    const req = { ts: '2026-10-14T10:00:00+09:00', profile: 'ma', path: 'skills/local/weekly', version: '1.0.0', origin: 'local', files: [{ path: 'SKILL.md', size: 120 }] };
+    const pub = { admin: true, can: true, namespaces: ['free', 'paid'], namespace_labels: LABELS,
+                  items: [{ ...req, id: '20261014100000000000-abcdef', who: 'Kim@x.io', name: 'weekly-kr', status: 'requested' },
+                          { ...req, id: '20261014100000000001-abcdef', who: 'lee@x.io', name: 'lee-skill', status: 'requested' },
+                          { ...req, id: '20261014100000000002-abcdef', who: 'lee@x.io', name: 'gone-skill', status: 'withdrawn' }] };
+    const fn = mount(MARKET(), DETAIL('skill'), '/market?tab=pub', {
+      '/api/me': { auth_enabled: true, admin: true, user: { email: 'kim@x.io' }, pod: { id: 'p1', name: 'p1' }, pods: [] },
+      '/api/market/publish': (url: string) => (url.startsWith('/api/market/publish/withdraw') ? { ok: true, request: { status: 'withdrawn' } } : pub),
+    });
+    expect(await screen.findByText('요청자가 거둠')).toBeInTheDocument(); // 기본값(「게시 실패」)에 빠지지 않는다
+    await user.click(await screen.findByText('lee-skill@1.0.0'));
+    let dlg = await screen.findByRole('dialog', { name: 'lee-skill' });
+    expect(within(dlg).getByRole('button', { name: '반려' })).toBeInTheDocument();
+    expect(within(dlg).queryByTestId('publish-withdraw')).not.toBeInTheDocument(); // 남의 요청
+    await user.keyboard('{Escape}');
+    await user.click(await screen.findByText('weekly-kr@1.0.0'));
+    dlg = await screen.findByRole('dialog', { name: 'weekly-kr' });
+    expect(within(dlg).queryByRole('button', { name: '반려' })).not.toBeInTheDocument();
+    expect(within(dlg).getByRole('button', { name: '승인하고 스킬 허브에 게시' })).toBeInTheDocument();
+    await user.click(within(dlg).getByRole('button', { name: 'weekly-kr@1.0.0 거두기' }));
+    const ask = await screen.findByRole('dialog', { name: '게시 요청 거두기' });
+    expect(within(ask).getByText(/되돌릴 수 없고, 이 이름으로 다시 보낼 수 있게 됩니다/)).toBeInTheDocument();
+    await user.click(within(ask).getByRole('button', { name: '거두기' }));
+    await waitFor(() => expect(bodies(fn, '/api/market/publish/withdraw')).toEqual([{ id: '20261014100000000000-abcdef' }]));
+    expect(await screen.findByText('거두었습니다 — 이 이름으로 다시 보낼 수 있습니다')).toBeInTheDocument();
   });
 
   it('한국어 이름(공용·제한)을 주면 선택 목록·검색이 그 이름을 쓰고, 보내는 값은 slug 다(스펙 2026-10-28-010 §6-3)', async () => {
@@ -463,7 +512,11 @@ describe('Market', () => {
     );
     await user.click(await rowByName(/^report/));
     const dlg = await screen.findByRole('dialog', { name: 'report' });
-    expect(await within(dlg).findByRole('button', { name: 'ma 프로파일을 이 버전으로 올리기' })).toBeInTheDocument();
+    const up = await within(dlg).findByRole('button', { name: 'ma 프로파일을 이 버전으로 올리기' });
+    // 글자만 있던 단추를 테두리·올리기 아이콘으로 단추처럼 보이고, 위에 이름표를 둔다(스펙 2026-11-18-017)
+    expect(within(up).getByTestId('UpgradeIcon')).toBeInTheDocument();
+    expect(up).toHaveClass('MuiButton-outlined');
+    expect(within(dlg).getByText('설치한 프로파일')).toBeInTheDocument();
     expect(within(dlg).queryByRole('button', { name: '새 프로파일로 설치' })).not.toBeInTheDocument();
     expect(within(dlg).queryByRole('textbox', { name: '새 프로파일 이름' })).not.toBeInTheDocument();
   });
@@ -498,6 +551,34 @@ describe('Market', () => {
     expect(await within(dlg).findByText(/허용이 필요한 네임스페이스 'paid' 를 받을 수 없습니다/)).toBeInTheDocument();
     expect(within(dlg).getByText('paid · v2.0')).toBeInTheDocument();
     expect(within(dlg).queryByRole('button', { name: "'paid' 허용하기" })).not.toBeInTheDocument();
+    expect(within(dlg).getByText(/관리자에게 이 AI 에이전트 작업공간에 'paid' 허용을 요청하세요/)).toBeInTheDocument();   // 허용 단추가 없는 사람에게 「아래에서 허용」이라 하지 않는다(2026-11-18-014)
+  });
+
+  it('AI 에이전트 템플릿 서랍은 프로파일 화면의 만들기로 가는 단추를 두고, 허용 전에는 끄며 관리자에게는 위 자물쇠로 허용하라고 쓴다(2026-11-18-014)', async () => {
+    const user = userEvent.setup();
+    const tpl = { '/api/market/templates': { items: [{ namespace: 'paid', name: 'tuner' }] } };
+    mount(MARKET(), DETAIL('agent', { paid: true, restricted: true, allowed: false, files: [{ path: 'agent/distribution.yaml', size: 10 }] }), '/market?tab=templates', tpl);
+    await user.click(await screen.findByText('tuner'));
+    const dlg = await screen.findByRole('dialog', { name: 'tuner' });
+    expect(await within(dlg).findByText(/서랍 위 자물쇠 단추로 이 AI 에이전트 작업공간에 허용한 뒤 설치합니다/)).toBeInTheDocument();
+    const make = within(dlg).getByRole('link', { name: '이 AI 에이전트 템플릿으로 AI 에이전트 만들기' });
+    expect(within(make).getByTestId('AddCircleOutlineIcon')).toBeInTheDocument();
+    expect(make).toHaveAttribute('href', '/profiles?template=paid%2Ftuner');
+    expect(make).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('허용된 AI 에이전트 템플릿은 만들기 단추가 켜지고, 템플릿이 아닌 에이전트 패키지에는 단추가 없다', async () => {
+    const user = userEvent.setup();
+    mount(MARKET(), DETAIL('agent', { allowed: true }), '/market?tab=templates', { '/api/market/templates': { items: [{ namespace: 'paid', name: 'tuner' }] } });
+    await user.click(await screen.findByText('tuner'));
+    const dlg = await screen.findByRole('dialog', { name: 'tuner' });
+    expect(await within(dlg).findByRole('link', { name: '이 AI 에이전트 템플릿으로 AI 에이전트 만들기' })).not.toHaveAttribute('aria-disabled');
+    cleanup();
+    mount(MARKET(), DETAIL('agent', { allowed: true }));
+    await user.click(await rowByName(/^tuner/));
+    const dlg2 = await screen.findByRole('dialog', { name: 'tuner' });
+    await within(dlg2).findByText(/v1\.2/);
+    expect(within(dlg2).queryByRole('link', { name: '이 AI 에이전트 템플릿으로 AI 에이전트 만들기' })).toBeNull();
   });
 
   it('웹소켓으로 받은 값에서도 주인의 설치 단추가 살아 있고, 조회는 POD 를 안 뒤 한 번만 한다(OMAI-1126 T4·T5)', async () => {
@@ -640,6 +721,27 @@ describe('Market', () => {
     await waitFor(() =>
       expect(bodies(fn, '/api/market/remove')).toEqual([{ namespace: 'free', name: 'report', profile: 'ma' }])
     );
+  });
+
+  it('설치된 곳은 프로파일 이름 옆에 누구의 작업공간인지 보이고, 지우기 확인창은 「주인 · 에이전트 › 프로파일」이다(OMAI-2086)', async () => {
+    const user = userEvent.setup();
+    mount(MARKET({ pod: 'aas-agent-hong-0001', name: '홍길동의 AI 에이전트', owner_name: '홍길동' }));
+    await user.click(await rowByName(/^report/));
+    const dlg = await screen.findByRole('dialog', { name: 'report' });
+    const place = (await within(dlg).findAllByTestId('market-installed-place'))[0];
+    expect(place).toHaveTextContent(/^ma\s*홍길동/);
+    expect(within(place).getByText('홍길동')).toHaveAttribute('title', '「홍길동 · 홍길동의 AI 에이전트」 AI 에이전트의 것입니다');
+    await user.click(await within(dlg).findByRole('button', { name: '지우기' }));
+    expect(await screen.findByText(/홍길동 · 홍길동의 AI 에이전트 › ma 에서 report 을 지웁니다/)).toBeInTheDocument();
+  });
+
+  it('옛 서버(작업공간 정보 없음)는 설치된 곳에 프로파일 이름만 보인다', async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await rowByName(/^report/));
+    const dlg = await screen.findByRole('dialog', { name: 'report' });
+    const place = (await within(dlg).findAllByTestId('market-installed-place'))[0];
+    expect(place).toHaveTextContent(/^ma\s*v/);
   });
 
   it('설치한 것 탭: 새 버전 배지, 허브에서 내려간 패키지는 「허브에서 내려짐」 서랍(스펙 2026-10-29-002 DD9)', async () => {
@@ -868,6 +970,64 @@ describe('Market 태그(OMAI-1275)', () => {
     await screen.findByText('tuner');
     expect(screen.queryByText('report')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /코드 품질/ })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  describe('업무 태그(스펙 2026-11-17-003)', () => {
+    const WORKED = MARKET({
+      packages: [
+        { ...PKGS[0], tags: ['sales', 'docs'] },
+        { ...PKGS[1], tags: ['marketing', 'docs'] },
+      ],
+    });
+
+    it('업무 칩은 하나만 켜진다 — 다른 업무를 누르면 앞의 것이 꺼지고 그 업무의 패키지만 남는다', async () => {
+      const user = userEvent.setup();
+      mount(WORKED);
+      await screen.findByText('report');
+      const work = () => within(screen.getByRole('group', { name: '업무별' }));
+      await user.click(work().getByRole('button', { name: /세일즈/ }));
+      await waitFor(() => expect(screen.queryByText('tuner')).not.toBeInTheDocument());
+      expect(screen.getByText('report')).toBeInTheDocument();
+      await user.click(work().getByRole('button', { name: /마케팅/ }));
+      expect(await screen.findByText('tuner')).toBeInTheDocument();
+      expect(screen.queryByText('report')).not.toBeInTheDocument();
+      expect(work().getByRole('button', { name: /세일즈/ })).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('관리자는 「업무 접두어」로 이름 접두어 → 업무 규칙을 고쳐 저장한다', async () => {
+      const user = userEvent.setup();
+      const fn = mount(MARKET({ ...WORKED, work_prefixes: [{ prefix: 'sa-', work: 'sales' }] }));
+      await screen.findByText('report');
+      await user.click(screen.getByRole('button', { name: /업무 접두어\s*1/ }));
+      const dlg = await screen.findByRole('dialog', { name: '스킬 이름 접두어로 업무 정하기' });
+      expect(within(dlg).getByDisplayValue('sa-')).toBeInTheDocument();
+      await user.click(within(dlg).getByRole('button', { name: '줄 더하기' }));
+      const inputs = within(dlg).getAllByRole('textbox', { name: '접두어' });
+      await user.type(inputs[1], 'ma-');
+      await user.selectOptions(within(dlg).getAllByRole('combobox', { name: '업무' })[1], 'marketing');
+      await user.click(within(dlg).getByRole('button', { name: '저장' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(postedTo(fn, '/api/market/work-prefixes')[0]).toEqual({
+        rules: [
+          { prefix: 'sa-', work: 'sales' },
+          { prefix: 'ma-', work: 'marketing' },
+        ],
+      });
+    });
+
+    it('옛 서버(work_prefixes 없음)에는 「업무 접두어」 단추가 없다', async () => {
+      mount(WORKED);
+      await screen.findByText('report');
+      expect(screen.queryByRole('button', { name: /업무 접두어/ })).not.toBeInTheDocument();
+    });
+
+    it('주소 ?tag=sales,docs 로 열면 업무와 기능이 함께 켜진다', async () => {
+      mount(WORKED, DETAIL('skill'), '/market?tag=sales,docs');
+      await screen.findByText('report');
+      expect(screen.queryByText('tuner')).not.toBeInTheDocument();
+      expect(within(screen.getByRole('group', { name: '업무별' })).getByRole('button', { name: /세일즈/ })).toHaveAttribute('aria-pressed', 'true');
+      expect(within(screen.getByRole('group', { name: '기능별' })).getByRole('button', { name: /문서·글쓰기/ })).toHaveAttribute('aria-pressed', 'true');
+    });
   });
 
   it('태그가 없으면 칩 줄도 태그 열도 없다', async () => {

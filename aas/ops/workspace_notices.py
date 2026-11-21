@@ -9,6 +9,9 @@
                   id = sizefail|<롤아웃>|<작업공간>.
   blocked_route   관리자에게: 프로파일 모델이 AAS LiteLLM 이 아닌 주소로 간다(OMAI-1857 디자인 D10). id = route|<작업공간>|<프로파일>|<host:port>.
                   계산에서 빠진(해소된) 항목의 확인 기록은 그 자리에서 지워 다시 생기면 다시 알린다(재검토 H1). 멈춘 작업공간은 지우지 않는다(L2).
+  messenger_linked 주인에게: 다른 사람이 이 작업공간에 메신저 계정을 연결했다(messenger_api.owner_items, id = mlink|<작업공간>|…).
+  workspace_shared 구성원에게: 다른 사람이 AI 에이전트 작업공간을 공유했다(스펙 2026-11-17-008 §3-4). id = shared|<작업공간>|<넣은 시각>.
+                  넣은 지 7일이 지나거나 확인하면 사라진다. 역할을 바꾸면 시각이 바뀌어 다시 알린다.
 settle() 는 메모리가 커진 크기 롤아웃이 끝난(done) 작업공간의 대기 workspace_size 요청을 닫는다(디자인 D16·재검토 R10).
 확인 기록은 workspace_oom 의 안내 기간(7일)보다 하루 길게 둔다(재검토 H1 — cron_done_ack 의 48시간을 따라 하면 7일 안내가 다시 뜬다).
 """
@@ -22,7 +25,8 @@ from . import admin_requests
 
 SCHEMA = ("CREATE TABLE IF NOT EXISTS workspace_notice_ack (email TEXT NOT NULL, item_id TEXT NOT NULL, ts TEXT NOT NULL, "
           "PRIMARY KEY (email, item_id))")
-OOM_PREFIX, FAIL_PREFIX, ROUTE_PREFIX = "oom|", "sizefail|", "route|"
+OOM_PREFIX, FAIL_PREFIX, ROUTE_PREFIX, SHARE_PREFIX, LINK_PREFIX = "oom|", "sizefail|", "route|", "shared|", "mlink|"
+SHARE_NOTICE_DAYS = 7
 KEEP = timedelta(days=agents.OOM_NOTICE_DAYS + 1)
 
 
@@ -37,13 +41,13 @@ def _now() -> datetime:
 
 
 def owns(item_id: str) -> bool:
-    return item_id.startswith((OOM_PREFIX, FAIL_PREFIX, ROUTE_PREFIX))
+    return item_id.startswith((OOM_PREFIX, FAIL_PREFIX, ROUTE_PREFIX, SHARE_PREFIX, LINK_PREFIX))
 
 
 def pod_of(item_id: str) -> str:
     """항목 id 의 작업공간 이름."""
     parts = item_id.split("|")
-    if item_id.startswith((OOM_PREFIX, ROUTE_PREFIX)):
+    if item_id.startswith((OOM_PREFIX, ROUTE_PREFIX, SHARE_PREFIX, LINK_PREFIX)):
         return parts[1] if len(parts) > 1 else ""
     return parts[2] if len(parts) > 2 else ""
 
@@ -77,6 +81,30 @@ def oom_items(agent_rows: list[dict], email: str, now: datetime | None = None) -
             at = datetime.fromisoformat(n["finished_at"].replace("Z", "+00:00")).timestamp()
             out.append({"id": n["id"], "kind": "workspace_oom", "pod": row.get("name", ""), "alias": row.get("display_name") or row.get("name", ""),
                         "finished_at": n["finished_at"], "limit_memory": n["limit_memory"], "at": at})
+    return out
+
+
+def shared_items(memberships: list[dict], email: str, now: datetime | None = None) -> list[dict]:
+    """구성원(email)이 최근 7일 안에 공유받은 작업공간 가운데 아직 확인하지 않은 것.
+    memberships: [{pod, role, ts, alias, owner_name}] — ts 는 구성원으로 넣은(역할을 바꾼) 시각(ISO)."""
+    me = (email or "").lower()
+    if not me:
+        return []
+    now = now or _now()
+    seen = acked(me)
+    out = []
+    for m in memberships:
+        try:
+            at = datetime.fromisoformat(str(m["ts"]))
+        except (KeyError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        item_id = f"{SHARE_PREFIX}{m['pod']}|{m['ts']}"
+        if now - at > timedelta(days=SHARE_NOTICE_DAYS) or item_id in seen:
+            continue
+        out.append({"id": item_id, "kind": "workspace_shared", "pod": m["pod"], "alias": m.get("alias") or m["pod"],
+                    "owner_name": m.get("owner_name") or "", "role": m.get("role") or "use", "at": at.timestamp()})
     return out
 
 

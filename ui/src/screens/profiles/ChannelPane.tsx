@@ -17,6 +17,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  NativeSelect,
   Stack,
   TextField,
   Typography,
@@ -30,8 +31,10 @@ import { useId, useRef, useState } from 'react';
 import { Section, Tag } from '@/components/bits';
 import { useConfirm } from '@/components/ConfirmDialog';
 import { ItemList, ItemRow } from '@/components/ItemRow';
+import { MessengerRestart } from '@/components/MessengerRestart';
 import { t } from '@/i18n';
 import { get } from '@/lib/api';
+import { useMe } from '@/lib/data';
 
 import { calmAlertSx, capWhy, mayManage, useProfileAct } from './shared';
 import { useProfileSpot } from './spot';
@@ -56,6 +59,12 @@ interface PairRow {
   request_id: string;
   user_id: string;
   user_name: string;
+  /** 승인 목록: AAS 「내 메신저 계정 연결」로 이은 사람 이름. 빈 값이면 소유자가 직접 승인한 사람(스펙 2026-11-17-008 §5-3) */
+  aas_name?: string;
+}
+interface MemberLite {
+  email: string;
+  name: string;
 }
 interface ChannelsData {
   platforms: Platform[];
@@ -118,9 +127,22 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
       setBusy(false);
     }
   };
+  // 메신저만 쓰는 팀원: 승인하며 누구인지 고르면 그 사람의 연결로 적힌다(§5-3). 구성원이 없으면 고르기 칸이 없다
+  const pod = useMe().data?.pod?.id;
+  const membersQ = useQuery<{ members?: MemberLite[]; owner?: string; owner_name?: string }>({
+    queryKey: ['agent-members', pod],
+    queryFn: () => get(`/api/agents/members?pod=${encodeURIComponent(pod ?? '')}`),
+    enabled: !!pod,
+    staleTime: 30_000,
+  });
+  const members: MemberLite[] = [
+    ...(membersQ.data?.owner ? [{ email: membersQ.data.owner, name: membersQ.data.owner_name || membersQ.data.owner }] : []),
+    ...(Array.isArray(membersQ.data?.members) ? membersQ.data.members : []),
+  ];
+  const [who, setWho] = useState<Record<string, string>>({});
   const approve = (r: PairRow) =>
     run(async () => {
-      await act('pairing_approve', { platform: p.id, request_id: r.request_id });
+      await act('pairing_approve', { platform: p.id, request_id: r.request_id, ...(who[r.request_id] ? { member_email: who[r.request_id] } : {}) });
       enqueueSnackbar(t('profiles.chan.approved', { platform: p.name || p.id }), { variant: 'success' });
       await refresh();
     });
@@ -219,6 +241,8 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
           </Button>
         </Stack>
         {result && <Alert severity={result.ok ? 'success' : 'warning'} sx={calmAlertSx}>{result.text}</Alert>}
+        {/* 이 프로파일의 페어링·채널 다시 시작 기록(서버 장부, 스펙 2026-11-18-016 4-5) */}
+        <MessengerRestart pod={pod} profiles={[name]} />
         {error && !errorField && <Alert severity="error" sx={calmAlertSx}>{error}</Alert>}
         {pairing && (
           <Box>
@@ -230,13 +254,26 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
                   name={r.user_name || r.user_id}
                   description={r.user_id}
                   control={
-                    <Button
-                      size="small"
-                      disabled={!ok || busy}
-                      onClick={() => void approve(r)}
-                    >
-                      {t('profiles.chan.approve')}
-                    </Button>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      {members.length > 0 && (
+                        <NativeSelect
+                          value={who[r.request_id] ?? ''}
+                          onChange={(e) => setWho((s) => ({ ...s, [r.request_id]: e.target.value }))}
+                          inputProps={{ 'aria-label': t('messenger.whoIs', { name: r.user_name || r.user_id }) }}
+                          sx={{ fontSize: 13 }}
+                        >
+                          <option value="">{t('messenger.whoUnknown')}</option>
+                          {members.map((m) => (
+                            <option key={m.email} value={m.email}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      )}
+                      <Button size="small" disabled={!ok || busy} onClick={() => void approve(r)}>
+                        {t('profiles.chan.approve')}
+                      </Button>
+                    </Stack>
                   }
                 />
               ))}
@@ -244,7 +281,7 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
                 <ItemRow
                   key={r.user_id}
                   name={r.user_name || r.user_id}
-                  description={t('profiles.chan.allowedUser')}
+                  description={`${t('profiles.chan.allowedUser')} · ${r.aas_name ? t('messenger.linkedBy', { name: r.aas_name }) : t('messenger.notAasUser')}`}
                   control={
                     <Button
                       size="small"
@@ -262,6 +299,21 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
                 />
               ))}
             </ItemList>
+            {mine(pairing.pending).length > 0 && (
+              // 외부인 DM 으로 대기(최대 3개)가 차면 팀원이 코드를 받지 못한다 — 비운다(§5-3)
+              <Button
+                size="small"
+                disabled={!ok || busy}
+                onClick={() =>
+                  void run(async () => {
+                    await act('pairing_clear', {});
+                    await refresh();
+                  })
+                }
+              >
+                {t('messenger.clearPending')}
+              </Button>
+            )}
             {!mine(pairing.pending).length && !mine(pairing.approved).length && (
               <Typography variant="caption" color="text.secondary">
                 {t('profiles.chan.noPairing')}

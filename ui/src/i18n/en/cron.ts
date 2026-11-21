@@ -202,6 +202,7 @@ export default {
   'cronJob.newConnectChannel': 'Connect a channel',
   'cronJob.newTooOften': 'This schedule runs every {n} min. Each run calls the model and costs money.',
   'cronJob.newDeliverLocal': 'Save only (no notification on failure)',
+  'cronJob.newDeliverMe': 'Me (messenger DM)',
   'cronJob.newName': 'Job name',
   'cronJob.newNamePlaceholder': 'For example: weekly-report',
   'cronJob.newNote': 'The job is on as soon as you create it. It runs only while the gateway of that profile is running.',

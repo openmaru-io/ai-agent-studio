@@ -271,6 +271,16 @@ describe('AgentChat', () => {
     expect(fn.mock.calls.some((c) => String(c[0]).includes('/api/office/chat/turn?alias=ops&turn=t9&after=0'))).toBe(true);
   });
 
+  it('팝업(fill)에서 답하는 중이면 입력 칸 아래 「답하는 중」이 보인다', async () => {
+    stubApi({
+      '/api/office/chat/history': { messages: [{ role: 'user', text: '천천히' }], turn: 't9' },
+      '/api/office/chat/turn': { items: [], next: 0, done: false },
+    });
+    mountScreen(<AgentChat alias="ops" fill />, '/office');
+    const hint = await screen.findByText('답하는 중', { exact: true }, { timeout: 3000 });
+    expect(getComputedStyle(hint).position).not.toBe('absolute');
+  });
+
   it('지난 말을 못 읽으면 알림 대신 빈 자리에 안내하고, 보내기는 그대로 된다', async () => {
     const fn = stubApi({ '/api/office/chat/send': { turn: 't1' }, '/api/office/chat/turn': { items: [], next: 0, done: false } });
     mountScreen(<AgentChat alias="ops" />, '/office');

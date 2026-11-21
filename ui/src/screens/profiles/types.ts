@@ -35,6 +35,8 @@ export interface ProfileRow {
   last_activity?: string | null;
   channels: Channel[];
   issues: Issue[];
+  /** 템플릿에서 만든 프로파일이면 그 템플릿·판(스펙 2026-11-18-002 §4-2 7). 목록 응답에만 있다 */
+  template?: { package: string; version: string; latest?: string };
 }
 export interface EnvVar {
   name: string;

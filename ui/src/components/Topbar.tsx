@@ -52,6 +52,8 @@ export interface TopbarProps {
   reloading?: boolean;
   /** 다시 읽기 단추 왼쪽의 에이전트 고르개(AgentSwitch). 넓은 화면에서만 넘긴다(R5) */
   agentSwitch?: ReactNode;
+  /** 게이트웨이 다시 시작 필요 아이콘(RestartPendingButton). 고르개와 따로 받아 좁은 화면에서도 보인다(스펙 2026-11-18-016 4-5) */
+  restartPending?: ReactNode;
   /** 계정 단추의 접근 이름과 표시 이름 */
   account: string;
   accountOpen: boolean;
@@ -60,7 +62,7 @@ export interface TopbarProps {
   onHelp?: () => void;
 }
 
-export function Topbar({ collapsed, onToggleSidebar, onSearch, collected, collectWarn, collectFailed, onReload, reloading, agentSwitch, account, accountOpen, onAccount, onHelp }: TopbarProps) {
+export function Topbar({ collapsed, onToggleSidebar, onSearch, collected, collectWarn, collectFailed, onReload, reloading, agentSwitch, restartPending, account, accountOpen, onAccount, onHelp }: TopbarProps) {
   const { mode, toggle } = useThemeMode();
   const { lang, setLang } = useI18n();
   const [langEl, setLangEl] = useState<HTMLElement | null>(null);
@@ -158,6 +160,7 @@ export function Topbar({ collapsed, onToggleSidebar, onSearch, collected, collec
             <OfficeLinkButton />
           </Box>
         </Box>
+        {restartPending}
         {agentSwitch}
         {onReload && (
           // 단추 이름은 「다시 읽기」, 수집 글자는 설명이다. 설명은 늘 있는 숨김 글자를 직접 가리킨다 — MUI describeChild 는 감싼 span 에,

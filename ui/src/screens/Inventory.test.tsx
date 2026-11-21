@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { watchChatPopup } from '@/test/chatPopup';
 import { ME_ADMIN, ME_USER, mountScreen, postedTo, rowByName, stubApi } from '@/test/mountScreen';
 import { listAgents } from '@/test/pickAgent';
+import { pickProfile, profileShown } from '@/test/pickProfile';
 
 import { Credentials, Libraries, Tools } from './Inventory';
 
@@ -638,7 +639,7 @@ describe('Inventory: 자격증명 값 넣기', () => {
     }
   });
 
-  it('「새 비밀값」: 이름은 대문자로 맞추고, 표에 안 나타날 이름은 경고하되 저장은 허용한다', async () => {
+  it('「새 비밀값」: 이름은 대문자로 맞추고, 키 규칙 밖 이름도 「설정 값」으로 표에 나타나므로 경고 없이 저장한다(스펙 2026-11-18-007)', async () => {
     const user = userEvent.setup();
     const fn = mountWrite({ profiles: PROFILES(true) });
     await user.click((await screen.findAllByRole('button', { name: '새 비밀값' }))[0]);
@@ -647,7 +648,7 @@ describe('Inventory: 자격증명 값 넣기', () => {
     const name = within(dlg).getByLabelText('이름');
     await user.type(name, 'law_oc');
     expect(name).toHaveValue('LAW_OC');
-    expect(within(dlg).getByText(/API 키·토큰 표에 나타나지 않습니다/)).toBeInTheDocument();
+    expect(within(dlg).queryByText(/나타나지 않습니다/)).toBeNull();
     await user.type(within(dlg).getByLabelText('값'), 'x1');
     const before = creds(fn);
     await user.click(within(dlg).getByRole('button', { name: '저장' }));
@@ -671,7 +672,7 @@ describe('Inventory: 자격증명 값 넣기', () => {
     expect(postedTo(fn, '/api/profile/action')).toHaveLength(0);
   });
 
-  it('응답에 name_pattern 이 없으면 경고하지 않는다', async () => {
+  it('응답에 name_pattern 이 없어도(새 서버) 경고하지 않는다', async () => {
     const user = userEvent.setup();
     mountWrite({ creds: { ...WRITE_CREDS, name_pattern: undefined } });
     await user.click((await screen.findAllByRole('button', { name: '새 비밀값' }))[0]);
@@ -694,7 +695,7 @@ describe('Inventory: 빈 화면 안내', () => {
   });
 });
 
-// 스펙 2026-10-28-006: 프로파일별로 보고 AAS 기본 값은 서버가 감춘다(수만 온다)
+// 스펙 2026-10-28-006: 프로파일별로 본다. 2026-11-18-007 부터 AAS 기본 값은 감추지 않고 aas_default 행으로 온다
 const row = (id: string, name: string, profile: string, extra: Record<string, unknown> = {}) => ({
   id, name, scope: '프로파일', profile, set: true, flags: [], interface: 'MCP', location: `profiles/${profile}/.env`, source: '.env',
   used_count: 0, used_by: [], ...extra,
@@ -706,8 +707,10 @@ const SCOPED = {
     row('p2', 'Authorization', 'profile2', { shared_group: 1, shared_with: 2 }),
     row('p3', 'opsknow-oauth (OAuth)', 'profile2'),
     row('t1', 'TEST_TOKEN', 'test-profile'),
+    // main 에는 AAS 기본 값 행뿐 — 처음 열 때 건너뛴다(R8 유지)
+    row('d1', 'api_key', 'main', { aas_default: 'llm', interface: 'LLM: litellm', location: 'profiles/main/config.yaml › providers.litellm', source: 'config.yaml › providers' }),
+    row('d2', 'auth.json', 'main', { aas_default: 'auth_derived', interface: 'LLM (자격증명 풀): custom:litellm', location: 'profiles/main/auth.json', source: '파일', keys: ['custom:litellm'] }),
   ],
-  hidden: { count: 5, by_profile: { main: 2, profile2: 1, 'test-profile': 2 }, kinds: ['llm_default', 'auth_anonymous'] },
 };
 const ME_PRIMARY = { ...ME_ADMIN, secure: true, primary: { profile: 'main', ready: true }, pod: { id: 'pod-a' } };
 function mountScoped(initial: string, creds: unknown = SCOPED) {
@@ -729,11 +732,11 @@ describe('Inventory: API 키·토큰 프로파일별 보기(스펙 2026-10-28-00
     await waitFor(() => expect(loc()).toContain('profile=profile2'));
     expect(await rowByName(/MCP_OUTLINE_API_KEY/)).toBeInTheDocument();
     expect(screen.queryByText('TEST_TOKEN')).toBeNull();
-    expect(screen.getByRole('combobox', { name: '프로파일' })).toHaveValue('profile2');
+    expect(await profileShown()).toContain('profile2');
   });
 
   it('주소로 고른 프로파일은 0행이어도 그대로 두고 다른 프로파일 수와 「전체 프로파일에서 보기」를 보인다(R8)', async () => {
-    mountScoped('/credentials?profile=main');
+    mountScoped('/credentials?profile=main', { ...SCOPED, items: SCOPED.items.filter((i) => !('aas_default' in i)) });
     expect(await screen.findByText(/main · 주 프로파일 에는 없습니다\. 다른 프로파일에 4개/)).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole('button', { name: '전체 프로파일에서 보기' }));
     await waitFor(() => expect(loc()).toContain('profile=*'));
@@ -746,25 +749,90 @@ describe('Inventory: API 키·토큰 프로파일별 보기(스펙 2026-10-28-00
     expect(await rowByName(/TEST_TOKEN/)).toBeInTheDocument();
   });
 
-  it('프로파일 하나면 카드 숫자를 그 행으로 세고, 범위 열과 거르기 줄의 범위를 빼며, 감춘 수는 그 프로파일 것만 알린다', async () => {
+  it('프로파일 하나면 카드 숫자를 그 행으로 세고, 범위 열과 거르기 줄의 범위를 빼며, 기본 값 안내는 늘 보인다', async () => {
     mountScoped('/credentials?profile=profile2');
     await rowByName(/MCP_OUTLINE_API_KEY/);
     expect(screen.getByText(/전역 0 · 프로파일 3/)).toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: '범위' })).toBeNull();
-    expect(screen.getByText(/LiteLLM 연결 키 등 1개는 보이지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/「AAS 기본」·「자동 생성」 표시가 붙은 행은 AAS 가 넣은 값입니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/보이지 않습니다/)).toBeNull();
   });
 
-  it('전체 프로파일이면 범위 열이 있고 감춘 수는 전체 합이다', async () => {
+  it('전체 프로파일이면 범위 열이 있고 기본 값 행은 칩과 함께 사람 키 아래에 있다(디자인 F1·F3)', async () => {
     mountScoped('/credentials?profile=*');
     await rowByName(/TEST_TOKEN/);
     expect(screen.getByRole('columnheader', { name: '범위' })).toBeInTheDocument();
-    expect(screen.getByText(/LiteLLM 연결 키 등 5개는 보이지 않습니다/)).toBeInTheDocument();
+    const names = screen.getAllByRole('row').slice(1).map((r) => r.textContent ?? '');
+    const lastHuman = Math.max(...['MCP_OUTLINE_API_KEY', 'TEST_TOKEN'].map((n) => names.findIndex((t) => t.includes(n))));
+    const firstDefault = names.findIndex((t) => t.includes('AAS 기본') || t.includes('자동 생성'));
+    expect(firstDefault).toBeGreaterThan(lastHuman);
+    expect(await rowByName(/^api_key/)).toHaveTextContent('AAS 기본');
+    expect(await rowByName(/^auth\.json/)).toHaveTextContent('자동 생성');
+    expect(screen.getByText(/6개 — 직접 넣음 4 · AAS 기본 2/)).toBeInTheDocument();
   });
 
-  it('감춘 값이 없으면 안내 줄을 더하지 않는다', async () => {
-    mountScoped('/credentials?profile=*', { ...SCOPED, hidden: { count: 0, by_profile: {}, kinds: [] } });
-    await rowByName(/TEST_TOKEN/);
-    expect(screen.queryByText(/보이지 않습니다/)).toBeNull();
+  it('기본 값 행만 있는 프로파일을 고르면 표 위에 알리고, 서랍에는 바꾸기·관리 기록 대신 설정 링크가 있다(D8·F5·F8·E7)', async () => {
+    const user = userEvent.setup();
+    mountScoped('/credentials?profile=main');
+    expect(await screen.findByText('이 프로파일에는 사람이 넣은 키가 없습니다. AAS 기본 값만 있습니다.')).toBeInTheDocument();
+    await user.click(await rowByName(/^api_key/));
+    const dlg = await screen.findByRole('dialog', { name: 'api_key' });
+    expect(within(dlg).getByText(/AAS 가 넣은 값입니다\. 같은 값 묶음·만료 확인에서 뺐습니다/)).toBeInTheDocument();
+    expect(within(dlg).getByRole('link', { name: /main 프로파일의 설정에서 바꾸기/ })).toHaveAttribute('href', expect.stringContaining('pane=config'));
+    expect(within(dlg).queryByRole('button', { name: /값 바꾸기|값 넣기/ })).toBeNull();
+    expect(within(dlg).queryByText('관리 기록')).toBeNull();
+  });
+
+  it('설정 값 행은 칩 없이 인터페이스 칸 「설정 값」이고 서랍에 분류 안내, 소문자 이름은 여기서 바꿀 수 없다고 알린다(F3·DX)', async () => {
+    const user = userEvent.setup();
+    const items = [
+      row('s1', 'KANBAN_DAYS', 'profile2', { value_kind: 'setting', interface: '설정 값' }),
+      row('s2', 'lower_setting', 'profile2', { value_kind: 'setting', interface: '설정 값' }),
+      row('s3', 'KANBAN_GROUP_BY', 'profile2', { value_kind: 'setting', interface: '설정 값', set: false }),
+    ];
+    mountScoped('/credentials?profile=profile2', { ...SCOPED, items: [...SCOPED.items, ...items] });
+    const kanban = await rowByName(/^KANBAN_DAYS/);
+    expect(kanban).toHaveTextContent('설정 값');
+    expect(kanban).not.toHaveTextContent('AAS 기본');
+    expect(await rowByName(/^KANBAN_GROUP_BY/)).not.toHaveTextContent('비어 있음');   // 빈 설정 값은 점검 대상이 아니다(R6)
+    await user.click(kanban);
+    const dlg = await screen.findByRole('dialog', { name: 'KANBAN_DAYS' });
+    expect(within(dlg).getByText(/이름 규칙\(key·token·secret 등\)에 맞지 않아 설정 값으로 나눴습니다/)).toBeInTheDocument();
+    expect(within(dlg).getByRole('link', { name: /비밀값/ })).toHaveAttribute('href', expect.stringContaining('pane=env'));
+    await user.keyboard('{Escape}');
+    await user.click(await rowByName(/^lower_setting/));
+    const dlg2 = await screen.findByRole('dialog', { name: 'lower_setting' });
+    expect(within(dlg2).getByText(/값 넣기 규칙\(영문 대문자로 시작\)에 맞지 않아/)).toBeInTheDocument();
+  });
+
+  it('검색은 출처 칩 글자와 auth.json 의 제공자 이름도 찾는다(F13)', async () => {
+    mountScoped('/credentials?profile=*&q=custom:litellm');
+    expect(await rowByName(/^auth\.json/)).toBeInTheDocument();
+    expect(screen.queryByText('TEST_TOKEN')).toBeNull();
+  });
+
+  it('프로파일 목록을 못 받으면 드롭다운 자리에 「다시 시도」를 보인다(F4)', async () => {
+    window.localStorage.clear();
+    const fn = stubApi({
+      '/api/me': ME_PRIMARY,
+      '/api/credentials': SCOPED,
+      '/api/profiles': () => new Response('{"error":"boom"}', { status: 500 }),
+      '/api/registry': { reg: null },
+    });
+    mountScreen(<Credentials />, '/credentials?profile=*');
+    expect(await screen.findByText('프로파일 목록을 불러오지 못했습니다')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '다시 시도' })).toBeInTheDocument();
+    expect(fn).toHaveBeenCalled();
+  });
+
+  it('드롭다운으로 다른 프로파일을 고르면 주소가 바뀌고 고르기 칸에 포커스가 돌아온다(§4-4)', async () => {
+    const user = userEvent.setup();
+    mountScoped('/credentials?profile=profile2');
+    await rowByName(/MCP_OUTLINE_API_KEY/);
+    await pickProfile(user, 'test-profile');
+    await waitFor(() => expect(loc()).toContain('profile=test-profile'));
+    expect(await rowByName(/TEST_TOKEN/)).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: '프로파일' })));
   });
 
   it('「새 비밀값」 창은 고른 프로파일로 연다', async () => {

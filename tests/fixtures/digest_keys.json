@@ -1,0 +1,10 @@
+[
+  ["reg.local/hermes@sha256:1111111111111111111111111111111111111111111111111111111111111111", "sha256-1111111111111111111111111111111111111111111111111111111111111111"],
+  ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+  ["registry.example.com:443/team/hermes:1.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "sha256-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+  ["reg.local/hermes:1.0", ""],
+  ["", ""],
+  ["reg.local/hermes@sha256:abc", ""],
+  ["reg.local/hermes@sha256:GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", ""],
+  ["reg.local/hermes@sha512:1111111111111111111111111111111111111111111111111111111111111111", ""]
+]

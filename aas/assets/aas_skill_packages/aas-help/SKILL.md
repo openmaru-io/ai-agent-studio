@@ -1,8 +1,11 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.10
+version: 1.0.14
 author: OPENMARU, Inc.
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 <!-- 자동 생성: cogentai-aas/ui/src/lib/helpSkill.ts (npm run help-skill). 손으로 고치지 않는다. -->
@@ -13,7 +16,7 @@ author: OPENMARU, Inc.
 화면 맨 위(상단 막대 위) 띠는 관리자가 기간·종류·대상(전체 또는 부서)을 정해 「관리 › 공지」에서 올린 공지다. 점검·장애 공지는 끝 시각을 함께 보인다. 닫은 공지는 계정 메뉴의 「지금 공지」에서 다시 띠에 보이게 할 수 있다. 공지를 올리거나 고치는 일은 관리자에게 요청하라고 안내한다.
 
 이럴 때는(사용자가 겪는 상황과 할 일):
-- 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
+- AI 에이전트 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「AI 에이전트 작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 AI 에이전트 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 AI 에이전트 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
 - 대화의 작업 단계에 「모델 설정 때문에 막힘」이 보이거나 「BLOCKED by CogentAI AAS」가 나오면: 프로파일이나 도구(음성·그림 등)가 AAS LiteLLM 을 거치지 않는 모델 서버를 부르도록 설정되어 막힌 것이다. 같은 줄의 「관리자에게 요청」으로 설정 변경을 요청하라고 안내한다.
 - 프로파일을 지울 때: 그 프로파일로 열린 대화도 함께 닫힌다. 답하는 중이거나 뒤에서 일하는 대화, 진행 중인 스킬 설치가 있으면 지우지 않으니 끝난 뒤 다시 하라고 안내한다. 지워진 프로파일의 대화에는 「이 프로파일이 없어져 대화가 끝났습니다」가 보이고, 「새 대화」로 다른 AI 에이전트를 골라 이어 간다. 터미널의 hermes profile delete 는 그 프로파일로 열린 대화가 있으면 아무것도 지우지 않고 거절하므로 화면에서 지우라고 안내한다.
 
@@ -201,16 +204,16 @@ AI 에이전트가 어떤 말투와 역할로 답할지 정합니다.
 
 #### 스킬 허브에서 스킬 설치하기
 
-필요한 기능을 패키지로 찾아 내 프로파일에 넣습니다.
+필요한 기능을 스킬로 찾아 내 프로파일에 넣습니다.
 
-스킬은 AI 에이전트가 특정 일을 하는 방법을 적어 둔 묶음입니다. 스킬 허브에서 패키지를 설치하면 AI 에이전트가 그 일을 할 수 있게 됩니다.
+스킬은 AI 에이전트가 특정 일을 하는 방법을 적어 둔 묶음입니다. 스킬 허브에서 스킬을 설치하면 AI 에이전트가 그 일을 할 수 있게 됩니다.
 
 언제 쓰나: AI 에이전트가 지금은 못 하는 일(예: 특정 형식의 문서 만들기)을 시키고 싶을 때, 이미 만들어진 방법을 그대로 쓰고 싶을 때 씁니다.
 
 단계:
 
-1. 패키지 찾기 — 「스킬 › 스킬 허브」 화면에서 쓸 패키지를 찾습니다. 행을 누르면 AI 요약과 설명, 「AI 에게 더 묻기」 버튼이 보입니다.
-2. 설치하기 — 패키지 상세 창의 「이 프로파일에 설치」에서 설치할 프로파일을 고릅니다.
+1. 스킬 찾기 — 「스킬 › 스킬 허브」 화면에서 쓸 스킬을 찾습니다. 행을 누르면 AI 요약과 설명, 「AI 에게 더 묻기」 버튼이 보입니다.
+2. 설치하기 — 스킬 상세 창의 「이 프로파일에 설치」에서 설치할 프로파일을 고릅니다.
 3. 설치한 스킬 확인하기 — 내 주 프로파일의 「스킬」 탭에서 설치한 스킬이 켜져 있는지 봅니다.
 
 #### AAS 기본 제공 스킬 사용하기
@@ -223,7 +226,7 @@ AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습
 
 단계:
 
-1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「내 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
+1. 기본 제공 스킬 확인하기 — 「스킬 › 스킬 목록」 화면의 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에서 doc-to-markdown·hwp-to-markdown·ocr-to-markdown·markdown-to-doc·korean-business-writing·business-card-ocr·aas-help 를 찾아, 누르면 하는 일과 쓰는 때가 보입니다. 이 스킬들은 스킬 허브에서 모든 프로파일에 들어옵니다. 「Hermes 기본 제공」 탭에는 Hermes 가 처음부터 가진 스킬이 보입니다. 채팅 입력칸에 / 를 치면 이 목록이 떠서 하나를 골라 시킬 수도 있습니다.
 2. 문서 읽고 요약하기 — 문서를 올리고 「이 문서를 요약해 줘」「표만 뽑아 줘」「Markdown 으로 바꿔 줘」라고 적습니다. Word·Excel·PowerPoint·PDF 와 한글(hwp·hwpx) 문서를 읽을 수 있습니다. 결과 파일은 답 아래에 나타나고 「파일」에서 받습니다. 읽기만 하며 원본은 고치지 않습니다.
 3. 사진·스캔 문서의 글자 읽기 — 사진, 캡처, 스캔한 공문을 올리고 「글자를 읽어 줘」라고 적습니다. 한국어와 영어 글자를 읽고, 손으로 쓴 글씨와 표도 읽습니다. 한자·일본어는 거의 읽지 못합니다. 읽은 결과가 맞는지는 반드시 원본과 견주어 확인합니다.
 4. 문서 파일 만들기 — 「이 내용을 한글(hwpx) 보고서로 만들어 줘」「Word 로 줘」「PDF 로 뽑아 줘」「엑셀로 정리해 줘」「발표 자료로 만들어 줘」처럼 원하는 파일 종류를 적습니다. 공문서 모양(기안문·보고서·회의록 등)도 만들 수 있고, 한글 서식의 빈칸도 채웁니다. 만든 파일은 답 아래에서 받습니다.
@@ -245,7 +248,7 @@ AAS 에는 모든 AI 에이전트가 처음부터 쓰는 기본 스킬이 있습
 2. 직접 쓰기 — 「이름」에 영문 소문자·숫자·- 로 적습니다(예: weekly-report). 「설명」에는 무슨 일을 하고 언제 쓰는지 적습니다. AI 에이전트가 이 설명을 보고 스킬을 고르고 앞 60자만 목록에 보이니, 핵심을 앞에 적습니다. 「누가 쓰나」에서 모든 프로파일이 쓸지 한 프로파일만 쓸지 고릅니다. 본문에는 「언제 쓰나」와 「절차」를 번호로 적고 「스킬 만들기」를 누릅니다. 본문 틀이 미리 들어 있으니 지우고 채웁니다.
 3. AI 에이전트에게 맡기기 — 무엇을 적을지 모르겠거나 프로그램(스크립트)이 필요한 스킬이면 표 위 도구줄의 「AI 에이전트에게 맡기기」를 누릅니다(새 스킬 서랍 안이 아닙니다). AI 에이전트와의 대화가 열리고 스킬 제작 요청 틀이 채워집니다. 이름·하는 일·언제 쓰나·부르는 도구를 적어 보내면, AI 에이전트가 초안을 보여 주고 확인을 받은 뒤 만듭니다. 직접 쓰기로는 스크립트 파일을 만들 수 없습니다.
 4. 만들어 둔 zip 올리기 — 「zip 올리기」에서 SKILL.md 가 들어 있는 zip 파일을 끌어 놓거나 고릅니다. 512KiB 까지 올릴 수 있고, SKILL.md 한 장만 올려도 됩니다. 스킬 이름을 확인하고, 스크립트가 들어 있으면 부르는 외부 주소를 읽은 뒤 「스크립트를 확인했습니다」를 체크하고 「올리고 적용」을 누릅니다. 출처를 모르는 zip 은 올리지 않습니다.
-5. 만든 스킬 확인하고 고치기 — 만든 스킬은 「내 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.
+5. 만든 스킬 확인하고 고치기 — 만든 스킬은 「모든 스킬 보기」 › 「직접 만든 스킬」 탭에 나타납니다. 채팅 입력칸에 / 를 치면 목록에 보입니다. 그 스킬이 필요로 하는 비밀값이 있으면 스킬 서랍의 「비밀값 탭에서 넣기」로 채웁니다. 내용은 스킬 연결도 화면에서 고치고 버전을 관리합니다. 스킬은 AI 에이전트가 스스로 쓰는 것이니, 만든 뒤 한 번 시켜 보고 결과가 기대와 다르면 본문의 절차를 고칩니다.
 
 #### 내 스킬을 스킬 허브에 올려 함께 쓰기
 
@@ -363,7 +366,7 @@ When the user asks what to do or where something is in the AAS screens, answer f
 The band at the very top of the screen (above the top bar) shows notices an administrator posted in "Admin › Notices" with a period, type and audience (everyone or departments). Maintenance and outage notices also show their end time. A closed notice can be shown in the band again from "Current notices" in the account menu. Tell the user to ask an administrator to post or edit a notice.
 
 When this happens (situations users run into and what to do):
-- If the workspace list shows "Restarted: out of memory" or a chat shows "The workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the workspace restarts once and a result notice arrives.
+- If the AI Agent Workspace list shows "Restarted: out of memory" or a chat shows "The AI Agent Workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole AI Agent Workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the AI Agent Workspace restarts once and a result notice arrives.
 - If a chat step shows "blocked by model settings" or "BLOCKED by CogentAI AAS": the profile or a tool (voice, images and so on) is set to call a model server that bypasses AAS LiteLLM, so the call was blocked. Tell the user to ask for a settings change with "Ask an admin" on that line.
 - When deleting a profile: chats open with that profile are closed too. If a chat is still answering or working in the background, or a skill is being installed, nothing is deleted, so tell the user to try again after it finishes. A chat whose profile was deleted shows "This profile no longer exists, so the chat has ended"; use "New chat" to pick another AI Agent. hermes profile delete in a terminal refuses without deleting anything while chats are open with that profile, so tell the user to delete it from the screen.
 
@@ -551,16 +554,16 @@ Steps:
 
 #### Install a skill from the skill hub
 
-Find a package with the feature you need and add it to your profile.
+Find a skill with the feature you need and add it to your profile.
 
-A skill is a package that describes how the AI Agent does a specific job. Install a package from the skill hub, and the AI Agent can do that job.
+A skill describes how the AI Agent does a specific job. Install a skill from the skill hub, and the AI Agent can do that job.
 
 When to use: Use it when you want the AI Agent to do something it cannot do yet (for example, create documents in a specific format), or to reuse a method someone has already written.
 
 Steps:
 
-1. Find a package — Find a package on the "Skills › Skill hub" screen. Click a row to see its AI summary, description and the "Ask AI more" button.
-2. Install it — In the package detail panel, pick the profile to install it on under "Install to this profile".
+1. Find a skill — Find a skill on the "Skills › Skill hub" screen. Click a row to see its AI summary, description and the "Ask AI more" button.
+2. Install it — In the skill detail panel, pick the profile to install it on under "Install to this profile".
 3. Check the installed skill — On the "Skills" tab of your main profile, check that the installed skill is turned on.
 
 #### Use the skills AAS provides
@@ -573,7 +576,7 @@ When to use: Use them to summarize an uploaded document or pull out its tables, 
 
 Steps:
 
-1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, korean-business-writing, business-card-ocr and aas-help in the "My skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
+1. See the built-in skills — In "Skills › Skill list", find doc-to-markdown, hwp-to-markdown, ocr-to-markdown, markdown-to-doc, korean-business-writing, business-card-ocr and aas-help in "View all skills" › the "Created skills" tab. Click one to see what it does and when it is used. These skills come into every profile from the skill hub. The "Hermes built-in" tab shows the skills Hermes has from the start. In the chat message box, type / to open this list and pick one.
 2. Read and summarize a document — Upload a document and write "Summarize this document", "Pull out only the tables" or "Convert it to Markdown". It reads Word, Excel, PowerPoint, PDF and Hancom (hwp, hwpx) files. The result file appears under the answer and can be downloaded from "Files". It only reads and does not change the original.
 3. Read text in photos and scans — Upload a photo, a screenshot or a scanned official document and write "Read the text". It reads Korean and English text, including handwriting and tables. It can hardly read Chinese characters or Japanese. Always compare the result with the original.
 4. Make a document file — Write the file type you want, for example "Make this a Hancom (hwpx) report", "Give me Word", "Make a PDF", "Organize it in Excel" or "Make slides". It can also produce official-document layouts (drafts, reports, minutes) and fill the blanks of a Hancom form. Download the file under the answer.
@@ -595,7 +598,7 @@ Steps:
 2. Write it yourself — Type the name in lowercase letters, digits and - (for example weekly-report). In "Description", say what it does and when to use it. The AI Agent picks a skill by this description and only the first 60 characters show in its list, so put the key point first. Under "Who uses it", choose all profiles or one profile. In the body, number the "When to Use" and "Steps" parts, then click "Create skill". A body template is already filled in, so replace it.
 3. Hand it off to the AI Agent — If you do not know what to write, or the skill needs a program (script), click "Hand off to AI Agent" in the toolbar above the table (not inside the New skill drawer). A chat opens with a skill request template filled in. Send it with the name, the job, when to use it and the tools to call, and the AI Agent shows a draft and creates it after you confirm. Writing it yourself cannot create script files.
 4. Upload a ready-made zip — In "Upload zip", drop or pick a zip that contains SKILL.md. It can be up to 512KiB, and a single SKILL.md is fine. Check the skill name. If it contains scripts, read the outside addresses it calls, tick "I checked the scripts" and click "Upload and apply". Do not upload a zip from a source you do not know.
-5. Check and improve the skill — The new skill appears in the "My skills" tab and in the list when you type / in the chat message box. If it needs secret values, fill them from the skill drawer. Edit its content and manage versions in the skill flow screen. The AI Agent uses skills on its own, so try it once after creating it and fix the steps in the body if the result is not what you expected.
+5. Check and improve the skill — The new skill appears in "View all skills" › the "Created skills" tab and in the list when you type / in the chat message box. If it needs secret values, fill them from the skill drawer. Edit its content and manage versions in the skill flow screen. The AI Agent uses skills on its own, so try it once after creating it and fix the steps in the body if the result is not what you expected.
 
 #### Publish your skill to the skill hub to share it
 

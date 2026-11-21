@@ -47,6 +47,20 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: '보내기' })).toBeDisabled();
   });
 
+  // 스펙 2026-11-19-003 D7: 글이 있는데 보낼 수 없으면 화면이 이유를 보이도록 알린다. 빈 입력·조합 중에는 알리지 않는다
+  it('글이 있는데 보낼 수 없을 때 Enter 는 onBlockedEnter 를 부르고, 빈 입력·조합 중에는 부르지 않는다', () => {
+    const onBlockedEnter = vi.fn();
+    const { unmount } = render(<Harness onSend={vi.fn()} canSend={false} value="답 기다리는 중에 친 글" onBlockedEnter={onBlockedEnter} />);
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(onBlockedEnter).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(box(), { key: 'Enter', isComposing: true });
+    expect(onBlockedEnter).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<Harness onSend={vi.fn()} canSend={false} value="  " onBlockedEnter={onBlockedEnter} />);
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(onBlockedEnter).toHaveBeenCalledTimes(1);
+  });
+
   it('한글 조합 중 Enter 를 누른 순간에는 보내지 않는다', () => {
     const onSend = vi.fn();
     render(<Harness onSend={onSend} value="안녕" />);
@@ -153,6 +167,13 @@ describe('Composer', () => {
     expect(getComputedStyle(hint).position).toBe('absolute'); // 시각적으로 숨김(읽기는 가능)
   });
 
+  it('compact 에서 hintShown(답하는 중)이면 키 안내를 보이고, 압축 중처럼 busy 만이면 숨긴다', () => {
+    const { rerender } = render(<Harness onSend={vi.fn()} hint="답하는 중 · 3초" compact busy hintShown />);
+    expect(getComputedStyle(screen.getByText('답하는 중 · 3초')).position).not.toBe('absolute');
+    rerender(<Harness onSend={vi.fn()} hint="Enter 전송" compact busy />);
+    expect(getComputedStyle(screen.getByText('Enter 전송')).position).toBe('absolute');
+  });
+
   it('전송 단추 바로 앞에 작은 글씨로 실수 가능 안내를 둔다(키 안내와 별개라 compact 에서도 보인다)', () => {
     render(<Harness onSend={vi.fn()} hint="Enter 전송" compact />);
     const note = screen.getByText('CogentAI는 실수를 할 수 있습니다. 응답을 다시 확인해 주세요.');
@@ -167,9 +188,19 @@ describe('Composer', () => {
     const note = screen.getByText(/실수를 할 수 있습니다/);
     const hint = screen.getByText('Enter 전송');
     expect(getComputedStyle(hint).flexGrow).toBe('0');
-    expect(getComputedStyle(hint).flexShrink).toBe('0'); // 좁을 때 줄어드는 쪽은 안내 글이다
-    expect(getComputedStyle(note).flexGrow).toBe('1');
+    expect(getComputedStyle(note).flexGrow).toBe('1'); // 안내 글은 기준 폭 0 에서 남는 폭만 쓴다 — 좁아지면 이것이 먼저 0 이 된다
     expect(hint.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('그래도 모자라면 키 안내가 말줄임표로 줄고 전송 단추는 줄지 않는다(영어 키 안내가 길어 단추가 카드 밖으로 밀렸다, 스펙 2026-11-19-004 §6)', () => {
+    const long = 'Enter to send · Shift+Enter for a new line · Files up to 100MB';
+    render(<Harness onSend={vi.fn()} hint={long} />);
+    const hint = screen.getByText(long);
+    expect(getComputedStyle(hint).flexShrink).toBe('1');
+    expect(getComputedStyle(hint).textOverflow).toBe('ellipsis');
+    expect(getComputedStyle(hint).overflow).toBe('hidden');
+    expect(hint).toHaveAttribute('title', long); // 잘린 글 전체는 title 로 본다
+    expect(getComputedStyle(screen.getByRole('button', { name: '보내기' })).flexShrink).toBe('0');
   });
 });
 

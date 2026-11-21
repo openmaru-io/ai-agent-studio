@@ -89,6 +89,40 @@ python3 e2e-multi.py --url http://127.0.0.1:17900 --email admin@example.com --pa
 - 빠른 시작·붙기 compose 와 따로 쓴다(프로젝트 이름 `aas-multi`, 볼륨도 따로). 포트가 겹치면 `.env` 의 `AAS_PORT` 를 바꾼다.
 - 정리: `docker compose -f docker-compose.multi.yml down -v` (Hermes 데이터 볼륨까지 지운다).
 
+### 게이트웨이 다시 시작 필요 확인(스펙 2026-11-18-016)
+
+MCP 서버 내용·메신저 채널·연결에 쓰는 비밀값처럼 게이트웨이가 다시 떠야 읽히는 설정을 AAS 에서 바꾸면 상단 막대에 다시 시작 아이콘이 생긴다. 다음 순서로 기록과 바깥 다시 시작 판별을 확인한다.
+
+```sh
+# ① 기록 만들기: hermes-one 의 ma 프로파일에 Docmost 가 설치돼 있으면 쓰기 도구를 켠다(화면 MCP 탭의 「쓰기 도구」와 같다)
+curl -s -b cookies.txt -H 'Content-Type: application/json' -H 'X-AAS: 1' \
+  -d '{"pod":"one","name":"ma","action":"mcp_docmost_write","write":true}' http://127.0.0.1:17900/api/profile/action | jq '.restart_pending'
+# ② 기록 보기(다시 시작할 수 있는 사람에게만 나온다)
+curl -s -b cookies.txt http://127.0.0.1:17900/api/me | jq '.pod.restart_pending'
+# ③ AAS 밖에서 다시 시작한 것처럼: 게이트웨이를 다시 띄운 뒤 15초가 지나 /api/me 를 두 번 읽으면 기록이 사라진다
+docker compose -f docker-compose.multi.yml restart hermes-one
+sleep 20; curl -s -b cookies.txt http://127.0.0.1:17900/api/me >/dev/null; sleep 3
+curl -s -b cookies.txt http://127.0.0.1:17900/api/me | jq '.pod.restart_pending.total'
+```
+
+- `cookies.txt` 는 화면에 로그인한 브라우저의 `aas_session` 쿠키를 옮겨 적은 것이다. 지금 작업공간이 `one` 이어야 `pod` 가 hermes-one 이다.
+- 판별은 Hermes 가 시작마다 한 줄씩 쓰는 `gateway-starts.log`(루트 프로파일은 Hermes 폴더, 이름 있는 프로파일은 `profiles/<이름>/`)의 마지막 시각보다 5초 넘게 먼저 쓴 기록을 지운다. `./verify-multi.sh` 가 설치본마다 이 시각과 기록 수를 보인다.
+
+## 화면 코드를 고치면서 보기
+
+빠른 시작 compose 를 서버로 두고 화면은 Vite 개발 서버(`http://127.0.0.1:3000`)로 본다. 저장하면 바로 반영된다.
+
+```sh
+./local-dev.sh start            # LiteLLM 터널 → (리눅스) 브리지 터널 → compose → 개발 서버
+./local-dev.sh start --build    # Python 서버 코드(aas/)를 고쳤을 때
+./local-dev.sh status
+./local-dev.sh stop             # 반대 순서로 끈다(볼륨은 남긴다)
+```
+
+- `.env` 에 `OKE_BASTION`(SSH 키로 들어가는 베스천)과 `AAS_ALLOWED_HOSTS=localhost:17900,127.0.0.1:17900,localhost:3000,127.0.0.1:3000` 을 적는다. 개발 서버가 Host 를 그대로 넘겨 3000 이 없으면 API 가 막힌다.
+- 리눅스에서는 `oke-litellm.sh` 의 터널(127.0.0.1)에 컨테이너가 닿지 못해, docker 브리지 주소에도 같은 터널 입구를 연다. 맥은 필요 없다.
+- 개발 서버 기록은 `${XDG_RUNTIME_DIR:-$HOME/.cache}/aas-local-dev/ui.log`(나만 쓰는 폴더).
+
 ## 정리
 
 ```sh
@@ -106,8 +140,10 @@ docker compose down -v     # 볼륨까지 지운다
 | `HERMES_LLM_BASE_URL`·`HERMES_LLM_MODEL`·`HERMES_LLM_API_KEY` | Hermes 가 쓰는 OpenAI 호환 LLM. 빠른 시작은 앞의 둘이 필수. 여러 개 시험은 비우면 호스트의 LiteLLM(14400) |
 | `HERMES_IMAGE`·`HERMES_COMMAND` | Hermes 이미지(기본 상류 v0.22.2)와 시작 명령(기본 `gateway run`) |
 | `HERMES_UID`·`HERMES_GID` | Hermes 와 사이드카의 사용자 번호(기본 10000) |
-| `AAS_SIDECAR_MAX_ENTRIES` | 사이드카가 한 번에 나열하는 항목 수의 상한(기본 50000). 서버 로그에 「사이드카 묶음이 항목 상한에서 잘렸습니다」가 보이면 올린다 |
-| `AAS_TREE_SKIP_DIRS_EXTRA` | 서버가 안을 읽지 않을 폴더 이름을 쉼표로 더한다(예 `vendor,target,build`). `.venv`·`site-packages`·`node_modules` 등 의존성 폴더는 늘 건너뛴다. `skills`·`profiles` 는 넣지 않는다. 서버 여러 대는 같은 값 |
+| `AAS_SIDECAR_MAX_ENTRIES` | 사이드카가 한 번에 나열하는 항목 수의 상한(기본 50000). 서버 로그에 `[AAS-TREE-CUT]` 경고(「폴더 일부를 끊었습니다」·「잘렸습니다」)가 보이면 먼저 경고의 많은 폴더 이름을 `AAS_TREE_SKIP_DIRS_EXTRA` 에 더하고, 그래도 끊기면 올린다(사이드카 메모리가 는다) |
+| `AAS_TREE_SKIP_DIRS_EXTRA` | 서버가 안을 읽지 않을 폴더 이름을 쉼표로 더한다(예 `vendor,target,build`). `.venv`·`site-packages`·`.deps`·`.python`·`node_modules` 등 의존성 폴더는 늘 건너뛴다. 여기 넣은 이름은 스킬 찾기·집계에서도 빠지므로 스킬 이름과 겹칠 수 있는 이름과 `skills`·`profiles` 는 넣지 않는다. 서버 여러 대는 같은 값 |
+| `AAS_TREE_IDLE_DROP` | 사람이 이만큼(초) 쓰지 않은 에이전트의 묶음을 서버 메모리에서 버린다(기본 3600). 버린 뒤 다시 열면 처음부터 받는다(큰 작업공간 20~60초). 서버 메모리는 `AAS_TREE_CACHE_MB`(기본 512) 상한이 지킨다 |
+| `AAS_TREE_PREWARM` | 서버가 뜬 뒤 60초부터 최근 7일 사람이 쓴 에이전트(최대 20개)의 묶음을 한 번에 하나씩 미리 받는다(기본 켬, `0` 이면 끔). 배포 직후 첫 화면의 「응답 없음」을 줄인다 |
 | `AAS_VERSION`·`AAS_IMAGE`·`AAS_SIDECAR_IMAGE` | AAS·사이드카 이미지(기본 GHCR, 없으면 소스 빌드) |
 | `HERMES_DATA_DIR` | 붙기: Hermes 데이터 폴더의 호스트 경로. 사이드카가 읽기 전용으로 붙인다 |
 | `AAS_ADMINS` | 붙기: 관리자 이메일(쉼표·공백으로 여러 명). 비우면 `AAS_ADMIN_EMAIL` |
@@ -127,3 +163,11 @@ docker compose down -v     # 볼륨까지 지운다
 AAS 서버를 이 컴퓨터의 Python 으로 띄우므로 서버 의존성이 필요하다. 레포 루트에서 `make test-python` 을 한 번 돌려 `.venv` 를 만들고 그 `.venv/bin/python` 으로 돌린다(의존성이 없으면 Keycloak 을 띄우기 전에 이유를 알리고 멈춘다).
 
 realm(그룹 `aas-users`, 역할 `aas-admin`, 사용자 셋)과 비밀번호·클라이언트 비밀은 실행마다 무작위로 만들고, 끝나면 컨테이너와 임시 폴더를 지운다(`--keep` 이면 남긴다). 로그인 화면의 폼을 직접 제출해 인가 코드 흐름을 끝까지 돌고, 그룹 구성원·그룹 밖 거절·역할만 있는 관리자·로그아웃을 확인한다. 로그인 화면을 못 찾으면 `E2E_DEBUG=1` 로 Keycloak 의 응답을 본다.
+
+## 로그인 도메인 확인(구글 → 회사 도메인, 스펙 2026-11-15-005)
+
+```bash
+../../.venv/bin/python keycloak-alias-e2e.py   # Keycloak 두 개(AAS 영역·구글 역할)와 AAS 서버를 임시로 띄운다
+```
+
+구글 역할의 Keycloak 에 `@legacy.example.com` 사용자를 두고, AAS 영역에는 외부 제공자 `google`(IMPORT·trustEmail)과 client scope `aas-login-provider` 를 차트와 같은 순서로 붙인다. 브라우저 흉내로 로그인 화면의 google 단추를 눌러 끝까지 돌고, 꺼짐(지금처럼 거절) → 켬(회사 이메일로 들어옴, 리프레시 토큰에 새 이메일) → 두 번째 로그인(이메일 그대로) → 회사 이메일 사용자가 이미 있음(`AAS-LM-NEEDS-ADMIN`) → 전원 바꾸기를 확인한다. 비밀은 실행마다 무작위이고, 끝나면 컨테이너 둘·네트워크·임시 폴더를 지운다(`--keep` 이면 남긴다).

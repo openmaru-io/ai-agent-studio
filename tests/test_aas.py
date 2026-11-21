@@ -17,6 +17,12 @@ def iso(**delta):
     return (NOW - timedelta(**delta)).isoformat()
 
 
+def mark(p: Path) -> None:
+    """Hermes 가 프로파일로 치려면 표시 파일이 하나 있어야 한다. config.yaml·.env·state.db 는 테스트가 따로 보므로 profile.yaml 을 쓴다"""
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "profile.yaml").write_text("name: " + p.name + "\n")
+
+
 def make_home(root: Path) -> Path:
     home = root / "hermes"
     (home / "cron").mkdir(parents=True)
@@ -29,6 +35,7 @@ def make_home(root: Path) -> Path:
         "      Authorization: Bearer SHOULD_NOT_BE_READ\n  my-crm:\n    command: x\nother: 1\n")
     a = home / "profiles" / "alpha"
     (a / "cron").mkdir(parents=True)
+    mark(a)
     jobs = [
         {"id": "j1", "name": "ok-job", "enabled": True, "deliver": "telegram:1", "last_status": "ok",
          "last_run_at": iso(hours=1), "next_run_at": iso(hours=-23), "skills": ["report"]},
@@ -68,14 +75,16 @@ def make_home(root: Path) -> Path:
     db.commit(); db.close()
     b = home / "profiles" / "beta"            # 사건 테이블이 없는 프로파일
     (b / "cron").mkdir(parents=True)
+    mark(b)
     (b / "cron" / "jobs.json").write_text(json.dumps({"jobs": []}))
     db = sqlite3.connect(b / "cron" / "executions.db")
     db.execute("CREATE TABLE executions (id TEXT, job_id TEXT, status TEXT, claimed_at TEXT, started_at TEXT)")
     db.commit(); db.close()
     c = home / "profiles" / "gamma"           # 깨진 jobs.json
     (c / "cron").mkdir(parents=True)
+    mark(c)
     (c / "cron" / "jobs.json").write_text("{not json")
-    (home / "profiles" / ".hidden").mkdir()
+    mark(home / "profiles" / ".hidden")       # 표시 파일이 있어도 점 폴더는 뺀다
     s = home / "skills" / "ops" / "report"
     s.mkdir(parents=True)
     (s / "SKILL.md").write_text(
@@ -288,7 +297,7 @@ class AasTest(unittest.TestCase):
         for secret in ("supersecretvalue123", "ABCDEFGHIJKLMNOP", soon, "signaturesignature", "SHOULD_NOT_BE_READ", "sk-FIXTUREKEY"):
             self.assertNotIn(secret, blob)
         by = {(i["profile"], i["name"]): i for i in c["items"]}
-        self.assertNotIn(("", "PLAIN_SETTING"), by)                                   # 비밀이 아닌 설정은 싣지 않는다
+        self.assertEqual((by[("", "PLAIN_SETTING")]["value_kind"], by[("", "PLAIN_SETTING")]["flags"]), ("setting", []))  # 비밀이 아닌 설정도 「설정 값」 행으로 싣는다(스펙 2026-11-18-007 R2)
         self.assertEqual((by[("", "SHARED_API_KEY")]["scope"], by[("alpha", "SHARED_API_KEY")]["scope"]), ("전역", "프로파일"))
         self.assertEqual(by[("", "SHARED_API_KEY")]["shared_group"], by[("alpha", "SHARED_API_KEY")]["shared_group"])
         self.assertIn("스크립트 pull.py", by[("", "SHARED_API_KEY")]["used_by"])
@@ -331,18 +340,20 @@ class AasTest(unittest.TestCase):
             inventory.register("credential", key, "bogus")
 
 
-    def test_credentials_names_the_pattern_of_listed_keys(self):
-        """화면이 「이 이름은 표에 나타나지 않습니다」 경고를 서버와 같은 식으로 하게, 표가 쓰는 이름 규칙을 응답에 싣는다(스펙 2026-10-14-025 D9)."""
-        import re
+    def test_credentials_lists_every_env_name_and_marks_settings(self):
+        """이름 규칙(키·토큰 등) 밖의 .env 항목도 「설정 값」(value_kind=setting) 행으로 싣는다. 그래서 화면에 「이 이름은 표에 나타나지
+        않습니다」 안내가 필요 없어 name_pattern 을 응답에서 뺐다(스펙 2026-11-18-007 R1·R2, 2026-10-14-025 D9 를 바꿈)."""
         from aas.assets import inventory
         os.environ["AAS_HERMES_COMPOSE_ENV"] = str(self.home / "no-compose-env")
-        pat = inventory.credentials(self.home)["name_pattern"]
-        self.assertEqual(pat, inventory._SECRET_KEY.pattern)
-        rx = re.compile(pat, re.I)
-        for listed in ("SHARED_API_KEY", "TELEGRAM_BOT_TOKEN", "my_password", "WEBHOOK_URL"):
-            self.assertTrue(rx.search(listed), listed)
-        for hidden in ("LAW_OC", "PLAIN_SETTING", "TZ"):
-            self.assertFalse(rx.search(hidden), hidden)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "hermes"
+            (home / "profiles" / "p").mkdir(parents=True)
+            (home / "config.yaml").write_text("model:\n  default: m\n", encoding="utf-8")
+            (home / "profiles" / "p" / ".env").write_text("SHARED_API_KEY=k-0123456789abcdef\nLAW_OC=abc\nTZ=Asia/Seoul\n", encoding="utf-8")
+            got = inventory._credentials(home)
+        self.assertNotIn("name_pattern", got)
+        kinds = {i["name"]: i["value_kind"] for i in got["items"] if i["source"] == ".env"}
+        self.assertEqual(kinds, {"SHARED_API_KEY": "secret", "LAW_OC": "setting", "TZ": "setting"})
 
     def test_store_tracks_closed_incidents_only_for_readable_profiles(self):
         from aas.common import store

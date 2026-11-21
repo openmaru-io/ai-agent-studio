@@ -75,7 +75,7 @@ describe('프로파일 서랍 머리의 PC 가져오기·내보내기(§10-1, OM
     stubApi({ '/api/me': ME('main'), '/api/profile/pc-import': { job: null, profile: 'main', owner: 'o@x.com' } });
     mountScreen(<ProfileActions d={D()} />, '/profiles?name=main');
     await screen.findByRole('button', { name: 'PC 에서 가져오기' });
-    expect(labels().slice(0, 3)).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', '이름 바꾸기']);
+    expect(labels().slice(0, 4)).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', 'AI 에이전트 템플릿으로 올리기', '이름 바꾸기']);
     expect(screen.queryByRole('button', { name: '내보내기' })).not.toBeInTheDocument();
   });
 
@@ -83,11 +83,11 @@ describe('프로파일 서랍 머리의 PC 가져오기·내보내기(§10-1, OM
     stubApi({ '/api/me': ME('main'), '/api/profile/pc-import': { job: null, profile: 'work', owner: 'o@x.com' } });
     const { unmount } = mountScreen(<ProfileActions d={D({ name: 'work' })} />, '/profiles?name=work');
     await screen.findByRole('button', { name: 'PC 에서 가져오기' });
-    expect(labels()).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', '이름 바꾸기']);
+    expect(labels()).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', 'AI 에이전트 템플릿으로 올리기', '이름 바꾸기']);
     unmount();
     mountScreen(<ProfileActions d={D({ name: 'work' }, { can_edit: true, owner: false })} />, '/profiles?name=work');
     await screen.findByRole('button', { name: 'PC 에서 가져오기' });
-    expect(labels()).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', '이름 바꾸기', '삭제']);
+    expect(labels()).toEqual(['내 PC 로 내보내기', 'PC 에서 가져오기', 'AI 에이전트 템플릿으로 올리기', '이름 바꾸기', '삭제']);
   });
 
   it('루트(default)·가져오기 임시 프로파일(pcimp-)에는 보이지 않는다(OV10)', async () => {

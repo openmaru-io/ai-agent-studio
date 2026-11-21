@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """받은편지함 — 사람이 답해야 에이전트가 움직이는 일만 모은다(계획 007 P4, §3-3 G2).
 
-  도구 실행 승인·되묻기  채팅 이벤트(approval.request·clarify.request)에서 아직 답하지 않은 것. 받는 사람: 대화를 시작한 사람, 없으면 에이전트 주인
+  도구 실행 승인·되묻기  채팅 이벤트(approval.request·clarify.request)에서 아직 답하지 않은 것. 받는 사람: 대화를 시작한 사람, 없으면 에이전트 주인.
+                         승인은 시작한 사람이 답할 수 없으면(보기만 받은 사람·「대화」 구성원·방 구성원) 주인과 「편집」 구성원(route_approval, 스펙 2026-11-17-008 §3-3)
                          회의·칸반 실행에서 온 요청도 같은 대화 채널(ChatHub)을 거치므로 여기에 모인다 — 회의는 승인을 처리하지 않아
                          아무도 모른 채 시간이 끝날 때까지 기다리던 문제를 막는다(독립 검토 H2)
   검토·막힘 카드          칸반 카드(office_cards). 받는 사람: 카드 소유자(office_card_owner)
@@ -34,6 +35,8 @@ class Pending:
         self._by: dict[tuple[str, str], str] = {}    # (설치본, 세션) → 대화를 시작한 사람
         self._lock = threading.Lock()
         self.notify = None                           # 받는 사람(이메일 집합)의 받은편지함이 바뀌었을 때 부른다(토픽 다시 읽기, 스펙 2026-10-17-004)
+        self.route_approval = None                   # (설치본, 시작한 사람, 주인) → 승인 요청 받는 사람들. 없으면 시작한 사람·주인(스펙 2026-11-17-008 §3-3)
+        self.on_new = None                           # (항목 id, 항목) — 새로 생긴 승인·되묻기를 메신저로도 보낸다(스펙 2026-11-17-008 §6-2). 막지 않게 부르는 쪽이 뒤로 돌린다
 
     @staticmethod
     def item_id(pod: str, sid: str, request_id: str, qid: str = "") -> str:
@@ -50,6 +53,12 @@ class Pending:
             for k, v in added.items():
                 self._shared.inbox_put(k, v)
             self._shared.inbox_drop(dropped)
+        if self.on_new is not None:
+            for k, v in added.items():
+                try:
+                    self.on_new(k, v)
+                except Exception:                    # 메신저 알림이 실패해도 받은편지함은 그대로다
+                    pass
         if self.notify is not None and (added or dropped):      # 답 조각(message.delta)처럼 항목이 그대로면 알리지 않는다(L6)
             to = {e for v in added.values() for e in v["to"]} | {e for k in dropped for e in before[k]["to"]}
             if to:
@@ -74,7 +83,7 @@ class Pending:
                     "kind": kind, "pod": pod, "sid": sid, "request_id": rid, "question_id": qid, "alias": alias,
                     "text": redact(str(text), 300), "command": redact(str(payload.get("command") or ""), 300),
                     "choices": [str(c) for c in (q.get("choices") or payload.get("choices") or [])][:8],
-                    "to": [x for x in (self._by.get((pod, sid)) or (owner or "").lower(),) if x],
+                    "to": self._to(pod, sid, owner, kind),
                     "at": self._clock()}
         elif etype in _ANSWERED:
             rid = str(payload.get("request_id") or "")
@@ -85,6 +94,16 @@ class Pending:
         elif etype in _ENDED:
             for key in [k for k, v in self._items.items() if v["pod"] == pod and v["sid"] == sid]:
                 self._items.pop(key, None)
+
+    def _to(self, pod: str, sid: str, owner: str, kind: str) -> list[str]:
+        by = self._by.get((pod, sid)) or ""
+        plain = [x for x in (by or (owner or "").lower(),) if x]
+        if kind != "approval" or self.route_approval is None:
+            return plain
+        try:
+            return [str(x).lower() for x in self.route_approval(pod, by, owner or "") if x] or plain
+        except Exception:                            # 권한을 못 읽으면 예전처럼 둔다 — 답할 때 다시 검사하므로 권한이 넓어지지 않는다
+            return plain
 
     def local(self, item_id: str) -> dict | None:
         """이 서버에서 연 대화의 요청(답을 처리할 때)."""

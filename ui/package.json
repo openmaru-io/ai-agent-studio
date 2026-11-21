@@ -76,7 +76,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/copy-pdfjs-assets.mjs ../aas/static && node scripts/compress-assets.mjs ../aas/static && node scripts/check-airgap.mjs ../aas/static",
+    "build": "tsc --noEmit && vite build && node scripts/copy-pdfjs-assets.mjs ../aas/static && node scripts/compress-assets.mjs ../aas/static && node scripts/check-airgap.mjs ../aas/static && npm run build:widget",
+    "build:widget": "vite build -c vite.config.embed.ts && node -e \"require('fs').copyFileSync('types/aas-widget.d.ts', '../aas/static/js/aas-widget.d.ts')\" && node scripts/check-airgap.mjs ../aas/static/js",
     "test": "vitest run",
     "lint": "eslint --ext .ts,.tsx src/",
     "format": "prettier --config .prettierrc --write src",

@@ -202,6 +202,7 @@ export default {
   'cronJob.newConnectChannel': '채널 연결하기',
   'cronJob.newTooOften': '이 주기는 {n}분마다 실행됩니다. 실행할 때마다 AI 에이전트가 모델을 호출해 비용이 듭니다.',
   'cronJob.newDeliverLocal': '저장만 (실패해도 알림 없음)',
+  'cronJob.newDeliverMe': '나에게 (메신저 DM)',
   'cronJob.newName': '작업 이름',
   'cronJob.newNamePlaceholder': '예: weekly-report',
   'cronJob.newNote': '만들면 바로 켜진 상태가 됩니다. 그 프로파일의 게이트웨이가 실행 중이어야 작업이 실행됩니다.',

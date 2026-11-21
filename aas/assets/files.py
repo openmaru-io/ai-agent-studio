@@ -471,7 +471,7 @@ def forget_key(pod: str, key: str) -> None:
 
 
 # ---- 판 다루기(이름 붙이기·두 판 비교·한 판 보기)와 AAS 쪽에만 있는 글(작업 메모) -------------------------
-KEY = re.compile(r"^(soul|config|agents|jobnote|jobprompt):[A-Za-z0-9_./-]{1,160}$")
+KEY = re.compile(r"^(soul|config|agents|jobnote|jobprompt):[A-Za-z0-9_./-]{1,160}\Z")
 
 
 def valid_key(key: str) -> bool:

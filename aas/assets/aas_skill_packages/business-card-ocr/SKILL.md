@@ -1,7 +1,7 @@
 ---
 name: business-card-ocr
 description: "명함이나 손으로 써 준 연락처 쪽지 사진을 OCR 로 읽어 명함 목록(CSV)에 쌓고, 찾고, 요청하면 엑셀(xlsx)로 내보낸다. / Read business cards or handwritten contact notes with OCR, keep them in a CSV contact list, search it, and export it to Excel on request."
-version: 1.1.0
+version: 1.1.1
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [business-card, ocr, contacts, csv, xlsx, excel, kordoc, korean]
     category: productivity
     related_skills: [ocr-to-markdown, markdown-to-doc]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # 명함 등록 → 명함 목록(CSV) → 엑셀

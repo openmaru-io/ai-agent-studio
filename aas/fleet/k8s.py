@@ -27,6 +27,11 @@ ROLLOUT_PLURAL = "hermesrollouts"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
+def _seg(value: str) -> str:
+    """API 경로 조각 하나. / 까지 인코딩해 이름에 / 가 섞여도 다른 리소스 경로가 되지 않게 한다(스펙 2026-11-14-016)."""
+    return urllib.parse.quote(value, safe="")
+
+
 class K8sError(Exception):
     """쿠버네티스가 거절하거나 닿지 않았다. code 는 HTTP 상태(닿지 않으면 503)."""
 
@@ -86,11 +91,11 @@ class K8s:
     # ---- PVC(읽기만, OMAI-1291) --------------------------------------------
     def list_pvcs(self) -> list[dict]:
         """에이전트 네임스페이스의 PVC. 지운 에이전트의 남은 볼륨을 찾는 하루 1회 점검이 쓴다(서버 Role 은 get·list 만)."""
-        return self.call("GET", f"/api/v1/namespaces/{urllib.parse.quote(self.namespace)}/persistentvolumeclaims").get("items", [])
+        return self.call("GET", f"/api/v1/namespaces/{_seg(self.namespace)}/persistentvolumeclaims").get("items", [])
 
     # ---- HermesAgent ------------------------------------------------------
     def _agents(self) -> str:
-        return f"/apis/{GROUP}/{VERSION}/namespaces/{urllib.parse.quote(self.namespace)}/{PLURAL}"
+        return f"/apis/{GROUP}/{VERSION}/namespaces/{_seg(self.namespace)}/{PLURAL}"
 
     def list_agents(self) -> list[dict]:
         items = self.call("GET", self._agents()).get("items", [])
@@ -110,34 +115,34 @@ class K8s:
         return list(self._last_agents or [])
 
     def get_agent(self, name: str) -> dict:
-        return self.call("GET", f"{self._agents()}/{urllib.parse.quote(name)}")
+        return self.call("GET", f"{self._agents()}/{_seg(name)}")
 
     def create_agent(self, body: dict) -> dict:
         return self.call("POST", self._agents(), body)
 
     def patch_agent(self, name: str, patch: dict) -> dict:
-        return self.call("PATCH", f"{self._agents()}/{urllib.parse.quote(name)}", patch)
+        return self.call("PATCH", f"{self._agents()}/{_seg(name)}", patch)
 
     def delete_agent(self, name: str) -> dict:
-        return self.call("DELETE", f"{self._agents()}/{urllib.parse.quote(name)}")
+        return self.call("DELETE", f"{self._agents()}/{_seg(name)}")
 
     # ---- HermesTask (마켓 설치·지우기: 오퍼레이터가 pods/exec 로 돌린다. 서버에는 exec 권한이 없다) --------
     def _tasks(self) -> str:
-        return f"/apis/{GROUP}/{VERSION}/namespaces/{urllib.parse.quote(self.namespace)}/{TASK_PLURAL}"
+        return f"/apis/{GROUP}/{VERSION}/namespaces/{_seg(self.namespace)}/{TASK_PLURAL}"
 
     def create_task(self, body: dict, dry_run: bool = False, timeout: float = 10.0) -> dict:
         """dry_run 이면 저장하지 않고 검사만 한다(CRD enum 등, PC 가져오기의 지원 확인 2026-10-22-003 R26)."""
         return self.call("POST", self._tasks() + ("?dryRun=All" if dry_run else ""), body, timeout=timeout)
 
     def get_task(self, name: str) -> dict:
-        return self.call("GET", f"{self._tasks()}/{urllib.parse.quote(name)}")
+        return self.call("GET", f"{self._tasks()}/{_seg(name)}")
 
     def delete_task(self, name: str) -> dict:
-        return self.call("DELETE", f"{self._tasks()}/{urllib.parse.quote(name)}")
+        return self.call("DELETE", f"{self._tasks()}/{_seg(name)}")
 
     # ---- HermesRollout (순차 롤아웃: 관리자 화면이 만들고 멈춤·계속을 바꾼다. 진행은 오퍼레이터가 한다, 스펙 2026-10-28-015) ----
     def _rollouts(self) -> str:
-        return f"/apis/{GROUP}/{VERSION}/namespaces/{urllib.parse.quote(self.namespace)}/{ROLLOUT_PLURAL}"
+        return f"/apis/{GROUP}/{VERSION}/namespaces/{_seg(self.namespace)}/{ROLLOUT_PLURAL}"
 
     def list_rollouts(self) -> list[dict]:
         return self.call("GET", self._rollouts()).get("items", [])
@@ -146,19 +151,19 @@ class K8s:
         return self.call("POST", self._rollouts(), body)
 
     def patch_rollout(self, name: str, patch: dict) -> dict:
-        return self.call("PATCH", f"{self._rollouts()}/{urllib.parse.quote(name)}", patch)
+        return self.call("PATCH", f"{self._rollouts()}/{_seg(name)}", patch)
 
     # ---- 남은 자리(읽기만, 스펙 2026-10-30-003 §4-5). 서버 Role 은 configmaps aas-capacity get·resourcequotas get 뿐이다 ----
     def get_configmap(self, name: str, timeout: float = 5.0) -> dict:
-        return self.call("GET", f"/api/v1/namespaces/{urllib.parse.quote(self.namespace)}/configmaps/{urllib.parse.quote(name)}", timeout=timeout)
+        return self.call("GET", f"/api/v1/namespaces/{_seg(self.namespace)}/configmaps/{_seg(name)}", timeout=timeout)
 
     def get_resourcequota(self, name: str, timeout: float = 5.0) -> dict:
-        return self.call("GET", f"/api/v1/namespaces/{urllib.parse.quote(self.namespace)}/resourcequotas/{urllib.parse.quote(name)}", timeout=timeout)
+        return self.call("GET", f"/api/v1/namespaces/{_seg(self.namespace)}/resourcequotas/{_seg(name)}", timeout=timeout)
 
     # ---- Secret -----------------------------------------------------------
     def secret(self, name: str) -> dict[str, str]:
         """Secret 의 값을 풀어서 돌려준다. 호출한 쪽이 메모리에만 두고 로그에 싣지 않는다."""
-        data = self.call("GET", f"/api/v1/namespaces/{urllib.parse.quote(self.namespace)}/secrets/{urllib.parse.quote(name)}").get("data") or {}
+        data = self.call("GET", f"/api/v1/namespaces/{_seg(self.namespace)}/secrets/{_seg(name)}").get("data") or {}
         return {k: base64.b64decode(v).decode("utf-8", "replace") for k, v in data.items()}
 
 

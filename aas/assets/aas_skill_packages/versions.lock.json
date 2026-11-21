@@ -1,30 +1,54 @@
 {
   "aas-help": {
-    "sha256": "3c9b67d886c4302fdd60102458df2a70a22a5d405529448ab44f69ee948236f5",
-    "version": "1.0.10"
+    "sha256": "649583a99a78be1b44c4be31cf7a58b8c65eebb7c29b8de2ac073ad60481ab73",
+    "version": "1.0.14"
   },
   "business-card-ocr": {
-    "sha256": "11997f65c9bb7844bd9ed8581e3d04c41f15e6c57f2b2698e5287f762c331fdc",
-    "version": "1.1.0"
+    "sha256": "afe581f4c7ebb74e29347c51812db5e0a68653e337ec5232e3e0b30055cf0048",
+    "version": "1.1.1"
+  },
+  "cogentai-chart": {
+    "sha256": "bc94bd7b228b27b81970ec9261984b979efc116f14a19f2ad6fdba2fd755d090",
+    "version": "0.1.8"
+  },
+  "cogentai-database": {
+    "sha256": "551dedfb811ce10b3f719dcb55a47cb807d1518791e13eaf3e1c8b8ba640e73e",
+    "version": "0.2.3"
+  },
+  "cogentai-mindwiki": {
+    "sha256": "a1321f193537c2da85fcca1a6c48f0e211be2529a480281225038dc9cdf478a1",
+    "version": "0.2.2"
   },
   "doc-to-markdown": {
-    "sha256": "62ef815604d5f5ec33dc9b5fcbaff5f27b51f83828f77cc53e6a2ac84f99d405",
-    "version": "1.1.0"
+    "sha256": "f3dab444cc7e24c66fa14d5f4f3acd0c74a7b2f1b18ac6048d90cb14c457ec14",
+    "version": "1.1.1"
+  },
+  "docmost": {
+    "sha256": "ef5f04a0a74c0eeb40eb3092de30dec1a363f9f20b045c043dc73b2326a86058",
+    "version": "0.1.4"
   },
   "hwp-to-markdown": {
-    "sha256": "0557f90d913558932eb00e26d0820e94a2a8ea94567a71db1d3f16a7e48a92e6",
-    "version": "1.1.0"
+    "sha256": "18e90c3d613580ffe3609d7cea3863ffe1a2543ab3843b3099effad56e8e2456",
+    "version": "1.1.1"
   },
   "korean-business-writing": {
-    "sha256": "4a1ad2e4a52972903327c0c49530ae0dde3485d790722be370373e8f2d34af03",
-    "version": "1.0.2"
+    "sha256": "1429d26db6c216dfe2061e3e32ec00383810bf4a44cda8685d83cfa9fec21eff",
+    "version": "1.0.3"
+  },
+  "law-go-kr": {
+    "sha256": "aae9d55feb9e3901e9d1b8ca6bc8724e4570f20a766ba98d2daf9049307fbe00",
+    "version": "0.1.0"
   },
   "markdown-to-doc": {
-    "sha256": "eeb2a4cf5cb9816c9581a30e6c4611c35fc9ac255f0713f1216b463da1fb757c",
-    "version": "1.2.0"
+    "sha256": "d6811fc8bf8c8684aaf9e8de1dc38b9c3c61c1c7d02e415dcb61a29eb85ee20c",
+    "version": "1.2.1"
   },
   "ocr-to-markdown": {
-    "sha256": "1179257fcba7099723cd769e4e262f1973a7fbf879ffca747779cf96aa1ca57f",
-    "version": "1.1.0"
+    "sha256": "e4a8e98033aeae8f0366c342613f8b6b9e96ef0e46253616185b039efdcec97f",
+    "version": "1.1.1"
+  },
+  "outline": {
+    "sha256": "c0c51c91e37145b9d6da25c89ab0a6c7c903feb2738cd8b04d6a0a59f363b401",
+    "version": "0.1.4"
   }
 }

@@ -402,8 +402,9 @@ export function NoticeEditor({ x, seed }: NoticeEditorProps) {
           value={d.body}
           disabled={readOnly}
           multiline
-          minRows={2}
-          onChange={(e) => set('body', e.target.value.replace(/\n/g, ' '))}
+          minRows={3}
+          maxRows={12}
+          onChange={(e) => set('body', e.target.value)}
           error={!!errors.body || d.body.length > BODY_MAX}
           helperText={<Helper error={errors.body} count={d.body.length} max={BODY_MAX} />}
         />

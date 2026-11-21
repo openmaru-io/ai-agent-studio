@@ -38,6 +38,23 @@ CREATE TABLE IF NOT EXISTS pod_summary (
 CREATE TABLE IF NOT EXISTS usage_daily (
   pod TEXT NOT NULL, day TEXT NOT NULL, sessions INTEGER, messages INTEGER, input_tokens INTEGER, output_tokens INTEGER,
   PRIMARY KEY (pod, day));
+CREATE TABLE IF NOT EXISTS restart_pending (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+  who TEXT NOT NULL DEFAULT '', by_kind TEXT NOT NULL DEFAULT 'person', ts REAL NOT NULL,
+  PRIMARY KEY (pod, profile, kind, target));
+CREATE TABLE IF NOT EXISTS restart_lock (pod TEXT PRIMARY KEY, expires REAL NOT NULL, token TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS skill_usage_hours (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, hour INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+  job TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL,
+  PRIMARY KEY (pod, profile, hour, kind, name, job));
+CREATE TABLE IF NOT EXISTS skill_usage_sessions (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, session_id TEXT NOT NULL, started_at REAL, last_at REAL NOT NULL,
+  job TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pod, profile, session_id));
+CREATE TABLE IF NOT EXISTS skill_usage_cursor (
+  pod TEXT NOT NULL, profile TEXT NOT NULL, ts REAL, filled_from REAL, unknown TEXT NOT NULL DEFAULT '[]',
+  lease_until REAL NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (pod, profile));
 """
 
 
@@ -226,6 +243,16 @@ def log_usage(kind: str, note: str = "", pod: str = "") -> None:
     with connect() as conn:
         conn.execute("INSERT INTO usage (ts, kind, note, pod) VALUES (?,?,?,?)",
                      (datetime.now().astimezone().isoformat(timespec="seconds"), kind, note, pod or ""))
+
+
+def recent_pods(days: int = 7, limit: int = 20) -> list[str]:
+    """최근 days 일 동안 사람이 쓴 에이전트(사용 기록의 pod)를 많이 쓴 순으로 limit 개. 빈 칸과 「*」(모든 POD)는 뺀다.
+    서버가 뜬 뒤 미리 받기 대상(스펙 2026-11-20-001 §5-0 0-4 A2) — 프로세스 메모리의 사용 기록은 재시작을 넘지 못해 쓰지 않는다."""
+    cutoff = (datetime.now().astimezone() - timedelta(days=days)).isoformat(timespec="seconds")
+    with connect() as conn:
+        rows = conn.execute("SELECT pod, COUNT(*) AS n FROM usage WHERE ts >= ? AND pod <> '' AND pod <> '*' "
+                            "GROUP BY pod ORDER BY n DESC, pod LIMIT ?", (cutoff, limit)).fetchall()
+    return [r[0] for r in rows]
 
 
 RETENTION_DAYS = 31          # 사용 기록·대시보드 수집을 남기는 기간(사용자 결정 2026-10-24, 스펙 2026-10-24-006 R3)

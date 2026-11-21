@@ -17,13 +17,13 @@ from pathlib import Path
 
 from . import config, db, store
 
-IDENTITY_TABLES = ("admin_requests", "file_versions", "office_events", "office_messages", "office_rooms", "office_meeting_threads")
+IDENTITY_TABLES = ("admin_requests", "login_merges", "file_versions", "office_events", "office_messages", "office_rooms", "office_meeting_threads")
 
 
 def schema_scripts() -> list[str]:
     """모듈마다 흩어진 표 정의(auth_sessions 는 제외, Auth 가 만든다)."""
     from ..assets import files, inventory
-    from ..auth import mcp_limits, mcp_transfers, tokens
+    from ..auth import login_alias, mcp_limits, mcp_transfers, tokens
     from ..fleet import agents, primary, retained_volumes
     from ..fleet.pods import Registry
     from ..market import marketplace, publish_auto
@@ -32,7 +32,7 @@ def schema_scripts() -> list[str]:
     from ..ops import admin_requests, approval_answers, chat_hidden, chat_session_meta, cron_done, mutes, pc_import
     return [store.SCHEMA, office.SCHEMA, hub_auto.SCHEMA, meeting.SCHEMA, marketplace.SCHEMA, mutes.SCHEMA, cron_done.SCHEMA,
             agents.LIMIT_SCHEMA, agents.SIZE_SCHEMA, Registry.GRANT_SCHEMA, Registry.OWNER_SCHEMA, primary.SCHEMA, files.VERSION_SCHEMA, files.VERSION_INDEX, files.ACK_SCHEMA, inventory.REG_SCHEMA, admin_requests.SCHEMA, settings.GOAL_SCHEMA, settings.DEPT_SCHEMA, settings.TEAM_MANAGER_SCHEMA, settings._SCHEMA, retained_volumes.SCHEMA,
-            pc_import.SCHEMA, tokens.SCHEMA, mcp_limits.SCHEMA, mcp_transfers.SCHEMA, approval_answers.SCHEMA, chat_session_meta.SCHEMA, chat_hidden.SCHEMA, publish_auto.SCHEMA]
+            pc_import.SCHEMA, tokens.SCHEMA, mcp_limits.SCHEMA, mcp_transfers.SCHEMA, approval_answers.SCHEMA, chat_session_meta.SCHEMA, chat_hidden.SCHEMA, publish_auto.SCHEMA, login_alias.SCHEMA]
 
 
 def ensure_schema() -> None:

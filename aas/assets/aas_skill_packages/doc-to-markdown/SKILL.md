@@ -1,7 +1,7 @@
 ---
 name: doc-to-markdown
 description: "docx·pptx·xlsx·xls·pdf(글자 있음)·html·csv·epub·Outlook .msg 와 옛 doc·ppt·odt·rtf 를 Markdown 으로 바꿔 읽는다. 올린 문서의 내용 확인·요약·표 추출에 쓴다. / Convert Office documents, PDFs with text, HTML, CSV, EPUB and Outlook messages to Markdown."
-version: 1.1.0
+version: 1.1.1
 author: OPENMARU, Inc.
 license: Apache-2.0
 metadata:
@@ -9,6 +9,9 @@ metadata:
     tags: [markdown, convert, docx, pptx, xlsx, pdf, kordoc, markitdown]
     category: productivity
     related_skills: [hwp-to-markdown, ocr-to-markdown, markdown-to-doc, docx, pdf, xlsx]
+metadata:
+  aas:
+    auto_edit: false
 ---
 
 # 문서(Office·PDF 등) → Markdown

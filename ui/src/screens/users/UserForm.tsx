@@ -29,7 +29,6 @@ import { DepartmentPicker } from '@/components/DepartmentPicker';
 import { tier2 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
 import { t } from '@/i18n';
-import { agentLabel } from '@/lib/agentLabel';
 import { useFocusOnMount } from '@/lib/useFocusOnMount';
 
 import { DEPT_KEY, teamKey, useDepartments } from './departments';
@@ -48,6 +47,7 @@ import {
   writeErrorView,
 } from './logic';
 import { AgentResult, PartialAlert, ResultInfo, SaveButton, SectionHeader, useAsk, useUserWrite, useWriteForbidden } from './parts';
+import { SharePicker, shareRows } from './SharePicker';
 
 export interface UserFormProps {
   mode: 'create' | 'edit';
@@ -275,30 +275,7 @@ export function UserForm(p: UserFormProps) {
             {t('users.adminSeesAll')}
           </Typography>
         ) : (
-          <>
-            <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
-              {t('users.shareTitle')}
-            </Typography>
-            {shareable.length ? (
-              shareable.map(({ id, ...pod }) => (
-                <FormControlLabel
-                  key={id}
-                  label={agentLabel({ id, ...pod }, ownerName)}
-                  control={
-                    <Checkbox
-                      checked={v.pods.includes(id)}
-                      disabled={busy}
-                      onChange={(e) => set('pods', e.target.checked ? [...v.pods, id] : v.pods.filter((x) => x !== id))}
-                    />
-                  }
-                />
-              ))
-            ) : (
-              <Typography variant="caption" color="text.secondary" component="p">
-                {t('users.noShareable')}
-              </Typography>
-            )}
-          </>
+          <SharePicker rows={shareRows(shareable, ownerName)} value={v.pods} disabled={busy} onChange={(ids) => set('pods', ids)} />
         )}
       </Box>
       {mode === 'create' && (

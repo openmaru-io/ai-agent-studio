@@ -28,10 +28,11 @@ from urllib.parse import urlsplit
 from ..common import config
 from ..common.i18n import tr
 from ..common.redact import mask_oauth_redirect, mask_oauth_redirect_deep
-from . import attach_notice
+from . import attach_notice, page_context
 from .workspace import WORKSPACE_ABS, diff as workspace_diff
 
 MAX_EVENTS = 4000
+TIMED_EVENTS = ("aas.user", "message.complete")   # tool.* 와 함께 payload 에 서버 시각(aas_at)을 싣는 이벤트 — 질문·응답 완료
 COMPACT_AT = MAX_EVENTS * 3 // 4        # 턴이 끝났을 때 이만큼 쌓였으면 버퍼를 기록 하나로 줄인다 — 긴 반복 뒤 다시 열면 앞이 잘렸다(스펙 2026-10-27-002 R10)
 CONTROL_TIMEOUT = 10                     # session.control.read(다시 연 대화의 목표·반복 상태)
 # Hermes 가 스스로 시작한 턴 앞의 status.update kind(스펙 2026-10-27-002 §4-1·R8). 모르는 kind 는 notice 로 보인다
@@ -94,6 +95,7 @@ def said(text: str) -> str:
 def _title_of(text: str) -> str:
     """대화 제목: 사용자가 쓴 첫 줄, 글 없이 파일만 보냈으면 첫 파일 이름(R12·D14). 첨부 안내 줄은 제목이 되지 않는다."""
     body, files = attach_notice.parse(text)
+    body = page_context.strip(body)                       # MindWiki 위젯의 페이지 맥락 블록은 제목이 되지 않는다
     first = body.strip().splitlines()[0] if body.strip() else (files[0]["name"] if files else "")
     return first[:60]
 
@@ -533,6 +535,9 @@ class ChatHub:
     def _push(self, sid: str, etype: str, payload, listener_extra: dict | None = None) -> None:
         # 대화에 붙여넣은 OAuth 리디렉트 주소의 인가 코드는 화면·오피스로 내보낼 때 가린다(스펙 2026-10-16-010 Q4). 에이전트에게 간 원문은 그대로다
         payload = mask_oauth_redirect_deep(payload)
+        # 도구·질문·완료에는 서버 시각을 붙인다(OMAI-1868, 스펙 2026-11-06-006). 다시 받은 이벤트는 화면에 한꺼번에 들어와 화면 시각으로 재면 0초가 됐다
+        if (etype.startswith("tool.") or etype in TIMED_EVENTS) and isinstance(payload, dict):
+            payload = {**payload, "aas_at": round(time.time(), 3)}
         with self._cond:
             seq = self._seq.get(sid, 0) + 1
             self._seq[sid] = seq
@@ -628,8 +633,15 @@ class ChatHub:
                 pass
             active[i] = floor
         # preview 는 Hermes 가 저장한 첫 사용자 말이라 /plan 대화는 영어 계획 프롬프트가 보였다(OKE 2026-10-27) — 말풍선과 같이 친 명령으로
-        return [{"id": r.get("id"), "title": mask_oauth_redirect(r.get("title") or shown(said(r.get("preview") or "")) or tr("(제목 없음)", "(Untitled)")),
-                 "preview": mask_oauth_redirect(shown(said(r.get("preview") or ""))[:120]), "started_at": r.get("started_at") or 0,
+        # MindWiki 위젯 대화는 페이지 맥락 블록 머리가 보였다 — 블록 뒤 글이 없으면 고정 문구(OMAI-2056)
+        def said_of(raw: str) -> str:
+            rest = page_context.preview(raw)
+            if rest is None:
+                return shown(said(raw))
+            return shown(said(rest)) if rest else tr("MindWiki 페이지에서 시작한 대화", "Chat started from a MindWiki page")
+
+        return [{"id": r.get("id"), "title": mask_oauth_redirect(r.get("title") or said_of(r.get("preview") or "") or tr("(제목 없음)", "(Untitled)")),
+                 "preview": mask_oauth_redirect(said_of(r.get("preview") or "")[:120]), "started_at": r.get("started_at") or 0,
                  "message_count": r.get("message_count") or 0, "source": r.get("source") or "", "active_at": active[i],
                  "live_session_id": live.get(r.get("id")), "control": self._control_brief(live.get(r.get("id")))} for i, r in enumerate(rows)]
 
@@ -1005,7 +1017,8 @@ class ChatHub:
         files = list(files or [])
         shown = text if display is None else display
         if not meta["title"]:
-            first = shown.strip().splitlines()[0] if shown.strip() else (files[0]["name"] if files else "")
+            shown_title = page_context.strip(shown)       # 페이지 맥락 블록의 첫 줄(```aas-page-context)이 제목이 되지 않게
+            first = shown_title.strip().splitlines()[0] if shown_title.strip() else (files[0]["name"] if files else "")
             meta["title"] = first[:60]
         body, reason = text, ""
         if skill:
@@ -1281,20 +1294,33 @@ class ChatHub:
                     out.append(str(m["stored_id"]))
         return out
 
-    def prune(self, ttl: float, now: float | None = None) -> list[str]:
+    def prune(self, ttl: float, now: float | None = None, keep: int = 0, grace: float = 0.0) -> list[str]:
         """마지막 활동이 ttl 초보다 오래된 세션을 메모리에서 걷어내고 Hermes 세션도 닫는다. 답하는 중·사용자 답을 기다리는 세션,
         목표·반복이 켜졌거나 쉬는 중(resting)인 세션과 오피스 중계는 남긴다. Hermes 대화 기록은 남아 「지난 대화」에서 다시 열 수 있다.
 
         🔴 Hermes 세션도 닫는다(스펙 2026-11-05-005 F1·RQ3). Hermes 는 연결이 살아 있는 세션을 시간·개수로 걷어내지 않는다
            (Hermes tui_gateway/session_reaper.py `_session_is_lru_evictable` 이 끊긴 연결만 본다). 이 허브는 연결 하나를 계속 붙들고
            있어서, 메모리만 지우면 동시 세션이 흔해질수록 에이전트 파드 메모리에 쉬는 세션이 쌓인다.
-           닫기는 뒤에서 보낸다 — shared_tick(0.3초 주기)에서 불리므로 Hermes 가 늦어도 주기를 막지 않는다."""
-        if ttl <= 0:
+           닫기는 뒤에서 보낸다 — shared_tick(0.3초 주기)에서 불리므로 Hermes 가 늦어도 주기를 막지 않는다.
+
+        keep·grace: 사용자마다 쉬는 세션을 최근 keep 개만 두고, 나머지는 grace 초 넘게 쉬었으면 ttl 전이라도 닫는다(0 이면 끔, OMAI-1884).
+           Hermes 는 세션마다 알림 폴러 스레드를 하나씩 돌린다. 「새 세션」으로 이어 가는 180문항 시험에서 열린 세션이 271개로 쌓여
+           폴러들이 GIL 을 다투자 같은 파드의 모든 응답이 4배 느려졌다(OKE fa8a 2026-11-09). 숨긴 세션은 보이는 세션보다 먼저 닫는다."""
+        if ttl <= 0 and keep <= 0:
             return []
         now = time.time() if now is None else now
-        gone = [sid for sid, m in list(self.sessions.items())
-                if not m.get("relay") and not self._working(m) and self.session_state(sid) not in ("running", "waiting")
-                and now - (m.get("last_at") or m.get("created") or 0) > ttl]
+        last = lambda m: m.get("last_at") or m.get("created") or 0      # noqa: E731
+        idle = [(sid, m) for sid, m in list(self.sessions.items())
+                if not m.get("relay") and not self._working(m) and self.session_state(sid) not in ("running", "waiting")]
+        picked = {sid for sid, m in idle if ttl > 0 and now - last(m) > ttl}
+        if keep > 0:
+            mine: dict[str, list] = {}
+            for sid, m in idle:
+                mine.setdefault(str(m.get("by") or ""), []).append((sid, m))
+            for rows in mine.values():
+                rows.sort(key=lambda r: (not r[1].get("hidden"), last(r[1])), reverse=True)   # 보이는 것·최근 것이 앞
+                picked.update(sid for sid, m in rows[keep:] if now - last(m) > grace)
+        gone = [sid for sid, _m in idle if sid in picked]
         for sid in gone:
             meta = self.sessions.get(sid)
             if meta is not None:                             # 닫는 사이 _resume 이 이 sid 를 돌려주지 않게

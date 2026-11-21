@@ -25,8 +25,10 @@ import { Markdown } from '@/components/Markdown';
 import { MarkdownField } from '@/components/MarkdownField';
 import { PersonPicker } from '@/components/PersonPicker';
 import { ALL_PROFILES, ProfileScopePicker, useProfileScope } from '@/components/ProfileScopeSelect';
+import { SecretValueField } from '@/components/SecretValueField';
 import { t } from '@/i18n';
 import { get, post } from '@/lib/api';
+import { cleanSecret, CredentialWrite, ENV_KEY, rootHidden, useCredentialWrite } from '@/lib/credentialWrite';
 import { useIsAdmin, useMe } from '@/lib/data';
 import { MONO_FONT } from '@/lib/monoFont';
 import { usePeople } from '@/lib/people';
@@ -49,6 +51,10 @@ interface Item {
   used_count?: number;
   used_by?: string[];
   reg?: Reg | null;
+  /** API 키·토큰: .env 이름이 키 규칙 밖이면 "setting"(설정 값). 없으면(옛 서버) "secret" 으로 본다(스펙 2026-11-18-007 E14) */
+  value_kind?: 'secret' | 'setting';
+  /** API 키·토큰: AAS 가 넣은 값 — llm(LiteLLM 키·참조)·auth_derived(설정 사본 auth.json)·auth_anonymous(Nous 익명 로그인) */
+  aas_default?: 'llm' | 'auth_derived' | 'auth_anonymous' | null;
   // 종류마다 다른 값
   [k: string]: unknown;
 }
@@ -78,8 +84,6 @@ interface McpRow {
   modified?: string;
 }
 interface Data {
-  /** 서버가 .env 에서 행으로 싣는 이름의 규칙(자격증명만). 새 비밀값 이름이 표에 나타날지 미리 알린다(스펙 2026-10-14-025 D9) */
-  name_pattern?: string;
   totals: Record<string, number | Record<string, number>>;
   items: Item[];
   envs?: Env[];
@@ -87,8 +91,6 @@ interface Data {
   mcp?: McpRow[];
   /** 설정 파일을 읽지 못해 건너뛴 프로파일. profile 이 '*' 이면 목록 전체를 못 만들었다(V5) */
   mcp_skipped?: { profile: string; reason: string }[];
-  /** API 키·토큰: 서버가 감춘 AAS 기본 값의 수(값·이름은 없다). by_profile 의 루트는 "" (스펙 2026-10-28-006 D5·OV-9) */
-  hidden?: { count: number; by_profile: Record<string, number>; kinds: string[] };
 }
 
 type Kind = 'credentials' | 'tools' | 'libraries';
@@ -125,7 +127,8 @@ const reviewColumn = (withEmpty: boolean): GridColumn<Item> => ({
   width: 'minmax(160px, 1.5fr)',
   render: (i) => (
     <>
-      {withEmpty && !i.set && !i.oauth && !(i.flags ?? []).includes('비어 있음') /* i18n-ignore: 서버가 보내는 표시 값 */ && (
+      {/* AAS 기본 값·설정 값 행은 빈 값 점검 대상이 아니다(스펙 2026-11-18-007 R6) */}
+      {withEmpty && !i.set && !i.oauth && !i.aas_default && i.value_kind !== 'setting' && !(i.flags ?? []).includes('비어 있음') /* i18n-ignore: 서버가 보내는 표시 값 */ && (
         <Pill tone="bad">{t('inventory.valueEmpty')}</Pill>
       )}
       {(i.flags ?? []).slice(0, 2).map((f) => (
@@ -239,33 +242,16 @@ function RegistryForm({ kind, item }: { kind: string; item: Item }) {
   );
 }
 
-// ── 값 넣기(스펙 2026-10-14-025). 쓰기는 프로파일 화면의 비밀값과 같은 경로(env_set → Hermes /api/env)다. ──
-/**
- * 값을 넣을 수 있는 조건: 관리자 또는 이 POD 의 주인이고(OMAI-1196, 스펙 2026-10-15-011 D3), 암호화된 연결(서버가 /api/me 로 알림)이고,
- * 프로파일 목록을 받았을 때. 모르는 상태는 닫는다. 주인이 넣을 수 없는 이름(모델 키·동작 설정)은 서버가 거절하고 그 문구가 입력 칸에 보인다.
- */
-function useCredentialWrite(enabled: boolean) {
-  const me = useMe();
-  const admin = useIsAdmin();
-  const may = admin || !!me.data?.owner || !!me.data?.team_manager; // 팀 관리자도 팀원 에이전트에 값을 넣는다(스펙 2026-10-22-001)
-  const list = useQuery<{ profiles: ProfileRow[] }>({
-    queryKey: ['profiles'],
-    queryFn: () => get('/api/profiles'),
-    enabled: enabled && may,
-  });
-  const profiles = list.data?.profiles;
-  const secure = me.data?.secure; // undefined = 모름
-  // 목록을 받지 않는 사람이거나 받기를 마쳤는가(성공·실패). 프로파일 고르기의 처음 값이 목록을 기다린다 — 안 기다리면 주소의 프로파일을 없는 이름으로 본다
-  const listed = !(enabled && may) || list.isFetched;
-  return { admin, may, secure, profiles, listed, ready: enabled && may && secure === true && !!profiles };
-}
-type Write = ReturnType<typeof useCredentialWrite>;
-// 숨긴 루트(main 대상 POD)는 관리자에게도 읽기 전용이다(스펙 2026-10-14-003 리뷰 D8). 프로파일 화면과 같은 규칙
-const rootHidden = (profiles?: ProfileRow[]) => !!profiles?.find((p) => p.is_default)?.hidden_root;
-const ENV_KEY = /^[A-Z][A-Z0-9_]{1,63}$/; // 서버 profiles.ENV_KEY 와 같다
+// ── 값 넣기(스펙 2026-10-14-025). 쓰기 조건·숨긴 루트·이름 규칙은 lib/credentialWrite.ts 에 있다(스킬 화면 「값 넣기」와 함께 씀, 스펙 2026-11-18-004). ──
+type Write = CredentialWrite;
 /** 행이 가리키는 프로파일(전역 행은 기본 프로파일) */
 const targetOf = (i: Item) => (i.scope === GLOBAL ? 'default' : i.profile ?? '');
 const isEnvRow = (i: Item) => /\.env$/.test(str(i.location)) && !/docker\//.test(str(i.location));
+const isSetting = (i: Item) => i.value_kind === 'setting';
+/** 이름 칸 옆 출처 칩(「설정 값」은 칩 없이 인터페이스 칸 글자, 디자인 F3) */
+const originLabel = (i: Item) => (i.aas_default === 'llm' ? t('inventory.originAasDefault') : i.aas_default ? t('inventory.originAuto') : '');
+/** 같은 프로파일 안에서 사람 키 → 설정 값 → AAS 기본 순(디자인 F1). 화면이 미리 정렬하고, 주소에 sort 가 없으면 표가 이 순서를 지킨다(ENG E10) */
+const rank = (i: Item) => (i.aas_default ? 2 : isSetting(i) ? 1 : 0);
 
 function EnvChange({ item, w }: { item: Item; w: Write }) {
   const qc = useQueryClient();
@@ -273,7 +259,10 @@ function EnvChange({ item, w }: { item: Item; w: Write }) {
   const name = targetOf(item);
   let body: ReactNode = null;
   if (w.may) {
-    if (w.secure === false) {
+    if (!ENV_KEY.test(item.name)) {
+      // .env 는 소문자·export 이름도 읽지만 값 넣기 규칙은 대문자다 — 프로파일 「비밀값」 탭에서 바꾼다(DX 검토)
+      body = <Typography variant="body2" color="text.secondary">{t('inventory.envNameNotEditable')}</Typography>;
+    } else if (w.secure === false) {
       body = <Typography variant="body2" color="text.secondary">{t('inventory.needSecure')}</Typography>;
     } else if (w.ready && name === 'default' && rootHidden(w.profiles)) {
       body = <Typography variant="body2" color="text.secondary">{t('inventory.rootReadOnly')}</Typography>;
@@ -316,6 +305,16 @@ function EnvChange({ item, w }: { item: Item; w: Write }) {
 function ChangeHint({ item, w }: { item: Item; w: Write }) {
   const loc = str(item.location);
   const name = targetOf(item);
+  // AAS 가 넣은 값은 이 화면에서 바꾸지 않는다 — 바꾸면 모델 연결이 깨진다(D8). 갈 곳은 프로파일 설정(F8)
+  if (item.aas_default)
+    return (
+      <Section title={t('inventory.changeValue')}>
+        <Typography variant="body2" color="text.secondary">{t('inventory.aasDefaultNote')}</Typography>
+        <LinkChip to="profiles" params={{ name, pane: 'config' }} page>
+          {t('inventory.changeInConfig', { name })}
+        </LinkChip>
+      </Section>
+    );
   if (isEnvRow(item)) return <EnvChange item={item} w={w} />;
   if (/config\.yaml/.test(loc))
     return (
@@ -342,14 +341,12 @@ const secretChoices = (w: Write) => (w.ready ? (w.profiles ?? []).filter((p) => 
 function NewSecret({
   w,
   items,
-  pattern,
   open,
   onClose,
   initialProfile,
 }: {
   w: Write;
   items: Item[];
-  pattern?: string;
   open: boolean;
   onClose: () => void;
   /** 화면에서 고른 프로파일(스펙 2026-10-28-006 §4-1). 넣을 수 있는 곳이 아니면 무시한다 */
@@ -366,25 +363,20 @@ function NewSecret({
   if (choices.length === 0) return null;
   const chosen =
     profile || (choices.find((p) => p.name === initialProfile) ?? choices.find((p) => !p.is_default) ?? choices[0]).name;
-  const valid = ENV_KEY.test(name);
-  let listed = true; // 서버의 표 규칙에 맞아 저장 뒤 행으로 나타나는가. 규칙을 아직 못 받았으면 경고하지 않는다
-  try {
-    listed = !pattern || new RegExp(pattern, 'i').test(name);
-  } catch {
-    listed = true;
-  }
+  const valid = ENV_KEY.test(name); // 이름 규칙 밖 이름도 「설정 값」 행으로 표에 나타난다(스펙 2026-11-18-007 R1) — 미리 알릴 일이 없다
   const close = () => {
     onClose();
     setName('');
     setValue('');
   };
+  const cleaned = cleanSecret(value); // 붙여 넣은 값 끝의 줄바꿈은 지우고 보낸다(스펙 2026-11-18-004)
   const save = async () => {
-    if (!valid || !value || busy) return;
+    if (!valid || cleaned.error || busy) return;
     const exists = items.some((i) => isEnvRow(i) && targetOf(i) === chosen && i.name === name);
     if (exists && !(await confirm(t('profiles.envOverwriteConfirm', { target: name })))) return;
     setBusy(true);
     try {
-      await post('/api/profile/action', { name: chosen, action: 'env_set', target: name, value });
+      await post('/api/profile/action', { name: chosen, action: 'env_set', target: name, value: cleaned.value });
       enqueueSnackbar(t('inventory.newSecretSaved', { name, profile: chosen }), { variant: 'success' });
       close();
       await qc.invalidateQueries({ queryKey: ['inventory'] });
@@ -415,19 +407,11 @@ function NewSecret({
               autoComplete="off"
               slotProps={{ htmlInput: { spellCheck: false, style: { fontFamily: MONO_FONT } } }}
             />
-            {valid && !listed && (
-              <Typography variant="caption" color="warning.main">
-                {t('inventory.newSecretNotListed')}
-              </Typography>
-            )}
-            <TextField
-              size="small"
-              type="password"
+            <SecretValueField
               label={t('inventory.newSecretValue')}
               value={value}
-              onChange={(e) => setValue(e.target.value)}
-              autoComplete="off"
-              slotProps={{ htmlInput: { spellCheck: false } }}
+              onChange={setValue}
+              error={value && cleaned.error ? t(`inventory.secretBad.${cleaned.error}`) : undefined}
             />
             <Typography variant="caption" color="text.secondary">
               {t('inventory.envApplyNote')}
@@ -436,7 +420,7 @@ function NewSecret({
         </DialogContent>
         <DialogActions>
           <Button onClick={close}>{t('inventory.newSecretClose')}</Button>
-          <Button variant="contained" disabled={busy || !valid || !value} onClick={save}>
+          <Button variant="contained" disabled={busy || !valid || !!cleaned.error} onClick={save}>
             {t('profiles.save')}
           </Button>
         </DialogActions>
@@ -464,6 +448,24 @@ interface Config {
 }
 
 const n = (v: unknown) => Number(v ?? 0);
+/** API 키·토큰 이름 칸: 이름 옆에 출처 칩(「AAS 기본」·「자동 생성」). 칩은 셀 글자라 화면 읽기 프로그램이 이름과 함께 읽는다(디자인 F14) */
+const credNameColumn = (): GridColumn<Item> => {
+  const base = nameColumn<Item>({ label: t('inventory.name'), value: (i) => i.name });
+  return {
+    ...base,
+    render: (i) => {
+      const origin = originLabel(i);
+      return origin ? (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+          {base.render?.(i)}
+          <Pill>{origin}</Pill>
+        </Box>
+      ) : (
+        base.render?.(i)
+      );
+    },
+  };
+};
 
 const CONFIG = (): Record<Kind, Config> => ({
   credentials: {
@@ -479,15 +481,18 @@ const CONFIG = (): Record<Kind, Config> => ({
     views: (tt) => ({ all: t('inventory.scopeSplit', { global: n(tt.global), profile: n(tt.profile) }) }),
     toggles: () => [
       { id: 'expiring', label: t('inventory.expiring'), sub: t('inventory.expiringSub'), tone: 'bad', match: hasFlag('만료') }, // i18n-ignore: 서버 플래그 비교
-      { id: 'empty', label: t('inventory.emptyValues'), sub: t('inventory.emptyValuesSub'), tone: 'warn', match: (i) => !i.set && !i.oauth }, // MCP OAuth 토큰 행은 「로그인 필요」로 따로 알린다(스펙 2026-10-16-010 T7)
+      // MCP OAuth 토큰 행은 「로그인 필요」로, AAS 기본 값·설정 값 행은 점검 대상이 아니다(스펙 2026-10-16-010 T7, 2026-11-18-007 R6)
+      { id: 'empty', label: t('inventory.emptyValues'), sub: t('inventory.emptyValuesSub'), tone: 'warn', match: (i) => !i.set && !i.oauth && !i.aas_default && !isSetting(i) },
       { id: 'backups', label: t('inventory.backups'), sub: t('inventory.backupsSub'), tone: 'warn', match: hasFlag('백업·임시 파일') }, // i18n-ignore: 서버 플래그 비교
+      { id: 'defaults', label: t('inventory.defaultsToggle'), sub: t('inventory.defaultsToggleSub'), match: (i) => !!i.aas_default },
     ],
+    // 칩 글자·제공자 이름(auth.json keys)도 찾는다(디자인 F13)
     text: (i) =>
-      [i.name, i.location, i.interface, i.profile, i.target, (i.used_by ?? []).join(' '), (i.flags ?? []).join(' ')]
+      [i.name, i.location, i.interface, i.profile, i.target, originLabel(i), ((i.keys as string[]) ?? []).join(' '), (i.used_by ?? []).join(' '), (i.flags ?? []).join(' ')]
         .map(str)
         .join(' '),
     columns: () => [
-      nameColumn<Item>({ label: t('inventory.name'), value: (i) => i.name }),
+      credNameColumn(),
       scopeColumn,
       textColumn('interface', t('inventory.interface')),
       textColumn('target', t('inventory.target')),
@@ -504,6 +509,7 @@ const CONFIG = (): Record<Kind, Config> => ({
       [t('inventory.source'), str(i.source)],
       [t('inventory.file'), code(i.location)],
       [t('inventory.value'), i.set ? t('inventory.valueFilled') : t('inventory.valueEmpty')],
+      [t('inventory.providers'), ((i.keys as string[]) ?? []).length && /auth\.json$/.test(str(i.location)) ? ((i.keys as string[]) ?? []).join(', ') : ''],
       [t('inventory.expiry'), i.expires ? day(i.expires) : ''],
       [t('inventory.sameValue'), i.shared ? t('inventory.copiedTo', { count: Number(i.shared) }) : ''],
     ],
@@ -709,7 +715,8 @@ function Inventory({ view }: { view: Kind }) {
     storageKey: 'aas.credentialsProfile',
     labelOf: (p) => scopeLabel(p, primary),
     initial: () => (params.get('q') ? ALL_PROFILES : undefined),
-    hasRows: (p) => !!d?.items.some((i) => targetOf(i) === p),
+    // AAS 기본 값 행은 모든 프로파일에 생기므로 세지 않는다 — 세면 「행 없는 프로파일 건너뛰기」가 늘 참이 된다(스펙 2026-11-18-007, 2026-10-28-006 R8)
+    hasRows: (p) => !!d?.items.some((i) => targetOf(i) === p && !i.aas_default),
   });
   // 도구·라이브러리의 거르기 줄도 주소 키 profile 을 쓴다. API 키·토큰에서 가져온 「전체(*)」는 거르지 않음이다(외부 검토 OV-13)
   useEffect(() => {
@@ -727,7 +734,8 @@ function Inventory({ view }: { view: Kind }) {
 
   const sc = scope ?? ALL_PROFILES; // 위에서 API 키·토큰이면 null 이 아님을 확인했다. 다른 보기는 늘 「전체」
   const scoped = cred && sc !== ALL_PROFILES;
-  const items = scoped ? d.items.filter((i) => targetOf(i) === sc) : d.items;
+  const picked0 = scoped ? d.items.filter((i) => targetOf(i) === sc) : d.items;
+  const items = cred ? [...picked0].sort((a, b) => rank(a) - rank(b)) : picked0; // Array.sort 는 안정 정렬 — 같은 묶음 안은 서버 순서
   const totals = cred ? credTotals(items) : d.totals;
   const flagged = items.filter((i) => (i.flags ?? []).length);
   const nothing = d.items.length === 0 && Number(d.totals.items ?? 0) === 0;
@@ -835,9 +843,23 @@ function Inventory({ view }: { view: Kind }) {
 
   const addSecret: AddAction | null =
     view === 'credentials' && secretChoices(w).length ? { label: t('inventory.newSecret'), onClick: () => setSecretOpen(true) } : null;
-  const hiddenN = cred && d.hidden ? (scoped ? (d.hidden.by_profile[sc === 'default' ? '' : sc] ?? 0) : d.hidden.count) : 0;
-  const note = hiddenN ? `${C.note} ${t('inventory.hiddenDefaults', { n: hiddenN })}` : C.note;
-  const count = mcp ? t('inventory.toolsTotal', { scripts: d.items.length, mcp: mcp.length }) : t('inventory.itemsTotal', { count: items.length });
+  const note = cred ? `${C.note} ${t('inventory.defaultsNote')}` : C.note;
+  // 행 수: 출처별로 나눠 보인다(「6개를 기대했는데 12개」를 설명, 디자인 F7). 0인 묶음은 뺀다
+  const kinds = cred ? [items.filter((i) => !i.aas_default && !isSetting(i)).length, items.filter((i) => !i.aas_default && isSetting(i)).length, items.filter((i) => i.aas_default).length] : [];
+  const split = [t('inventory.splitAdded', { n: kinds[0] }), t('inventory.splitSettings', { n: kinds[1] }), t('inventory.splitDefaults', { n: kinds[2] })].filter((_, k) => kinds[k] > 0);
+  const total = t('inventory.itemsTotal', { count: items.length });
+  const count = mcp ? t('inventory.toolsTotal', { scripts: d.items.length, mcp: mcp.length }) : cred && split.length > 1 ? `${total} — ${split.join(' · ')}` : total;
+  // 고른 프로파일에 AAS 기본 값 행만 있으면 표 위에 알린다(디자인 F5)
+  const onlyDefaults = cred && scoped && items.length > 0 && items.every((i) => i.aas_default);
+  const retry =
+    cred && w.failed ? (
+      <Box component="span" sx={{ fontSize: 13, color: 'text.secondary' }}>
+        {t('inventory.profilesLoadFailed')}
+        <Button size="small" color="inherit" onClick={w.retry}>
+          {t('inventory.retry')}
+        </Button>
+      </Box>
+    ) : null;
   const picker =
     cred && choices.length > 1 ? (
       <ProfileScopePicker
@@ -857,16 +879,10 @@ function Inventory({ view }: { view: Kind }) {
       guide={cred ? 'credentials.list' : undefined}
       key={cred ? sc : view}
       title={C.title}
-      sub={
-        picker ? (
-          <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, width: '100%' }}>
-            {picker}
-            <span>{count}</span>
-          </Box>
-        ) : (
-          count
-        )
-      }
+      sub={count}
+      // 프로파일 고르기는 표 도구줄(검색 칸 바로 왼쪽, 스펙 2026-11-18-007 R7). 목록을 못 받았으면 「다시 시도」
+      toolbar={picker || retry ? <>{retry}{picker}</> : undefined}
+      banner={onlyDefaults ? { severity: 'info', message: t('inventory.onlyDefaults'), live: false } : undefined}
       error={q.error?.message}
       note={note}
       titleAction={addSecret ? <AddIconButton {...addSecret} /> : undefined}
@@ -907,8 +923,12 @@ function Inventory({ view }: { view: Kind }) {
               <Section title={t('inventory.usedByTitle')} count={it.used_count || 0}>
                 <UsedByLinks labels={it.used_by} more={it.used_count} />
               </Section>
+              {view === 'credentials' && isSetting(it) && (
+                <Typography variant="body2" color="text.secondary">{t('inventory.settingNote')}</Typography>
+              )}
               {C.extra?.(it)}
-              <RegistryForm kind={C.kind} item={it} />
+              {/* AAS 기본 값 행에는 관리 기록을 두지 않는다(D8·ENG E7) */}
+              {!it.aas_default && <RegistryForm kind={C.kind} item={it} />}
             </>
           ),
         };
@@ -918,7 +938,6 @@ function Inventory({ view }: { view: Kind }) {
       <NewSecret
         w={w}
         items={d.items}
-        pattern={d.name_pattern}
         open={secretOpen}
         onClose={() => setSecretOpen(false)}
         initialProfile={scoped ? sc : undefined}

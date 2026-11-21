@@ -775,8 +775,9 @@ export function AgentChat({ alias, fill = false, onLost }: { alias: string; fill
         placeholder={t('office.sayHintChat')}
         sendLabel={t('office.send')}
         stopLabel={t('office.chatStop')}
-        hint={busy ? t('chat.cmd.busyHint') : t('chat.keyHint')}
+        hint={busy ? t(fill ? 'chat.cmd.busyNow' : 'chat.cmd.busyHint') : t('chat.keyHint')}
         compact={fill}
+        hintShown={busy}
         note={blocked ? t('chat.reconnect.note') : plan.note ? <SlashNote text={plan.note} warn={plan.warn} /> : undefined}
         suggest={[slashSource(skills, slash)]}
         voice={voice}

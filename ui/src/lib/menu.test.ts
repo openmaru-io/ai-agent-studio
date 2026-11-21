@@ -28,7 +28,7 @@ describe('메뉴 모델 — 할 일 기준 8묶음(OMAI-1313, 스펙 2026-10-17-
     expect(ids(true, 'skill')).toEqual(['skills', 'market', 'flows']);
     expect(ids(true, 'automation')).toEqual(['cron', 'channels']);
     expect(ids(true, 'records')).toEqual(['activity', 'changes']);
-    expect(ids(true, 'admin')).toEqual(['users', 'soul-templates', 'notices']);
+    expect(ids(true, 'admin')).toEqual(['users', 'soul-templates', 'notices', 'embed-apps']);
     expect(ids(true, 'settings')).toEqual(['preferences', 'credentials', 'connections', 'settings']);
   });
 

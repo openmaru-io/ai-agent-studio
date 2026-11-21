@@ -5,6 +5,7 @@ import aasserver  # 실제 uvicorn 앱을 띄우는 시험 하네스(OMAI-1100)
 import http.client
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -21,6 +22,13 @@ from aas.auth import auth
 from aas.fleet import pods, profiles
 from aas.web import server  # noqa: E402
 from aas.hermes.hermes_chat import ChatHub  # noqa: E402
+
+
+def _mkprof(d: Path) -> Path:
+    """프로파일 폴더를 만든다. 표시 파일(config.yaml)이 있어야 프로파일로 친다(hermes_reader.IDENTITY_MARKERS)."""
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.yaml").write_text("model: x\n")
+    return d
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -482,6 +490,13 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual((code, Fake.calls), (403, [])); self.assertIn("암호화", out["error"])
         self.assertFalse(self.req("GET", "/api/profile?name=ma", headers={"Host": "10.0.0.5:17900"})[1]["secure"])
 
+    def test_env_set_drops_skill_states_cache(self):
+        """값을 넣으면 스킬 화면의 「설정 필요」가 바로 다시 계산되도록 처리기가 skill_states 캐시를 버린다(스펙 2026-11-18-004 §2)."""
+        key = f"{self.pod.id}:skill_states"
+        server._cache[key] = (time.time() + 3600, ({}, []))
+        self.assertEqual(self.act("ma", "env_set", target="LAW_OC", value="secret-value-2")[0], 200)
+        self.assertNotIn(key, server._cache)
+
     def test_secret_change_records_whether_it_was_set(self):
         """사용 기록에 바꾸기 전 값이 있었는지(was_set)를 남긴다. 값은 남기지 않는다(스펙 2026-10-19-015 A4·S6)."""
         from aas.common import store
@@ -773,7 +788,7 @@ class ProfileTest(unittest.TestCase):
         self.as_owner()
         mine = fp.Pod(id="other-mine", owner="t@example.com", hermes_home=self.pod.hermes_home, dashboard_url=self.pod.dashboard_url)
         theirs = fp.Pod(id="other-theirs", owner="z@example.com", hermes_home=self.pod.hermes_home, dashboard_url=self.pod.dashboard_url)
-        (Path(self.pod.hermes_home) / "profiles" / "ma").mkdir(parents=True, exist_ok=True)                            # 원본 프로파일 폴더(읽기 사이드카가 보는 곳)
+        _mkprof(Path(self.pod.hermes_home) / "profiles" / "ma")                            # 원본 프로파일 폴더(읽기 사이드카가 보는 곳)
         reg = server._registry
         old = list(reg.pods)
         reg.pods.extend([mine, theirs])
@@ -789,8 +804,8 @@ class ProfileTest(unittest.TestCase):
             self.assertEqual((Fake.calls[0][1], Fake.calls[0][3]["clone_from"], Fake.calls[0][3]["no_skills"]), ("/api/profiles", "ma", False))      # 받는 쪽 주 프로파일 복제로 시작
             self.assertEqual(self.act("imp2", "create", import_from={"pod": "other-mine", "profile": "ghost"})[0], 400)
             temp = Path(self.pod.hermes_home) / "profiles" / "pcimp-abc123abc123"                                       # PC 가져오기 임시 프로파일(OMAI-1444 ROV7)
-            temp.mkdir()
-            self.addCleanup(temp.rmdir)
+            _mkprof(temp)                                                                                                   # 진짜 프로파일처럼 보여도 이름으로 뺀다
+            self.addCleanup(shutil.rmtree, temp)
             src = self.req("GET", "/api/profiles/importable")
             self.assertEqual(src[0], 200)
             self.assertEqual([s["pod"] for s in src[1]["sources"]], ["other-mine"])                                        # 내 다른 에이전트만 보인다
@@ -910,6 +925,17 @@ class ProfileTest(unittest.TestCase):
             reg.is_admin = lambda u: True                                                                                        # 관리자는 루트(숨김)를 지금처럼 다룬다
             self.assertEqual(self.req("POST", "/api/profile/action", {"name": "default", "action": "env_set", "target": "SERPER_API_KEY", "value": "serper-secret-1"}, {"X-AAS": "1"})[0], 200)
 
+    def test_mcp_add_passes_tools_include_through(self):
+        """MCP 도구 mcp_add 가 보낸 tools_include 를 웹 서버가 버리지 않는다(OMAI-1863). 문자열이 아닌 값은 뺀다."""
+        from aas.ops import mcp_servers
+        with mock.patch.object(mcp_servers, "add", return_value={"ok": True}) as add:
+            code, _ = self.act("ma", "mcp_add", server="docs", kind="url", url="https://example.com/mcp", auth="header", bearer_token="t",
+                               tools_include=["fetch", 3, "", "list_documents"])
+            self.assertEqual(code, 200)
+            self.assertEqual(add.call_args.kwargs["tools_include"], ["fetch", "list_documents"])
+            self.act("ma", "mcp_add", server="docs2", kind="url", url="https://example.com/mcp", auth="none")
+            self.assertIsNone(add.call_args.kwargs["tools_include"])
+
     def test_mcp_add_remove_catalog_and_install_go_to_hermes_and_keep_secrets_out_of_the_log(self):
         """스펙 2026-10-15-025: 새 동작 4개의 요청 모양, 비밀 값이 기록에 없는 것, 읽기(카탈로그)는 기록하지 않는 것."""
         Fake.calls.clear()
@@ -927,7 +953,7 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(self.act("ma", "mcp_remove", target="OMDM")[0], 200)
         self.assertEqual(Fake.calls[-1], ("DELETE", "/api/mcp/servers/OMDM", {"profile": "ma"}, {}))
         code, cat = self.act("ma", "mcp_catalog")
-        self.assertEqual(([e["name"] for e in cat["entries"]], cat["hidden"]["oauth"]), (["docmost", "outline", "ctx"], 1))   # AAS 의 Docmost·Outline 항목이 늘 맨 앞(스펙 2026-10-23-002 12-6, 2026-10-23-004)
+        self.assertEqual(([e["name"] for e in cat["entries"]], cat["hidden"]["oauth"]), (["docmost", "outline", "cogentai-database", "cogentai-chart", "ctx"], 1))   # AAS 의 builtin 항목이 늘 맨 앞(스펙 2026-10-23-002 12-6, 2026-10-23-004, OMAI-1863)
         Fake.calls.clear()
         self.assertEqual(self.act("ma", "mcp_install", server="ctx")[0], 200)
         self.assertEqual(Fake.calls[-1], ("POST", "/api/mcp/catalog/install", {"profile": "ma"}, {"name": "ctx", "env": {}, "enable": True, "profile": "ma"}))
@@ -1088,7 +1114,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_skill_create_goes_to_hermes_with_frontmatter(self):
         server._cache[f"{self.pod.id}:skills"] = (time.time() + 3600, {"skills": [{"name": "ga4", "profile": "default"}]})
-        (self.pod.hermes_home / "profiles" / "ma").mkdir(parents=True, exist_ok=True)
+        _mkprof(self.pod.hermes_home / "profiles" / "ma")
         X = {"X-AAS": "1"}
         mk = lambda **b: self.req("POST", "/api/skill/create", b, X)            # noqa: E731
         Fake.calls.clear()
@@ -1115,7 +1141,7 @@ class ProfileTest(unittest.TestCase):
     def test_skill_create_on_a_pod_with_a_hidden_root(self):
         """OMAI-1195: 주 에이전트(main)를 쓰는 POD 는 루트(default)를 숨긴다. 화면이 공용(default)을 기본으로 보내 「없는 프로파일입니다」로 거절됐다.
         루트가 숨겨진 POD 에서 default 는 무엇을 바꿔야 하는지 알려 주는 400, 주 에이전트 이름은 성공, 루트가 보이는 POD 의 default 는 지금처럼 성공."""
-        (self.pod.hermes_home / "profiles" / "ma").mkdir(parents=True, exist_ok=True)
+        _mkprof(self.pod.hermes_home / "profiles" / "ma")
         X = {"X-AAS": "1"}
         mk = lambda profile: self.req("POST", "/api/skill/create", {"name": "weekly-report", "profile": profile, "description": "주간 보고를 만든다"}, X)   # noqa: E731
         fill = lambda: server._cache.__setitem__(f"{self.pod.id}:skills", (time.time() + 3600, {"skills": []}))   # 만든 뒤에는 목록을 새로 읽으므로 다시 채운다
@@ -1136,7 +1162,7 @@ class ProfileTest(unittest.TestCase):
     def test_skills_list_tells_the_screen_where_a_new_skill_can_go(self):
         """OMAI-1195: 화면이 위치 목록을 서버가 준 값으로 만든다. 루트가 숨겨진 POD 에서는 default 가 목록에 없고 주 에이전트 이름을 함께 준다."""
         server._cache[f"{self.pod.id}:skills"] = (time.time() + 3600, {"built_at": "x", "totals": {}, "skills": [], "by_mcp": {}, "by_host": {}, "mcp_configured": []})
-        (self.pod.hermes_home / "profiles" / "ma").mkdir(parents=True, exist_ok=True)
+        _mkprof(self.pod.hermes_home / "profiles" / "ma")
         with mock.patch.object(server.cron_policy, "root_hidden", return_value=True), mock.patch.object(server.primary, "primary_of", return_value="ma"):
             code, d = self.req("GET", "/api/skills")
             self.assertEqual(code, 200)
@@ -1162,7 +1188,7 @@ class ProfileTest(unittest.TestCase):
         self.addCleanup(server._cache.clear)
         seen = []
         with mock.patch.object(server.cron_policy, "root_hidden", return_value=False), \
-                mock.patch.object(server.market_tags, "skill_tags", side_effect=lambda t, n, d, o: seen.append(d) or ["docs"]), \
+                mock.patch.object(server.market_tags, "skill_tags", side_effect=lambda t, n, d, o, *rules: seen.append(d) or ["docs"]), \
                 mock.patch.object(skill_desc, "find", side_effect=lambda n, d: ("박스 파일 관리", "llm") if skill_desc.get_lang() == "ko" else None):
             code, d = self.req("GET", "/api/skills", headers={"Accept-Language": "ko"})
             code1, one = self.req("GET", "/api/skill?id=default/box", headers={"Accept-Language": "ko"})
@@ -1174,6 +1200,38 @@ class ProfileTest(unittest.TestCase):
         self.assertNotIn("description_src", en["skills"][0])
         self.assertEqual(set(seen), {desc})                                           # 태그는 원문으로 찾는다
         self.assertEqual(row["description"], desc)                                     # 저장값은 그대로
+
+    def test_skill_required_env_marks_llm_values_from_aas(self):
+        """스펙 2026-11-19-002 §4-2 #3: LLM 접속값은 set 이 늘 True 이고 출처(managed_source)를 붙인다. 출처가 갈리면 managed_mixed."""
+        from aas.assets import skill_setup
+        req = skill_setup.required_env({"required_environment_variables": ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "CRM_TOKEN"]})
+        row = {"id": "ma/sa-crm", "name": "sa-crm", "profile": "ma", "description": "crm", "modified": "", "origin": "local",
+               "mcp": [], "rest": [], "scripts": [], "external_scripts": [], "cron": [], "required_env": req}
+        graph = {"built_at": "x", "totals": {}, "skills": [row], "by_mcp": {}, "by_host": {}, "mcp_configured": []}
+        prof = _mkprof(self.pod.hermes_home / "profiles" / "ma")
+        self.addCleanup(server._cache.clear)
+        self.addCleanup(lambda: (prof / ".env").unlink(missing_ok=True))
+        for key in (f"{self.pod.id}:skills", server._lang_key(f"{self.pod.id}:skills", True)):
+            server._cache[key] = (time.time() + 3600, graph)
+
+        def get(env_text):
+            (prof / ".env").write_text(env_text)
+            with mock.patch.object(server.market_tags, "skill_tags", return_value=[]):
+                code, d = self.req("GET", "/api/skill?id=ma/sa-crm")
+            self.assertEqual(code, 200)
+            return {e["name"]: e for e in d["required_env"]}, d.get("managed_mixed", False), json.dumps(d)
+
+        by, mixed, blob = get("LLM_API_KEY=${HERMES_LLM_API_KEY}\nLLM_MODEL=\n")
+        self.assertEqual({n: (by[n]["set"], by[n]["managed"], by[n]["managed_source"]) for n in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")},
+                         {n: (True, "aas", "aas") for n in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")})
+        self.assertEqual((by["CRM_TOKEN"]["set"], "managed_source" in by["CRM_TOKEN"], mixed), (False, False, False))
+        by, mixed, blob = get("LLM_API_KEY=sk-user-value-9\nCRM_TOKEN=t\n")
+        self.assertEqual((by["LLM_API_KEY"]["managed_source"], by["LLM_BASE_URL"]["managed_source"], by["CRM_TOKEN"]["set"], mixed),
+                         ("profile", "aas", True, True))
+        self.assertNotIn("sk-user-value-9", blob)                                     # 값은 응답에 없다
+        self.assertNotIn("owner_locked", by["LLM_API_KEY"])                           # 주인이 지울 수 있는 이름
+        by, mixed, blob = get("LLM_BASE_URL=http://other\n")
+        self.assertEqual((by["LLM_BASE_URL"]["managed_source"], by["LLM_BASE_URL"].get("owner_locked")), ("profile", True))   # _BASE_URL 은 관리자만
 
     def test_env_change_drops_the_credentials_cache(self):
         """OMAI-1175: 비밀값을 넣거나 지우면 자격증명 표 캐시(120초)의 옛 값을 버려 바로 새로 읽는다. 도구 목록 같은 다른 캐시는 남긴다.

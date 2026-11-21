@@ -162,3 +162,51 @@ describe('AgentSwitch — 내 팀 구역', () => {
     expect(screen.queryByText('내 AI 에이전트 작업공간')).toBeNull();
   });
 });
+
+// 스펙 2026-11-18-006: 작업공간이 SEARCH_MIN(8) 이상이면 맨 위에 찾기 칸, 목록은 높이를 묶어 스크롤
+describe('AgentSwitch 찾기', () => {
+  const MANY = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, owner: `u${i}@x.com`, owner_name: `사용자${i}`, name: `작업공간${i}` }));
+  const all = [MINE, ...MANY];
+
+  it('적으면 찾기 칸이 없다', async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(screen.getByRole('button', { name: 'AI 에이전트 작업공간: 운영' }));
+    expect(screen.queryByRole('searchbox', { name: '이름이나 주인으로 찾기' })).toBeNull();
+  });
+
+  it('많으면 열 때 찾기 칸에 초점이 가고, 주인 이름으로 거른다', async () => {
+    const user = userEvent.setup();
+    mount({ pods: all });
+    await user.click(screen.getByRole('button', { name: 'AI 에이전트 작업공간: 운영' }));
+    const box = screen.getByRole('searchbox', { name: '이름이나 주인으로 찾기' });
+    await waitFor(() => expect(box).toHaveFocus());
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(11);
+    await user.type(box, '사용자3');
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(1);
+    expect(screen.getByRole('menuitemradio')).toHaveTextContent('작업공간3');
+  });
+
+  it('맞는 줄이 하나면 Enter 로 고르고, 없으면 그렇다고 알린다', async () => {
+    const user = userEvent.setup();
+    const { onPick } = mount({ pods: all });
+    await user.click(screen.getByRole('button', { name: 'AI 에이전트 작업공간: 운영' }));
+    const box = screen.getByRole('searchbox', { name: '이름이나 주인으로 찾기' });
+    await user.type(box, '없는이름');
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+    expect(screen.getByRole('status')).toHaveTextContent('「없는이름」에 맞는 AI 에이전트 작업공간이 없습니다');
+    await user.clear(box);
+    await user.type(box, 'u7@{Enter}');
+    expect(onPick).toHaveBeenCalledWith('p7');
+  });
+
+  it('찾기 칸에서 ↓ 를 누르면 첫 줄로 간다', async () => {
+    const user = userEvent.setup();
+    mount({ pods: all });
+    await user.click(screen.getByRole('button', { name: 'AI 에이전트 작업공간: 운영' }));
+    const box = screen.getByRole('searchbox', { name: '이름이나 주인으로 찾기' });
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getAllByRole('menuitemradio')[0]).toHaveFocus();
+  });
+});

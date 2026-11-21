@@ -22,7 +22,7 @@ MAX_DEPTH = 3
 
 URL = re.compile(r"https?://[^\s\"'<>)\]}`\\]+")
 OPT_REF = re.compile(r"/opt/data/([\w./-]+\.(?:py|sh|js|mjs|cjs|ts))\b")
-_HOST_OK = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$")
+_HOST_OK = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\Z")
 _NOISE_HOSTS = {"www.w3.org", "schemas.openxmlformats.org", "schemas.microsoft.com", "json-schema.org"}
 _PLACEHOLDER = ("example.", "localhost", "127.0.0.1", "0.0.0.0", "your-", "<", "{", "$")
 _PY_IMPORT = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_][\w.]*)")

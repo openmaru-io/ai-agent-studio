@@ -105,6 +105,7 @@ class McpServerTest(unittest.TestCase):
             auth.save_user(e, PASSWORD, cls.users)
         for name in ("mcp_home_a", "mcp_home_c"):
             (root / name / "profiles" / "main").mkdir(parents=True, exist_ok=True)
+            (root / name / "profiles" / "main" / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
         reg = root / "mcp-pods.json"
         reg.write_text(json.dumps({"admins": [BOSS], "pods": [
             {"id": "mcp-a", "owner": ALICE, "hermes_home": str(root / "mcp_home_a")},
@@ -275,22 +276,27 @@ class McpServerTest(unittest.TestCase):
         "credential_clear", "credential_request", "credential_set", "credential_upload_command", "credentials_status", "cron_get",
         "cron_list", "env_upload_command", "file_get", "file_put", "files_list", "market_list", "market_publish_status", "mcp_list",
         "profile_get", "profile_text_versions", "secret_clear", "secret_request", "secret_set", "secrets_status", "skill_apply",
-        "skill_create", "skill_file_read", "skill_get", "skill_toggle", "skill_update", "skill_upload", "skills_list", "token_rotate"}
+        "skill_create", "skill_file_read", "skill_get", "skill_toggle", "skill_update", "skill_upload", "skills_list", "token_rotate",
+        "members_list"}                                                    # 작업공간 구성원 보기(scope chat, 스펙 2026-11-17-008 §7)
     ALL_TOOLS = SKILL_DEV_TOOLS | {
         "channel_list", "channel_save", "channel_test", "channel_token_upload_command", "command_run", "cron_create", "cron_delete",
         "cron_run", "cron_update", "market_install", "market_publish", "market_remove", "mcp_add", "mcp_apply", "mcp_catalog",
         "mcp_install", "mcp_login_link", "mcp_remove", "mcp_test", "mcp_toggle", "pairing_answer", "profile_create", "profile_delete",
-        "profile_rename", "profile_text_preview", "profile_text_revert", "profile_text_set", "toolset_set", "skill_delete"}
+        "profile_rename", "profile_text_preview", "profile_text_revert", "profile_text_set", "toolset_set", "skill_delete",
+        "members_set",                                                     # 구성원 넣기·빼기(scope profile:write)
+        "messenger_link",                                                  # 내 메신저 계정 연결(scope channels, 2026-11-17-008 §7)
+        "market_template_publish", "market_template_unpublish",            # 프로파일 템플릿 올리기·내리기(scope market, 스펙 2026-11-18-002 §4-3)
+        "market_publish_withdraw"}                                         # 기다리는 게시 요청 거두기(scope market, 스펙 2026-11-20-009 §3-2 5)
     READ_TOOLS = {
         "agents_list", "chat_read", "chat_wait", "credentials_status", "cron_get", "cron_list", "file_get", "files_list",
         "market_list", "market_publish_status", "mcp_list", "profile_get", "profile_text_versions", "secrets_status",
-        "skill_file_read", "skill_get", "skills_list", "token_rotate"}
+        "skill_file_read", "skill_get", "skills_list", "token_rotate", "members_list"}
     READ_ONLY_SEND = ('This connection is read-only ("Read only" bundle) and cannot send messages to agents. To send, reconnect with the '
                       '"Skill development" or "Everything (my AI agents)" bundle in Settings › Claude Code connections.')
 
     def test_묶음별_도구_목록_계약(self):
         from aas.auth import tokens
-        self.assertEqual((len(self.ALL_TOOLS), len(self.SKILL_DEV_TOOLS), len(self.READ_TOOLS)), (66, 37, 18))
+        self.assertEqual((len(self.ALL_TOOLS), len(self.SKILL_DEV_TOOLS), len(self.READ_TOOLS)), (72, 38, 19))
         dev_view, dev_raw = tokens.issue({"email": ALICE, "sub": "s"}, "dev", "skill-dev", 30)
         try:
             for bundle, raw, want in (("all", self.all_raw, self.ALL_TOOLS), ("skill-dev", dev_raw, self.SKILL_DEV_TOOLS),
@@ -373,6 +379,30 @@ class McpServerTest(unittest.TestCase):
         self.assertFalse(err)
         self.assertEqual((got["state"], got["after"]), ("running", 0))
         self.assertLess(time.time() - t0, 5)
+
+    def test_끊긴_세션은_다시_불러도_disconnected(self):
+        """끊김 이벤트를 앞 chat_wait 가 가져간 뒤 after 를 넘겨 다시 부르면 이벤트가 없다 — 그래도 running 이 아니다(2026-11-19)."""
+        hub = self.hubs["mcp-a"]
+        err, start = self.call("chat_start", {"pod": "mcp-a", "profile": "main"})
+        sid = start["session_id"]
+        hub.push(sid, "aas.disconnected", {"code": "hub_disconnected"})
+        hub.sessions[sid]["closed"] = True
+        err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": sid, "after": 0, "timeout": 1})
+        self.assertEqual((got["state"], got["after"]), ("disconnected", 1))
+        with mock.patch.object(hub, "session_state", lambda s: "closed" if hub.sessions[s].get("closed") else "idle", create=True):
+            err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": sid, "after": 1, "timeout": 0.2})
+            self.assertFalse(err, got)
+            self.assertEqual((got["state"], got["after"]), ("disconnected", 1))
+            err, start2 = self.call("chat_start", {"pod": "mcp-a", "profile": "main"})   # 열린 세션은 그대로 running
+            err, got = self.call("chat_wait", {"pod": "mcp-a", "session_id": start2["session_id"], "after": 0, "timeout": 0.2})
+            self.assertEqual(got["state"], "running")
+
+    def test_안내문에_끊김_뒤_할_일(self):
+        """도구 설명만 읽지 않는 클라이언트도 disconnected 뒤 chat_start 로 새 대화를 열 줄 알게 안내문에 적는다(스펙 2026-11-20-009 §3-1)."""
+        text = self.mcp.INSTRUCTIONS
+        self.assertIn("disconnected", text)
+        self.assertIn("open a new chat with chat_start", text)
+        self.assertIn("reconnect", text)
 
     def test_승인과_되묻기(self):
         hub = self.hubs["mcp-a"]
@@ -800,6 +830,7 @@ class McpServerTest(unittest.TestCase):
         for prof in ("main", "side"):
             folder = home / prof / "skills" / "twin"
             folder.mkdir(parents=True, exist_ok=True)
+            (home / prof / "config.yaml").write_text("model: x\n")      # side 도 프로파일로 보이게
             (folder / "SKILL.md").write_text(f"---\nname: twin\ndescription: d\n---\n\nbody-{prof}\n")
         for k in [k for k in self.server._cache if k.startswith("mcp-a:skills")]:   # 언어별 키(앞 시험이 만든 300초 캐시)
             self.server._cache.pop(k, None)         # 앞 시험이 만든 스킬 목록 캐시(300초)
@@ -935,6 +966,47 @@ class McpServerTest(unittest.TestCase):
 
         async def auto(ctx, method, path, pod="", query=None, body=None):
             return {"ok": True, "request": {"id": "r2", "auto": "pending", "auto_namespace": "paid", "auto_namespace_label": "restricted"}}
+
+        # 프로파일 템플릿(스펙 2026-11-18-002 §4-3): 명령 MCP 가 든 템플릿은 설치하지 않고 동의 링크, 아니면 KEY 이름과 secret_request 안내
+        async def tpl_api(ctx, method, path, pod="", query=None, body=None):
+            calls.append((method, path, query, body))
+            if path == "/api/market/template":
+                stdio = (query or {}).get("name") == "ops"
+                return 200, {"name": query["name"], "mcp": [{"name": "fs", "stdio": True}] if stdio else [{"name": "jira", "stdio": False}],
+                             "env_requires": [{"name": "JIRA_TOKEN"}]}
+            if path == "/api/market/templates/mine":
+                return 200, {"namespaces": ["free", "paid"], "public": ["free"]}
+            if path == "/api/market/template/publish":
+                if body.get("name") == "full":
+                    return 429, {"error": "오늘 한도", "reason": "publish_daily_limit", "limit": 10, "used": 10, "setting": "AAS_TEMPLATE_DAILY_LIMIT"}
+                return 200, {"status": "needs_confirmation" if body.get("files") else "preview", "name": body["name"], "errors": []}
+            return 200, {"ok": True, "request": {"id": "r3"}}
+
+        async def tpl_call(ctx, method, path, pod="", query=None, body=None):
+            calls.append((method, path, query, body))
+            return {"ok": True, "request": {"id": "r3"}}
+        with mock.patch.object(self.mcp.Ctx, "api", tpl_api), mock.patch.object(self.mcp.Ctx, "call", tpl_call):
+            err, out = self.call("market_install", {"pod": "mcp-a", "profile": "ops1", "namespace": "paid", "name": "ops"})
+            self.assertTrue(err)
+            self.assertIn("consent_required", str(out))
+            self.assertNotIn("/api/market/install", [c[1] for c in calls[-1:]])
+            err, out = self.call("market_install", {"pod": "mcp-a", "profile": "s1", "namespace": "paid", "name": "sales"})
+            self.assertFalse(err, out)
+            self.assertEqual(out["env_requires"], ["JIRA_TOKEN"])
+            self.assertIn("secret_request", out["next"])
+            err, out = self.call("market_template_publish", {"pod": "mcp-a", "profile": "main", "name": "sales", "description": "영업 제안서를 돕는 프로파일입니다",
+                                                             "dry_run": True, "files": [{"path": "a.xlsx", "confirmed": True}], "allow_internal": True})
+            self.assertFalse(err, out)
+            sent = calls[-1][3]
+            self.assertNotIn("allow_internal", sent)                                          # 공용 구역 사내 주소 확인도 사람만(스펙 2026-11-18-010)
+            self.assertEqual((sent["namespace"], sent["files"]), ("paid", [{"path": "a.xlsx"}]))     # 기본은 제한 구역, 확인은 사람만(confirmed 를 지운다)
+            self.assertEqual(out["status"], "needs_confirmation")
+            err, out = self.call("market_template_publish", {"pod": "mcp-a", "profile": "main", "name": "full", "description": "영업 제안서를 돕는 프로파일입니다"})
+            self.assertTrue(err)
+            self.assertIn("publish_daily_limit", str(out))
+            err, out = self.call("market_list", {"pod": "mcp-a", "kind": "template"})
+            self.assertFalse(err, out)
+            self.assertIn("templates", out)
         with mock.patch.object(self.mcp.Ctx, "call", auto):
             err, out = self.call("market_publish", {"pod": "mcp-a", "profile": "main", "path": "skills/hello", "name": "hello", "version": "1.0.0"})
         self.assertIn("without admin review", out["next"])
@@ -948,6 +1020,58 @@ class McpServerTest(unittest.TestCase):
         self.assertFalse(err, out)
         self.assertEqual([(r["namespace_label"], r["want_namespace_label"]) for r in out["items"]], [("restricted", "shared"), ("", "")])
         self.assertIn("namespace_label", self.mcp.TOOLS["market_list"]["spec"]["description"])
+
+    def test_게시_요청_거두기_도구(self):
+        """스펙 2026-11-20-009 §3-2 5: 실패는 isError 와 고정 낱말 — forbidden·busy(몇 초 뒤)·invalid(data.status). 성공은 다시 보낼 수 있다는 next."""
+        replies = []
+
+        async def api(ctx, method, path, pod="", query=None, body=None):
+            self.assertEqual((method, path, body["id"]), ("POST", "/api/market/publish/withdraw", "r9"))
+            return replies.pop(0)
+        cases = [((200, {"ok": True, "request": {"id": "r9", "name": "hello", "version": "1.0.0", "status": "withdrawn"}}), None),
+                 ((403, {"error": "You can cancel only your own requests", "reason": "forbidden"}), ("forbidden", None)),
+                 ((409, {"error": "Another action on this name is in progress", "reason": "busy", "retry_after": 5}), ("busy", None)),
+                 ((409, {"error": "It is already published", "reason": "state", "status": "published"}), ("invalid", "published"))]
+        with mock.patch.object(self.mcp.Ctx, "api", api):
+            for reply, want in cases:
+                replies.append(reply)
+                err, out = self.call("market_publish_withdraw", {"pod": "mcp-a", "request_id": "r9"})
+                if want is None:
+                    self.assertFalse(err, out)
+                    self.assertIn("same name", out["next"])
+                    continue
+                self.assertTrue(err, out)
+                self.assertEqual(out["error"], want[0])
+                if want[0] == "busy":
+                    self.assertIn("5 seconds", out["next"])
+                if want[1]:
+                    self.assertEqual(out["status"], want[1])
+        self.assertIn("market_publish_withdraw", self.mcp.TOOLS["market_publish_status"]["spec"]["description"])
+
+    def test_게시_dry_run_은_보내지_않고_자동_승인_예상(self):
+        """스펙 2026-11-20-009 §3-3 3: market_publish(dry_run) 는 점검만(POST /api/market/publish/check). 보낸 뒤 next 는 이유 코드 대신 문장."""
+        seen = []
+
+        async def call(ctx, method, path, pod="", query=None, body=None):
+            seen.append(path)
+            if path == "/api/market/publish/check":
+                return {"ok": True, "name": "hello", "version": "1.0.0", "checks": [{"id": "works", "level": "warn", "message": "m"}, {"id": "origin", "level": "pass"}],
+                        "auto": {"will": body["namespace"] != "free", "reason": "" if body["namespace"] != "free" else "internal_refs",
+                                 "namespace": body["namespace"] or "paid", "namespace_label": "restricted", "public": body["namespace"] == "free"}}
+            return {"ok": True, "request": {"id": "r5", "auto_reason": "no_record"}}
+        args = {"pod": "mcp-a", "profile": "main", "path": "skills/hello", "name": "hello", "version": "1.0.0"}
+        with mock.patch.object(self.mcp.Ctx, "call", call):
+            err, out = self.call("market_publish", {**args, "dry_run": True})
+            self.assertFalse(err, out)
+            self.assertEqual(seen, ["/api/market/publish/check"])                              # 보내지 않았다
+            self.assertEqual([c["id"] for c in out["checks"]], ["works"])                      # 통과 항목은 뺀다
+            self.assertIn("automatic approval to restricted (members only)", out["next"])
+            err, out = self.call("market_publish", {**args, "dry_run": True, "namespace": "free"})
+            self.assertIn("internal addresses", out["next"])
+            err, out = self.call("market_publish", args)
+            self.assertIn("No record that this skill was made on this AAS", out["next"])
+            self.assertIn("market_publish_withdraw", out["next"])
+        self.assertIn("dry_run", self.mcp.TOOLS["market_publish"]["spec"]["inputSchema"]["properties"])
 
     def test_파일_받기는_지원하지_않는_서버면_unavailable(self):
         err, out = self.call("file_get", {"pod": "mcp-a", "path": "uploads/a.txt"})

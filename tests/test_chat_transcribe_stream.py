@@ -103,6 +103,7 @@ class StreamTest(unittest.TestCase):
         root = Path(TMP.name)
         for name in ("a", "b"):
             (root / f"home_{name}" / "profiles" / "work").mkdir(parents=True, exist_ok=True)
+            (root / f"home_{name}" / "profiles" / "work" / "config.yaml").write_text("model: x\n")   # 표시 파일이 있어야 프로파일이다
         reg = root / "pods.json"
         reg.write_text(json.dumps({"admins": [ADMIN], "pods": [
             {"id": "a", "owner": ALICE, "hermes_home": str(root / "home_a")},

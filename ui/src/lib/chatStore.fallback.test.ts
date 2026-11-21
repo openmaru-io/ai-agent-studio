@@ -173,3 +173,74 @@ describe('대화 받기: 웹소켓 토픽', () => {
     expect(a.calls.filter((u) => u.startsWith('/api/chat/send'))).toHaveLength(0); // ask 는 입력칸만 채운다 — 보낸 것이 없다
   });
 });
+
+// 저장 번호(storedId)가 아직 없는 세션이 끊겼을 때(OMAI-1870). 「그 프로파일의 가장 최근 AAS 대화」를 붙여 다른 대화에 이어 보냈다 —
+// 「새 세션」으로 묻고 또 묻는 144건 시험이 20:45 부터 한 대화(7a6fa4)에 모두 쌓였다(OKE 2026-11-08, AAS 사용 기록 chat_session 뒤 chat_resume)
+describe('다시 열기: 저장 번호가 없는 세션', () => {
+  function api2(history: Record<string, unknown>[]) {
+    const calls: { url: string; body: string }[] = [];
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, o?: { body?: string }) => {
+        calls.push({ url, body: String(o?.body ?? '') });
+        const body: Record<string, unknown> = url.startsWith('/api/chat/status')
+          ? { configured: true, agents: [{ name: 'ma' }], sessions: [] }
+          : url.startsWith('/api/chat/history')
+          ? { sessions: history }
+          : url.startsWith('/api/chat/session')
+          ? { session_id: `s-${++n}`, profile: 'ma', title: '' }
+          : url.startsWith('/api/chat/resume')
+          ? { session_id: 's-resumed', profile: 'ma', reused: true, history: false }
+          : { ok: true };
+        return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+      })
+    );
+    return {
+      calls,
+      resumed: () => calls.filter((c) => c.url.startsWith('/api/chat/resume')).map((c) => JSON.parse(c.body).stored_id),
+    };
+  }
+  const old = { id: 'old-stored', source: 'aas', preview: '앞 대화의 질문', live_session_id: 's-old' };
+
+  it('아직 말이 없는 새 세션은 가장 최근 대화를 붙이지 않고 새 세션을 다시 연다', async () => {
+    const a = api2([old]);
+    const s = new ChatStore();
+    await s.startNew('ma');
+    const S = s.current()!;
+    expect(S.id).toBe('s-1');
+    live().at(-1)!.onError?.('forbidden');
+    await vi.waitFor(() => expect(s.current()!.closed).toBeFalsy());
+    expect(a.resumed()).toEqual([]);
+    expect(s.current()!.id).toBe('s-2');
+    expect(s.current()!.storedId).toBeUndefined();
+  });
+
+  it('말을 한 세션은 같은 세션 번호(live_session_id)의 저장 대화로 다시 연다', async () => {
+    const a = api2([old, { id: 'mine', source: 'aas', preview: '내 질문', live_session_id: 's-1' }]);
+    const s = new ChatStore();
+    await s.startNew('ma');
+    emitTo('aas.user', { text: '내 질문' });
+    live().at(-1)!.onError?.('forbidden');
+    await vi.waitFor(() => expect(a.resumed()).toEqual(['mine']));
+  });
+
+  it('서버가 다시 시작돼 세션 번호를 모르면 첫 질문이 같은 저장 대화를 고른다. 없으면 다른 대화를 붙이지 않고 포기한다', async () => {
+    const a = api2([old, { id: 'mine', source: 'aas', preview: '내 질문' }]);
+    const s = new ChatStore();
+    await s.startNew('ma');
+    emitTo('aas.user', { text: '내 질문 — 조금 더 긴 글' });
+    live().at(-1)!.onError?.('forbidden');
+    await vi.waitFor(() => expect(a.resumed()).toEqual(['mine']));
+
+    const b = api2([old]);
+    const t2 = new ChatStore();
+    await t2.startNew('ma');
+    emitTo('aas.user', { text: '다른 질문' });
+    live().at(-1)!.onError?.('forbidden');
+    await vi.waitFor(() => expect(t2.current()?.reconnect).toBeUndefined());
+    expect(b.resumed()).toEqual([]);
+    expect(t2.current()!.storedId).toBeUndefined();
+  });
+});
+const emitTo = (type: string, payload: Record<string, unknown>) => live().at(-1)!.fn({ type, payload }, { seq: 1 });

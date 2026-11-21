@@ -27,7 +27,17 @@ export interface Me {
   /** name: 에이전트 이름(HermesAgent displayName, 없으면 빈 값). 대시보드 「지금 에이전트」 제목이 쓴다.
    *  owner_name: 주인의 사람 이름(없으면 빈 값). 화면은 「주인 · 에이전트 이름」으로 그린다(lib/agentLabel, 스펙 2026-10-19-003)
    *  team: 내가 팀 관리자로 다루는 팀원의 에이전트인가(내 것은 거짓). 상단 고르개의 「내 팀」 구역·대상 표시에 쓴다(스펙 2026-10-22-001 DD2·DD5) */
-  pod: { id: string; owner: string; name?: string; owner_name?: string; team?: boolean; restarting?: boolean; restart_reason?: string } | null;
+  pod: {
+    id: string;
+    owner: string;
+    name?: string;
+    owner_name?: string;
+    team?: boolean;
+    restarting?: boolean;
+    restart_reason?: string;
+    /** 게이트웨이를 다시 시작해야 반영되는 변경(스펙 2026-11-18-016 4-4). 다시 시작할 수 있는 사람(관리자·주인·팀 관리자)에게만 온다 */
+    restart_pending?: RestartPending;
+  } | null;
   pods: { id: string; owner: string; name?: string; owner_name?: string; team?: boolean }[];
   /** 내가 주인인 에이전트의 이름(내 정보 서랍의 「내 에이전트」, OMAI-1159). 관리자도 남의 에이전트는 빠진다 */
   own_pods?: string[];
@@ -43,6 +53,27 @@ export interface Me {
   notices?: Notice[];
   /** 「Claude Code 연결」 수와 7일 안 끝나는 수동 토큰 수(스펙 2026-10-28-001 §3-7 ②). 로그인을 끈 설치는 null */
   connections?: { active: number; expiring: number } | null;
+}
+
+export type RestartKind = 'mcp' | 'channel' | 'pairing' | 'env' | 'config' | 'mindwiki';
+export interface RestartItem {
+  profile: string;
+  kind: RestartKind;
+  target: string;
+  note: string;
+  by: string;
+  by_name?: string;
+  by_kind: 'person' | 'mcp_tool' | 'auto';
+  /** 기록 시각(에포크 초). 0 이면 모른다(옛 장부) */
+  at: number;
+}
+/** items 는 최대 20개·최근 순, total 은 전체 건수, has_members 는 작업공간을 다른 사람과 함께 쓰는가 */
+export interface RestartPending {
+  items: RestartItem[];
+  total: number;
+  has_members: boolean;
+  /** 쿠버네티스: 게이트웨이 하나가 작업공간의 모든 프로파일을 돌린다 */
+  shared_gateway?: boolean;
 }
 
 export interface Health {

@@ -42,6 +42,7 @@ import { HelpDrawer, HelpTab } from './help/HelpDrawer';
 import { LinkPodSwitch } from './LinkPodSwitch';
 import { NoticeBar, NoticeList, NoticeLive } from './NoticeBar';
 import { PodRestarting } from './PodRestarting';
+import { RestartPendingButton, RestartPendingDialog } from './RestartPending';
 import { RoomChatPopup } from './RoomChatPopup';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
@@ -289,6 +290,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         collectWarn={collectWarn}
         collectFailed={health.isError}
         onReload={() => void reload()}
+        restartPending={<RestartPendingButton />}
         reloading={reloading || !!switching}
         agentSwitch={
           wide && m ? (
@@ -300,6 +302,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         onAccount={setAcct}
         onHelp={() => openHelp()}
       />
+      <RestartPendingDialog />
       <AccountMenu
         anchorEl={acct}
         onClose={() => setAcct(null)}

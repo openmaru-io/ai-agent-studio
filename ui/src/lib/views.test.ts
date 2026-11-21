@@ -12,7 +12,7 @@ import { shortcuts, viewById, viewByKey, VIEWS, viewVisible } from './views';
 afterEach(() => setLang('ko'));
 
 describe('화면 목록', () => {
-  it('화면 20개가 메뉴 순서(대시보드·대화·내 AI 에이전트·스킬·자동화·기록·관리·설정)로 있고 라이브러리는 빠진다(OMAI-1313)', () => {
+  it('화면 21개가 메뉴 순서(대시보드·대화·내 AI 에이전트·스킬·자동화·기록·관리·설정)로 있고 라이브러리는 빠진다(OMAI-1313)', () => {
     expect(VIEWS.map((v) => v.id)).toEqual([
       'dashboard',
       'chat',
@@ -30,6 +30,7 @@ describe('화면 목록', () => {
       'users',
       'soul-templates',
       'notices',
+      'embed-apps',
       'preferences',
       'credentials',
       'connections',
@@ -101,9 +102,9 @@ describe('화면 목록', () => {
   it('관리자가 아니면 사용자·권한·역할 템플릿이 보이지 않고(회사 정보는 자기 부서 문구용으로 보인다), 변경 기록은 주인에게만 보인다', () => {
     const hidden = (who: { admin: boolean; owner?: boolean; teamManager?: boolean }) => VIEWS.filter((v) => !viewVisible(v.id, who)).map((v) => v.id).sort();
     expect(hidden({ admin: true })).toEqual([]);
-    expect(hidden({ admin: false })).toEqual(['changes', 'notices', 'soul-templates', 'users']);
-    expect(hidden({ admin: false, owner: true })).toEqual(['notices', 'soul-templates', 'users']);
-    expect(hidden({ admin: false, teamManager: true })).toEqual(['notices', 'soul-templates', 'users']); // 팀 관리자도 지금 팀원 에이전트의 기록을 본다(DD8)
+    expect(hidden({ admin: false })).toEqual(['changes', 'embed-apps', 'notices', 'soul-templates', 'users']);
+    expect(hidden({ admin: false, owner: true })).toEqual(['embed-apps', 'notices', 'soul-templates', 'users']);
+    expect(hidden({ admin: false, teamManager: true })).toEqual(['embed-apps', 'notices', 'soul-templates', 'users']); // 팀 관리자도 지금 팀원 에이전트의 기록을 본다(DD8)
   });
 
   it('단축키 안내표도 보이는 화면만 담는다', () => {

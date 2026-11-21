@@ -40,6 +40,9 @@ class Base(unittest.TestCase):
     max_total = None
 
     def setUp(self):
+        saved = (dict(tree_cache._used), dict(tree_cache._grace))     # 사용·유예 기록은 모듈 전역 — 시험 사이에 남지 않게
+        self.addCleanup(lambda: (tree_cache._used.clear(), tree_cache._used.update(saved[0]),
+                                 tree_cache._grace.clear(), tree_cache._grace.update(saved[1])))
         reuse = unittest.mock.patch.object(sc_index, "REUSE", 0.0)   # 시험은 2초 안에 파일을 바꾼다 — 사이드카가 매번 다시 훑게
         reuse.start()
         self.addCleanup(reuse.stop)
@@ -217,20 +220,32 @@ class StoreTest(Base):
 
 
 class SweepTest(Base):
-    def test_사람이_쓰지_않은_묶음은_10분_뒤_버리고_쓴_묶음은_남긴다(self):
+    def test_배경_작업이_받은_묶음도_버리기_시간_동안_남고_지나면_버린다(self):
+        """배경 작업이 받은 묶음도 버리기 시간만큼 유예한다(스펙 2026-11-20-001 §5-0-7, 사용자 결정 — OV4 를 바꿈). 예전에는 「사용」이
+        아니라 다음 정리 바퀴에 버렸고, 사람이 보지 않는 에이전트는 배경 작업이 5분마다 처음부터 다시 받았다(서버 한 대 1시간 약 2,000초)."""
         used, idle = self.backend("used"), self.backend("idle")
         self.assertTrue(used.snapshot())
-        self.assertTrue(idle.snapshot())                                # 배경 작업은 「사용」이 아니다
+        self.assertTrue(idle.snapshot())                                # 배경 작업 — 사람 사용은 아니지만 유예를 건다
+        self.assertNotIn("idle", tree_cache._used)
         now = time.monotonic()
         token = tree_cache.HUMAN.set(True)
         try:
             used.stat("config.yaml")
         finally:
             tree_cache.HUMAN.reset(token)
-        dropped = tree_cache.sweep([used, idle], now=now + 60)
-        self.assertEqual(dropped, ["idle"])
-        self.assertIsNotNone(used._tree)
-        self.assertEqual(tree_cache.sweep([used], now=now + tree_cache.IDLE_DROP + 1), ["used"])
+        self.assertEqual(tree_cache.sweep([used, idle], now=now + 60), [])   # 다음 정리 바퀴에 버리지 않는다
+        self.assertIsNotNone(idle._tree)
+        self.assertEqual(sorted(tree_cache.sweep([used, idle], now=now + tree_cache.idle_drop() + 1)), ["idle", "used"])
+
+    def test_사람_요청의_받기는_유예가_아니라_사용으로_센다(self):
+        b = self.backend("human")
+        token = tree_cache.HUMAN.set(True)
+        try:
+            self.assertTrue(b.snapshot())
+        finally:
+            tree_cache.HUMAN.reset(token)
+        self.assertIn("human", tree_cache._used)
+        self.assertNotIn("human", tree_cache._grace)
 
     def test_상한을_넘으면_오래_쓰지_않은_것부터_버린다(self):
         a, b = self.backend("old"), self.backend("new")
@@ -388,6 +403,44 @@ class ServerTest(unittest.TestCase):
         finally:
             tree_cache.HUMAN.reset(token)
         self.assertFalse(tree_cache.idle("seen-pod"))
+
+
+class IdleDropEnvTest(unittest.TestCase):
+    """묶음 버리기 시간을 환경값 AAS_TREE_IDLE_DROP 으로 바꿀 수 있다(스펙 2026-11-20-001 §5-0 0-3 A1). 기본은 3600초(OKE 시험 뒤 §5-0-4·5)."""
+
+    def setUp(self):
+        self.saved = dict(tree_cache._used)
+        tree_cache._used.clear()
+        tree_cache._used["x"] = 1000.0                           # 사람이 1000초에 마지막으로 씀
+
+    def tearDown(self):
+        tree_cache._used.clear()
+        tree_cache._used.update(self.saved)
+
+    def env(self, value):
+        env = {k: v for k, v in os.environ.items() if k != "AAS_TREE_IDLE_DROP"}
+        if value is not None:
+            env["AAS_TREE_IDLE_DROP"] = value
+        return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+    def test_기본은_3600초(self):
+        with self.env(None):
+            self.assertEqual(tree_cache.idle_drop(), 3600.0)
+            self.assertFalse(tree_cache.idle("x", now=1000 + 3599))
+            self.assertTrue(tree_cache.idle("x", now=1000 + 3600))
+
+    def test_양수면_그_값으로_부를_때마다_읽는다(self):
+        with self.env("600"):
+            self.assertEqual(tree_cache.idle_drop(), 600.0)
+            self.assertFalse(tree_cache.idle("x", now=1599))
+            self.assertTrue(tree_cache.idle("x", now=1600))
+        with self.env("900"):
+            self.assertFalse(tree_cache.idle("x", now=1000 + 899))   # 다시 시작하지 않아도 바뀐 값을 쓴다
+
+    def test_잘못된_값은_기본값으로_돌아간다(self):
+        for bad in ("0", "-5", "abc", "nan", "inf", "-inf", ""):
+            with self.subTest(bad=bad), self.env(bad):
+                self.assertEqual(tree_cache.idle_drop(), 3600.0)    # 0 이면 매 바퀴 모든 묶음을 버리게 된다(Eng 재검토 M6)
 
 
 if __name__ == "__main__":

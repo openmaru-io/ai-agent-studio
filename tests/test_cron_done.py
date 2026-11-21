@@ -31,6 +31,7 @@ def make_home(jobs_by_profile: dict[str, list[dict]]) -> Path:
     for name, jobs in jobs_by_profile.items():
         d = home / "profiles" / name / "cron"
         d.mkdir(parents=True)
+        (d.parent / "config.yaml").write_text("model: x\n")                # 표시 파일이 있어야 프로파일이다
         (d / "jobs.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
     return home
 
@@ -50,6 +51,7 @@ class RecentSuccessTest(unittest.TestCase):
     def test_프로파일마다_모으고_읽지_못한_프로파일은_건너뛴다(self):
         home = make_home({"main": [job("a")], "ops": [job("b")]})
         (home / "profiles" / "bad" / "cron").mkdir(parents=True)
+        (home / "profiles" / "bad" / "config.yaml").write_text("model: x\n")       # 프로파일이지만 jobs.json 을 읽지 못한다
         (home / "profiles" / "bad" / "cron" / "jobs.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(sorted((r["profile"], r["job_id"]) for r in cron_done.recent_success(home, NOW)), [("main", "a"), ("ops", "b")])
 

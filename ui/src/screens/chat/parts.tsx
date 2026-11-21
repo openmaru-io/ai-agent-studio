@@ -29,7 +29,7 @@ import { SubtleBadge } from '@/components/SubtleBadge';
 import { tier1, tier2 } from '@/components/tierButton';
 import { useUi } from '@/components/UiContext';
 import { t } from '@/i18n';
-import type { Item } from '@/lib/chat';
+import { elapsedText, type Item, MCP_TOOL } from '@/lib/chat';
 import { ChatStore, StoredSession } from '@/lib/chatStore';
 import { avatarTile, chatMetrics, chatType, hueOf } from '@/lib/chatTokens';
 import { markCronSeen, seenCron } from '@/lib/cronSeen';
@@ -238,6 +238,88 @@ export function GuardMark({ reason }: { reason: string }) {
   );
 }
 
+/**
+ * 도구 ID 를 보일 이름으로 나눈다. Hermes 는 MCP 도구를 `mcp__<서버>__<도구>` 로 부르고 서버 이름의 `-` 를 `_` 로 바꾼다.
+ * 접두사를 떼고 서버 이름은 카탈로그 표기(`cogentai-database`)로 돌린다(OMAI-1867, 2026-11-08). MCP 가 아니면 그대로다.
+ */
+export function toolLabel(name = ''): { tool: string; server: string } {
+  const m = MCP_TOOL.exec(name);
+  return m ? { tool: m[2], server: m[1].replace(/_/g, '-') } : { tool: name, server: '' };
+}
+
+/** 도구 소요 시간: 1분 미만은 소수 한 자리 초, 1분부터는 분·초(OMAI-1868) */
+export function fmtToolMs(ms: number): string {
+  if (ms < 60000) return t('chat.secs', { n: (ms / 1000).toFixed(1) });
+  const sec = Math.round(ms / 1000);
+  return `${t('chat.ctl.minutes', { n: Math.floor(sec / 60) })} ${t('chat.secs', { n: sec % 60 })}`;
+}
+
+/** on 인 동안 1초마다 다시 그리게 한다(진행 중 도구의 걸린 시간) */
+function useTicker(on: boolean) {
+  const [, setN] = useState(0);
+  useEffect(() => {
+    if (!on) return;
+    const id = setInterval(() => setN((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [on]);
+}
+
+/** 입력 칸 아래 「답하는 중 · N초 · …」. since 는 질문 시각(ms) — 화면 시계로 센다. short 는 팝업처럼 좁은 곳(명령 안내 없음) */
+export function BusyHint({ since, short }: { since?: number; short?: boolean }) {
+  const tk = useChatTokens();
+  useTicker(since !== undefined);
+  if (since === undefined) return <>{short ? t('chat.cmd.busyNow') : t('chat.cmd.busyHint')}</>;
+  const secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  return (
+    <>
+      {t('chat.cmd.busyNow')} ·{' '}
+      <Box component="span" data-busy-secs sx={{ color: tk.text, fontVariantNumeric: 'tabular-nums' }}>
+        {elapsedText(secs * 1000)}
+      </Box>
+      {!short && <> · {t('chat.cmd.busyActions')}</>}
+    </>
+  );
+}
+
+/** 도구 이름(등폭)과 서버 이름(작은 회색). shimmer 면 호박빛이 이름 위를 지나간다 — 움직임 줄이기에서는 멈춘다 */
+function ToolName({ name, shimmer }: { name: string; shimmer?: boolean }) {
+  const tk = useChatTokens();
+  const { tool, server } = toolLabel(name);
+  return (
+    <Box component="span" title={name} sx={{ display: 'inline-flex', alignItems: 'baseline', gap: 0.75, minWidth: 0 }}>
+      <Box
+        component="code"
+        data-tool-name
+        sx={{
+          fontFamily: MONO_FONT,
+          fontSize: chatType.tool,
+          color: tk.text,
+          whiteSpace: 'nowrap',
+          ...(shimmer
+            ? {
+                backgroundImage: `linear-gradient(100deg, ${tk.text} 0%, ${tk.text} 38%, ${tk.warn} 50%, ${tk.text} 62%, ${tk.text} 100%)`,
+                backgroundSize: '250% 100%',
+                backgroundClip: 'text',
+                WebkitBackgroundClip: 'text',
+                color: 'transparent',
+                animation: 'toolSheen 2.4s ease-in-out infinite',
+                '@keyframes toolSheen': { from: { backgroundPosition: '100% 0' }, to: { backgroundPosition: '0% 0' } },
+                '@media (prefers-reduced-motion: reduce)': { animation: 'none', color: tk.text, backgroundImage: 'none' },
+              }
+            : {}),
+        }}
+      >
+        {tool}
+      </Box>
+      {server ? (
+        <Box component="span" data-tool-server sx={{ fontSize: chatType.tool - 1, color: tk.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {server}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
 export function Steps({
   items,
   live,
@@ -259,9 +341,12 @@ export function Steps({
     Math.round(((tools[tools.length - 1]?.ms ?? 0) as number) / 1000);
   const lastIt = [...items].reverse().find((x) => x.kind !== 'reason') ?? items[items.length - 1];
   // 진행 중: 도는 도구 → 그 이름, 기다림 안내 → 그 글, 도구가 끝나 다음 답을 기다리면 「생각하는 중…」
+  const runningTool = live && lastIt.kind === 'tool' && lastIt.state === 'running' ? lastIt : null;
+  useTicker(!!runningTool);
+  const runSecs = runningTool?.t0 ? Math.floor((Date.now() - runningTool.t0) / 1000) : 0;
   const head = live
-    ? lastIt.kind === 'tool' && lastIt.state === 'running'
-      ? `${lastIt.name} ${lastIt.context || ''}`
+    ? runningTool
+      ? ''
       : (lastIt.kind === 'status' && lastIt.text) || t('chat.thinking')
     : [
         tools.length ? t('chat.stepsCount', { count: tools.length }) : t('chat.progress'),
@@ -270,6 +355,9 @@ export function Steps({
       ]
         .filter(Boolean)
         .join(' · ');
+  // 가장 오래 걸린 도구의 시간만 본문 색·굵게(OMAI-1868) — 시간을 잰 도구가 둘 이상일 때만
+  const timed = tools.filter((x) => x.ms);
+  const slowest = timed.length > 1 ? timed.reduce((a, b) => ((b.ms ?? 0) > (a.ms ?? 0) ? b : a)) : null;
   const rowState = (it: Item): 'run' | 'bad' | 'ok' => (it.state === 'running' ? 'run' : it.state === 'failed' ? 'bad' : 'ok');
   return (
     <Box component="details" open={open} sx={{ my: 1, color: tk.muted, fontSize: chatType.tool + 1 }}>
@@ -290,8 +378,29 @@ export function Steps({
           '&:focus-visible': { outline: `2px solid ${FOCUS_RING}`, outlineOffset: 2, borderRadius: '4px' },
         }}
       >
-        <HeadDot state={live ? 'run' : failed ? 'muted' : 'ok'} />
-        <span>{String(head).slice(0, 120)}</span>
+        {runningTool ? (
+          // 도는 도구: 테두리·바탕 없이 점과 이름 위의 빛으로만 보인다. 감싸면 단추처럼 보였고, 끝나 묶음 머리줄로 바뀔 때
+          // 안쪽 여백만큼 점이 움직였다(OMAI-1867, 사용자 2026-11-08)
+          <Box component="span" data-running-tool sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, minWidth: 0, maxWidth: '100%' }}>
+            <HeadDot state="run" />
+            <ToolName name={runningTool.name || ''} shimmer />
+            {runningTool.context ? (
+              <Box component="span" sx={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {String(runningTool.context).slice(0, 120)}
+              </Box>
+            ) : null}
+            {runSecs >= 1 ? (
+              <Box component="span" data-run-secs sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                {t('chat.secs', { n: runSecs })}
+              </Box>
+            ) : null}
+          </Box>
+        ) : (
+          <>
+            <HeadDot state={live ? 'run' : failed ? 'muted' : 'ok'} />
+            <span>{String(head).slice(0, 120)}</span>
+          </>
+        )}
         <ExpandMoreIcon
           aria-hidden="true"
           sx={{ fontSize: 16, transition: 'transform 120ms', transform: open ? 'rotate(180deg)' : 'none', '@media (prefers-reduced-motion: reduce)': { transition: 'none' } }}
@@ -317,13 +426,22 @@ export function Steps({
               </Box>
               {it.kind === 'tool' ? (
                 <>
-                  <Box component="code" sx={{ fontFamily: MONO_FONT, fontSize: chatType.tool, color: tk.text }}>
-                    {it.name}
-                  </Box>
+                  <ToolName name={it.name || ''} />
                   {it.context ? <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{it.context}</span> : null}
                   {it.ms ? (
-                    <Box component="span" sx={{ ml: 'auto', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                      {t('chat.secs', { n: (it.ms / 1000).toFixed(1) })}
+                    <Box
+                      component="span"
+                      data-tool-ms
+                      {...(it === slowest ? { 'data-slowest': '' } : {})}
+                      sx={{
+                        ml: 'auto',
+                        pl: 1.5,
+                        fontVariantNumeric: 'tabular-nums',
+                        whiteSpace: 'nowrap',
+                        ...(it === slowest ? { color: tk.text, fontWeight: 600 } : {}),
+                      }}
+                    >
+                      {fmtToolMs(it.ms)}
                     </Box>
                   ) : null}
                   {it.guard ? (
@@ -385,6 +503,8 @@ export function ApprovalCard({ it, store, onDone }: { it: Item; store: ChatStore
   const choices: string[] = p.choices?.length ? p.choices : ['once', 'session', 'always', 'deny'];
   const send = useAnswerSend(onDone);
   const off = store.blocked(store.current()) || !!send.sending; // 다시 잇는 중에는 답하지 않는다(스펙 2026-10-20-030 DR5)
+  // 승인할 수 없는 사람(보기만 받은 사람·「대화」 구성원)은 단추 대신 기다린다는 안내 — 요청은 소유자 받은편지함으로 갔다(스펙 2026-11-17-008 §3-3)
+  const waitOwner = store.group(store.current()?.pod)?.can_approve === false;
   return (
     <Box
       role="group"
@@ -412,23 +532,29 @@ export function ApprovalCard({ it, store, onDone }: { it: Item; store: ChatStore
       >
         {p.command || p.cmd || JSON.stringify(p)}
       </Box>
-      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-        {choices.map((c) => (
-          <Button
-            key={c}
-            variant="outlined"
-            // 한 번 허용만 Tier 1, 나머지 허용은 Tier 2, 거부는 빨강 윤곽선 유지(명령 실행을 막는 안전 단추, 스펙 R10)
-            color={c === 'deny' ? 'error' : 'inherit'}
-            sx={c === 'once' ? (tier1 as object) : c === 'deny' ? { '@media (pointer: coarse)': { minHeight: chatMetrics.touch } } : (tier2 as object)}
-            size="small"
-            disabled={off}
-            startIcon={send.sending === c ? sendingIcon : undefined}
-            onClick={() => send.run(c, () => store.approve(c, p.request_id))}
-          >
-            {choiceLabel(c)}
-          </Button>
-        ))}
-      </Stack>
+      {waitOwner ? (
+        <Typography variant="body2" sx={{ color: tk.text, fontSize: chatType.meta }}>
+          {t('chat.approvalWaitOwner')}
+        </Typography>
+      ) : (
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          {choices.map((c) => (
+            <Button
+              key={c}
+              variant="outlined"
+              // 한 번 허용만 Tier 1, 나머지 허용은 Tier 2, 거부는 빨강 윤곽선 유지(명령 실행을 막는 안전 단추, 스펙 R10)
+              color={c === 'deny' ? 'error' : 'inherit'}
+              sx={c === 'once' ? (tier1 as object) : c === 'deny' ? { '@media (pointer: coarse)': { minHeight: chatMetrics.touch } } : (tier2 as object)}
+              size="small"
+              disabled={off}
+              startIcon={send.sending === c ? sendingIcon : undefined}
+              onClick={() => send.run(c, () => store.approve(c, p.request_id))}
+            >
+              {choiceLabel(c)}
+            </Button>
+          ))}
+        </Stack>
+      )}
       <AnswerError text={send.error} />
     </Box>
   );
@@ -610,6 +736,8 @@ export function PastBody({ store, profile, onPicked }: { store: ChatStore; profi
                 <>
                   <Tag>{SRC[r.source ?? ''] || r.source || '?'}</Tag>
                   {r.live_session_id ? <Tag tone="good">{t('chat.openNow')}</Tag> : null}
+                  {/* 누가 시작한 대화인가 — 공유한 작업공간은 여러 사람의 대화가 섞인다(스펙 2026-11-17-008 §4) */}
+                  {r.by_name ? <Tag>{t('chat.pastBy', { name: r.by_name })}</Tag> : null}
                   {r.claude ? <Tag tone="info">{r.claude.active ? t('chat.claudeActiveTag') : t('chat.claudeTag')}</Tag> : null}
                   {/* 목표·반복이 걸린 대화(스펙 2026-10-27-002 R6). 색 없이 회색 */}
                   {r.control?.loop?.status === 'active' ? <Tag>{t('chat.listLoop')}</Tag> : null}

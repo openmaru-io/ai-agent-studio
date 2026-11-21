@@ -29,7 +29,7 @@ def _person(value: str) -> str:
 LANGS = ("ko", "en")
 NAME_MAX = 60
 KEYWORDS_MAX = 300
-ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}\Z")
 PLACEHOLDERS = ("company", "department", "role", "agent")
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "soul_templates"
 

@@ -276,11 +276,12 @@ class ApiTest(unittest.TestCase):
 
     def login(self, email, sub, admin=False):
         r, _ = self.req_raw("/auth/oidc")
+        sc = TA.state_cookie(r)                                     # 콜백은 로그인을 시작한 브라우저의 state 쿠키를 본다(스펙 2026-11-14-002 F2)
         q = parse_qs(urlsplit(r.getheader("Location")).query)
         TA.FakeIdP.claims = {"iss": self.issuer, "aud": "cid", "exp": time.time() + 300, "nonce": q["nonce"][0], "sub": sub,
                              "email": email, "email_verified": True, "name": "N",
                              **({"realm_access": {"roles": ["aas-admin"]}} if admin else {})}
-        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}")
+        r, _ = self.req_raw(f"/auth/callback?code=abc&state={q['state'][0]}", sc)
         return r.getheader("Set-Cookie").split(";")[0]
 
     def req_raw(self, path, cookie=""):

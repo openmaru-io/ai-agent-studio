@@ -8,17 +8,29 @@
             — 같은 판으로는 허브에 다시 게시되지 않아 고친 내용이 아무에게도 가지 않기 때문이다.
 
   python -m aas.market.skill_bundle lock   잠금 파일을 다시 쓴다(판을 올린 뒤).
+
+  MCP 짝 스킬 cogentai-mindwiki·cogentai-database·cogentai-chart·docmost·outline 도 여기 둔다(OMAI-2031). 원본은 마켓 레포
+  (cogentai-aas-marketplace)였지만 그 레포는 Bitbucket 이라 CI 가 돌지 않아 main 에 합쳐도 허브에 올라가지 않았다.
+  조건  CONDITIONAL 의 패키지는 설치 값에 따라 게시·배달한다(enabled_names). 고객사 판(aas/common/edition.py, 사내 전용)이 있으면
+        그 설치 값을 켠 설치는 판 스킬만, 끈 설치는 일반판 cogentai-database 만 받는다.
+        법령 조회 짝 스킬 law-go-kr 는 AAS_LAW_GO_KR_ENABLED 를 켠 설치에만(스펙 2026-11-20-008).
+        names() 는 묶음 전체(잠금·기본 스킬 표시).
+  판 잠금  고객사 판 스킬의 잠금 줄은 versions.edition.lock.json(사내 전용)에 따로 쓴다. 공개본에는 판 스킬도 그 잠금 줄도 없다(스펙 2026-11-21-001).
 """
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 import sys
 from pathlib import Path
 
+from ..common import config
+
 PACKAGES_DIR = Path(__file__).resolve().parent.parent / "assets" / "aas_skill_packages"
 LOCK = "versions.lock.json"
+EDITION_LOCK = "versions.edition.lock.json"
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 _SKIP = ("__pycache__",)
 
@@ -29,6 +41,32 @@ class BundleError(Exception):
 
 def names(root: Path = PACKAGES_DIR) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file())
+
+
+# 설치 값에 따라 게시·배달하는 패키지 → (설치 값 이름, 켜졌을 때 넣는가). 고객사 판 스킬은 그 설치 값을 켠 설치에만, 일반판
+# cogentai-database 는 끈 설치에만 넣는다 — 카탈로그(mcp_servers.simple_builtins)도 둘 중 하나만 보인다
+# (사용자 결정 2026-11-16·2026-11-17). 값을 읽는 규칙은 aas/ops/mcp_servers.py edition_enabled 와 같다
+# 법령 조회 짝 스킬 law-go-kr 는 커넥터를 켠 설치에만 넣는다 — 카탈로그 항목(mcp_servers.law_go_kr_enabled)과 같은 값
+# (스펙 2026-11-20-008 §5-3, OMAI-2138). 이 줄이 없으면 커넥터가 없는 설치의 모든 프로파일에 스킬이 배달된다
+CONDITIONAL = {"law-go-kr": ("AAS_LAW_GO_KR_ENABLED", True)}
+try:                                        # import_module: 모듈이 없을 때 이름이 붙은 ModuleNotFoundError 를 낸다(mcp_servers 와 같다)
+    _edition = importlib.import_module("aas.common.edition")
+except ModuleNotFoundError as exc:          # 공개본(고객사 판 없음)
+    if exc.name != "aas.common.edition":
+        raise
+    _edition = None
+EDITION_PACKAGES = frozenset({_edition.DATABASE_PACKAGE} if _edition else ())
+if _edition:
+    CONDITIONAL.update({_edition.DATABASE_PACKAGE: (_edition.SETTING, True), "cogentai-database": (_edition.SETTING, False)})
+
+
+def _on(key: str) -> bool:
+    return config.get(key, "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def enabled_names(root: Path = PACKAGES_DIR) -> list[str]:
+    """이 설치에서 게시·배달할 묶음 패키지."""
+    return [n for n in names(root) if n not in CONDITIONAL or _on(CONDITIONAL[n][0]) == CONDITIONAL[n][1]]
 
 
 def front(name: str, root: Path = PACKAGES_DIR) -> dict[str, str]:
@@ -58,8 +96,12 @@ def digest(name: str, root: Path = PACKAGES_DIR) -> str:
 
 
 def read_lock(root: Path = PACKAGES_DIR) -> dict:
-    path = root / LOCK
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    out = {}
+    for name in (LOCK, EDITION_LOCK):
+        path = root / name
+        if path.exists():
+            out.update(json.loads(path.read_text(encoding="utf-8")))
+    return out
 
 
 def build_lock(root: Path, old: dict) -> dict:
@@ -76,9 +118,17 @@ def build_lock(root: Path, old: dict) -> dict:
     return out
 
 
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def write_lock(root: Path = PACKAGES_DIR) -> dict:
+    """잠금 파일을 다시 쓴다. 고객사 판 스킬 줄은 EDITION_LOCK 에 따로 쓴다(공개본의 LOCK 에 판 이름이 남지 않게)."""
     lock = build_lock(root, read_lock(root))
-    (root / LOCK).write_text(json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_json(root / LOCK, {k: v for k, v in lock.items() if k not in EDITION_PACKAGES})
+    edition_rows = {k: v for k, v in lock.items() if k in EDITION_PACKAGES}
+    if edition_rows:
+        _write_json(root / EDITION_LOCK, edition_rows)
     return lock
 
 

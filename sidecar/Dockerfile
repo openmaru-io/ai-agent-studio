@@ -7,6 +7,9 @@ WORKDIR /app
 COPY aas_sidecar ./aas_sidecar
 RUN useradd -u 10001 -d /nonexistent -s /usr/sbin/nologin aas
 USER 10001
+# MALLOC_ARENA_MAX=2: 요청마다 스레드를 쓰는데 glibc 는 코어 수의 8배까지 메모리 풀을 만들고 쓴 메모리를 돌려주지 않는다.
+# 72코어 노드에서 사이드카가 13시간에 504MiB 로 늘어 OOMKilled 됐다. 큰 읽기는 어차피 하나씩이라 풀 2개로 충분하다(스펙 2026-11-18-018 §10)
+ENV MALLOC_ARENA_MAX=2
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 AAS_SIDECAR_ROOT=/opt/data AAS_SIDECAR_PORT=17950 AAS_SIDECAR_VERSION=${AAS_VERSION}
 EXPOSE 17950
 CMD ["python", "-m", "aas_sidecar", "serve", "--host", "0.0.0.0"]

@@ -26,6 +26,16 @@ describe('문제 수 세기(계획 2026-10-14-014 R4)', () => {
     expect(expiringCreds(items)).toHaveLength(2);
   });
 
+  it('AAS 기본 값·설정 값 행은 서버가 만료 플래그를 붙이지 않아 홈 카드·메뉴 배지 수에 들지 않는다(스펙 2026-11-18-007 R6)', () => {
+    const items = [
+      { flags: ['3일 뒤 만료'] },
+      { flags: [], aas_default: 'llm' },
+      { flags: [], aas_default: 'auth_derived' },
+      { flags: [], value_kind: 'setting' },
+    ];
+    expect(expiringCreds(items)).toHaveLength(1);
+  });
+
   it('답을 기다리는 대화만 주인이 처리하고 나머지는 관리자가 고친다(디자인 DD7)', () => {
     expect(fixableBy('waiting')).toBe('owner');
     for (const k of ['failed', 'stalled', 'profiles', 'creds', 'tidy'] as const) expect(fixableBy(k)).toBe('admin');

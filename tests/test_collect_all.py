@@ -195,5 +195,120 @@ class SnapshotAndReportTest(unittest.TestCase):
         self.assertTrue(got["ts"])
 
 
+class _Sidecar:
+    """`RemoteBackend` 에 `_send` 만 흉내 낸다 — 묶음 받기·`touch`·받기 로그는 운영 코드가 돈다(test_tree_chunk_deadline 과 같은 방식)."""
+
+    @staticmethod
+    def make(label):
+        import base64
+        import json
+        from aas.hermes.readers import remote
+
+        class Fake(remote.RemoteBackend):
+            def _send(self, method, target, data, headers, timeout=None):
+                body = json.loads(data) if data else {}
+                if target == "/v1/tree":
+                    return 200, json.dumps({"entries": [{"path": "a.md", "type": "file", "size": 4, "mtime": 1.0, "mode": 0o100644}],
+                                            "partial": [], "cursor": "ep:1"}).encode()
+                if target == "/v1/read":
+                    return 200, json.dumps({"files": [{"path": p, "ok": True, "data_b64": base64.b64encode(b"abcd").decode()}
+                                                      for p in body["paths"]]}).encode()
+                return 404, b'{"error":"none"}'
+        return Fake("http://127.0.0.1:9", "t", label=label)
+
+
+class WorkerContextTest(unittest.TestCase):
+    """map_pods 일꾼이 부른 쪽의 「사람의 요청」 표시와 언어만 물려받는다(스펙 2026-11-20-006).
+    고치기 전에는 일꾼 스레드가 빈 맥락으로 시작해, 사람이 연 프로파일 화면의 다른 에이전트 묶음도 5분 정리에서 버려졌다."""
+
+    def setUp(self):
+        from aas.hermes.readers import tree_cache
+        self.tc = tree_cache
+        self.saved_used, self.saved_grace = dict(tree_cache._used), dict(tree_cache._grace)
+        tree_cache._used.clear()
+
+    def tearDown(self):
+        self.tc._used.clear()
+        self.tc._used.update(self.saved_used)
+        self.tc._grace.clear()
+        self.tc._grace.update(self.saved_grace)
+
+    def human(self, value):
+        token = self.tc.HUMAN.set(value)
+        self.addCleanup(self.tc.HUMAN.reset, token)
+
+    def test_1_사람의_요청이면_일꾼도_사람_배경이면_일꾼도_배경(self):
+        self.human(True)
+        got = collect_all.map_pods([pod("hag-a"), pod("hag-b")], lambda p: self.tc.HUMAN.get(), workers=2, timeout=5)
+        self.assertEqual({k: v for k, v in got.items()}, {"hag-a": (True, True), "hag-b": (True, True)})
+        self.human(False)
+        got = collect_all.map_pods([pod("hag-a")], lambda p: self.tc.HUMAN.get(), workers=1, timeout=5)
+        self.assertEqual(got["hag-a"], (True, False))
+
+    def test_2_일꾼의_문구가_요청_언어를_따른다(self):
+        from aas.common import i18n
+        token = i18n._lang.set("en")
+        self.addCleanup(i18n._lang.reset, token)
+        got = collect_all.map_pods([pod("hag-a")], lambda p: i18n.tr("한국어", "English"), workers=1, timeout=5)
+        self.assertEqual(got["hag-a"], (True, "English"))
+
+    def test_3_요청_메모와_다시_시작_기록은_넘기지_않는다(self):
+        from aas.ops import restart_pending
+        held = restart_pending._HELD.set({"pod": "hag-a"})
+        self.addCleanup(restart_pending._HELD.reset, held)
+        self.human(True)
+        with store.request_memo(), restart_pending.recording("hag-a", "p", "o@x.com"):
+            self.assertIsNotNone(store._MEMO.get())
+            got = collect_all.map_pods([pod("hag-a")], lambda p: (store._MEMO.get(), restart_pending._CTX.get(), restart_pending._HELD.get()),
+                                       workers=1, timeout=5)
+        self.assertEqual(got["hag-a"], (True, (None, None, None)))
+
+    def test_4_앞_호출의_값이나_포기된_일꾼이_다음_배경_호출에_남지_않는다(self):
+        release, done = threading.Event(), threading.Event()
+
+        def slow(p):
+            release.wait(5)
+            done.set()
+            return self.tc.HUMAN.get()
+        self.human(True)
+        got = collect_all.map_pods([pod("hag-slow")], slow, workers=1, timeout=0.2)     # 한도를 넘겨 포기된다
+        self.assertFalse(got["hag-slow"][0])
+        release.set()
+        self.assertTrue(done.wait(5))
+        self.human(False)
+        got = collect_all.map_pods([pod("hag-a"), pod("hag-b")], lambda p: self.tc.HUMAN.get(), workers=1, timeout=5)
+        self.assertEqual({v for v in got.values()}, {(True, False)})
+
+    def test_5_사람이_연_다른_에이전트의_묶음은_정리에서_남고_받기_줄에_사람_칸이_찍힌다(self):
+        import contextlib
+        import io
+        from aas.hermes.readers import remote
+        out = io.StringIO()
+        with mock.patch.object(remote, "SLOW_LOG", -1.0), mock.patch.object(self.tc, "cap_bytes", lambda: 1 << 40), \
+                contextlib.redirect_stdout(out):
+            seen = _Sidecar.make("hag-seen")                         # label = pod id(운영 fleet/pods.py 와 같은 규칙)
+            self.human(True)
+            collect_all.map_pods([pod("hag-seen")], lambda p: seen.snapshot(), workers=1, timeout=5)
+            bg = _Sidecar.make("hag-bg")                             # 백엔드를 따로 — 받기 줄은 백엔드마다 60초에 한 줄
+            self.human(False)
+            collect_all.map_pods([pod("hag-bg")], lambda p: bg.snapshot(), workers=1, timeout=5)
+            with mock.patch.object(self.tc, "_grace", {}):          # 배경 받기의 유예(§5-0-7)를 빼고 사람 사용 규칙만 본다
+                dropped = self.tc.sweep([seen, bg])
+        self.assertEqual(dropped, ["hag-bg"])                        # 고치기 전에는 사람이 연 hag-seen 도 idle 로 버려졌다
+        self.assertTrue(seen.has_tree())
+        lines = out.getvalue()
+        self.assertRegex(lines, r"묶음 받기 느림 hag-seen .*사람=True")
+        self.assertRegex(lines, r"묶음 받기 느림 hag-bg .*사람=False")
+
+    def test_5_일꾼_안의_캐시_조회도_사람이_본_것으로_센다(self):
+        from aas.web import server
+        self.human(True)
+        collect_all.map_pods([pod("hag-cache")], lambda p: server._cached(f"{p.id}:wctx-test", 1, lambda: 1, per_lang=False),
+                             workers=1, timeout=5)
+        server._forget(pod("hag-cache"), notify=False)
+        self.assertIn("hag-cache", self.tc._used)
+        self.assertFalse(self.tc.idle("hag-cache"))
+
+
 if __name__ == "__main__":
     unittest.main()

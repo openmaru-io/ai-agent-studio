@@ -23,13 +23,14 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  Divider,
   IconButton,
   TextField,
   Tooltip,
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { ReactNode, useContext, useId, useRef, useState } from 'react';
+import { Fragment, ReactNode, useContext, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { t } from '@/i18n';
@@ -58,9 +59,26 @@ export interface DrawerAction {
   dialog?: { title?: string; render: (close: () => void) => ReactNode };
   /** 바뀌는 것이 없는 동작(다른 서랍 열기)만. 대화 상자를 거치지 않는다 */
   onClick?: () => void;
-  /** 아이콘만이 아니라 글자도 보인다. 아이콘 단추들 사이에서 찾지 못하던 동작에만 쓴다(에이전트 「수정」, 2026-10-19-001 디자인 D6) */
-  text?: boolean;
+  /** 아이콘만이 아니라 글자도 보인다. 아이콘 단추들 사이에서 찾지 못하던 동작에만 쓴다(에이전트 「수정」, 2026-10-19-001 디자인 D6).
+   *  'wide' 는 넓은 화면(md 이상)에서만 글자를 보이고 좁은 화면은 아이콘 — 단추가 여럿인 머리 줄(프로파일 서랍, 2026-11-18) */
+  text?: boolean | 'wide';
+  /** 글자 단추로 보일 때의 짧은 글자. 있으면 테두리 없는 조용한 단추로 그리고, 읽는 이름·툴팁은 label 그대로다.
+   *  짧은 글자는 label 의 일부여야 한다(보이는 글자가 읽는 이름에 들어 있게, WCAG 2.5.3). 프로파일 서랍 머리(2026-11-18) */
+  short?: string;
+  /** 이 단추 앞에 세로 구분선을 둔다(글자 단추 묶음과 아이콘 단추 사이) */
+  divider?: boolean;
 }
+
+/** 조용한 글자 단추: 테두리 없이 보조 글자색, 올리면 본문색과 옅은 바탕. 여러 개가 한 줄에 놓여도 무겁지 않다 */
+const quietSx = {
+  whiteSpace: 'nowrap',
+  color: 'text.secondary',
+  fontWeight: 500,
+  px: 1,
+  minWidth: 0,
+  '& .MuiButton-startIcon': { mr: 0.5 },
+  '&:hover': { color: 'text.primary', bgcolor: 'action.hover' },
+} as const;
 
 function ActionButton({ a }: { a: DrawerAction }) {
   const [open, setOpen] = useState(false);
@@ -71,6 +89,9 @@ function ActionButton({ a }: { a: DrawerAction }) {
   const reasonId = useId();
   const typedRef = useRef<HTMLInputElement>(null);
   const fullScreen = useMediaQuery(useTheme().breakpoints.down('sm'));
+  // text: 'wide' 는 넓은 화면에서만 글자 단추. 좁은 화면(md 아래)은 머리 줄이 넘치지 않게 아이콘 단추로 돌아간다
+  const wide = useMediaQuery(useTheme().breakpoints.up('md'));
+  const showText = a.text === true || (a.text === 'wide' && wide);
   const Icon = a.icon;
   const close = () => {
     setOpen(false);
@@ -97,6 +118,22 @@ function ActionButton({ a }: { a: DrawerAction }) {
         {/* 잠긴 단추: disabled 단추는 툴팁을 띄우지 못하므로 span 으로 감싼다. 키보드로도 이유를 읽게 aria-disabled 로 둔다 */}
         <Tooltip title={a.disabled}>
           <span>
+            {showText ? (
+              <Button
+                size="small"
+                variant={a.short ? 'text' : 'outlined'}
+                color={a.danger ? 'error' : 'inherit'}
+                aria-label={a.short ? a.label : undefined}
+                aria-disabled="true"
+                aria-describedby={reasonId}
+                data-locked=""
+                startIcon={<Icon fontSize="small" />}
+                sx={{ ...(a.short ? quietSx : { whiteSpace: 'nowrap' }), opacity: 0.38, cursor: 'not-allowed' }}
+                onClick={(e) => e.preventDefault()}
+              >
+                {a.short ?? a.label}
+              </Button>
+            ) : (
             <IconButton
               aria-label={a.label}
               aria-disabled="true"
@@ -108,6 +145,7 @@ function ActionButton({ a }: { a: DrawerAction }) {
             >
               <Icon fontSize="small" />
             </IconButton>
+            )}
           </span>
         </Tooltip>
         <span id={reasonId} hidden>
@@ -134,9 +172,18 @@ function ActionButton({ a }: { a: DrawerAction }) {
           </>
         }
       >
-        {a.text ? (
-          <Button size="small" variant="outlined" color="inherit" data-guide={`drawer-action.${a.id}`} startIcon={<Icon fontSize="small" />} onClick={() => (a.onClick ? a.onClick() : setOpen(true))}>
-            {a.label}
+        {showText ? (
+          <Button
+            size="small"
+            variant={a.short ? 'text' : 'outlined'}
+            color={a.danger ? 'error' : 'inherit'}
+            aria-label={a.short ? a.label : undefined}
+            data-guide={`drawer-action.${a.id}`}
+            startIcon={<Icon fontSize="small" />}
+            sx={a.short ? quietSx : { whiteSpace: 'nowrap' }}
+            onClick={() => (a.onClick ? a.onClick() : setOpen(true))}
+          >
+            {a.short ?? a.label}
           </Button>
         ) : (
           <IconButton aria-label={a.label} data-guide={`drawer-action.${a.id}`} size="small" color={a.danger ? 'error' : 'default'} onClick={() => (a.onClick ? a.onClick() : setOpen(true))}>
@@ -216,8 +263,11 @@ export function DrawerActions({ actions }: { actions: DrawerAction[] }) {
   if (!actions.length) return null;
   const buttons = (
     <>
-      {actions.map((a) => (
-        <ActionButton key={a.id} a={a} />
+      {actions.map((a, i) => (
+        <Fragment key={a.id}>
+          {a.divider && i > 0 && <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.75 }} />}
+          <ActionButton a={a} />
+        </Fragment>
       ))}
     </>
   );

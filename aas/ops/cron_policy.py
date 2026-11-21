@@ -3,7 +3,7 @@
 """크론 쓰기 규칙(스펙 2026-10-15-003 R1·R6). 거절 문구를 돌려주고(빈 문자열이면 통과) 부르는 쪽이 상태 코드를 정한다.
 
   숨긴 루트   대상 파드(main)의 루트 프로파일 default 에는 크론을 만들지 않는다. 대상 기록이 없는 파드는 default 가 유일한 프로파일일 수 있어 막지 않는다.
-  전달 대상   주인은 local·origin·채널 이름(telegram 같은 낱말)만 쓴다. `<채널>:<id>` 와 `bot-chat:*` 는 관리자만(연결된 봇으로 아무 상대에게 보내거나
+  전달 대상   주인은 local·origin·채널 이름(telegram 같은 낱말)과, 그 프로파일 봇에 메신저를 이은 사람의 대화방(연결표, 스펙 2026-11-17-008 §6-3)만 쓴다. `<채널>:<id>` 와 `bot-chat:*` 는 관리자만(연결된 봇으로 아무 상대에게 보내거나
               다른 에이전트의 모델 호출 비용을 일으키는 길이라서). 숨긴 루트의 `bot-chat:default` 는 관리자도 막는다.
 """
 from __future__ import annotations
@@ -27,9 +27,13 @@ def profile_error(pod_id: str, profile: str) -> str:
     return ""
 
 
-def deliver_error(pod_id: str, deliver: str, admin: bool) -> str:
+def deliver_error(pod_id: str, deliver: str, admin: bool, linked: set[str] | frozenset = frozenset()) -> str:
+    """linked: 이 프로파일 봇에 메신저를 이은 사람들의 대화방("<메신저>:<id>"). 연결표에 있는 곳은 주인·편집 구성원도 고를 수 있다
+    (「나에게」·「다른 구성원」, 스펙 2026-11-17-008 §6-3). 그 밖의 id 는 지금처럼 관리자만."""
     deliver = deliver.strip()
     if not deliver:
+        return ""
+    if deliver in linked:
         return ""
     if deliver == f"bot-chat:{primary.ROOT}" and root_hidden(pod_id):
         return tr("숨긴 루트로는 전달할 수 없습니다", "Cannot deliver to the hidden root")

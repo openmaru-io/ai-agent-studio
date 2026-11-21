@@ -7,6 +7,8 @@
   배달 기록 market_bundle_delivery. 요청은 줄에 세울 뿐이라(queued) 요청의 끝 상태를 보고 done·failed 로 고친다(F6).
             done 이면 다시 넣지 않는다 — 사용자가 지워도 다시 넣지 않는다(D4 B). 지웠는지 파일을 볼 필요가 없다.
             failed 는 그 판에 한 번만 시도하고 「확인할 것」에 보인다. 묶음 판이 바뀌면 다시 대상이다(R4).
+            단 허브에 잠깐 닿지 않은 실패(transient: 연결 실패·시간 초과·5xx·429)는 retry 로 적고 1·2·4…분 간격으로
+            MAX_ATTEMPTS 번까지 다시 한다. 그래도 실패하면 failed(OMAI-2085). retry 는 「확인할 것」에 보이지 않는다.
             사람이 스킬 허브에서 설치하면(설치 기록이 생기면) done 으로 본다.
   한 프로파일 한 주기에 요청 하나(끝나지 않은 요청이 있으면 409 → 기록 없이 다음 주기).
   대상 제한 AAS_BUNDLE_DELIVER_PODS(작업공간 id, 쉼표) — OKE 첫 반영을 한 작업공간에서 먼저 보려고(T2b). 비면 모두.
@@ -19,28 +21,45 @@ import threading
 import time
 from datetime import datetime
 
-from ..common import store
+from ..common import db, store
 from ..common.i18n import tr
 from . import marketplace, skill_bundle
 
 NAMESPACE = "free"
 INTERVAL = 60.0                                   # 허브 판 확인·요청 간격(초). 리더 주기는 5초
+MAX_ATTEMPTS = 6                                  # 일시적 실패를 다시 시도하는 횟수(첫 시도 포함). 간격 1·2·4·8·16분 — 첫 실패부터 약 30분
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_bundle_delivery (
   pod TEXT NOT NULL, profile TEXT NOT NULL, package TEXT NOT NULL, version TEXT NOT NULL, request TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', ts TEXT, PRIMARY KEY (pod, profile, package));
+  status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', ts TEXT, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (pod, profile, package));
 """
 _last = [0.0]
 _lock = threading.Lock()
+_MIGRATED: set = set()
 
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _wall() -> float:
+    """다시 시도 간격을 재는 시계(시험이 바꾼다)."""
+    return time.time()
+
+
+def backoff(attempts: int) -> int:
+    """attempts 번 일시적으로 실패한 뒤 다음 시도까지 기다리는 초: 1·2·4·8·16·32분."""
+    return 60 * 2 ** max(attempts - 1, 0)
+
+
 def _conn():
     conn = store.connect()
     conn.executescript(SCHEMA)
+    key = (db.backend(), os.environ.get("AAS_DATA_DIR", ""), os.environ.get("AAS_DB_SCHEMA", ""))
+    if key not in _MIGRATED:                      # 옛 표에는 attempts 가 없다(OMAI-2085) — store.add_columns 와 같은 방식
+        if "attempts" not in db.columns(conn, "market_bundle_delivery"):
+            db.add_column(conn, "market_bundle_delivery", "attempts INTEGER NOT NULL DEFAULT 0")
+        _MIGRATED.add(key)
     return conn
 
 
@@ -50,7 +69,7 @@ def reset() -> None:
 
 def packages() -> list[str]:
     """묶음 패키지 id(free/<이름>)."""
-    return [f"{NAMESPACE}/{n}" for n in skill_bundle.names()]
+    return [f"{NAMESPACE}/{n}" for n in skill_bundle.enabled_names()]
 
 
 def record(pod_id: str, profile: str, package_id: str) -> dict | None:
@@ -59,31 +78,50 @@ def record(pod_id: str, profile: str, package_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def _put(pod_id: str, profile: str, package_id: str, version: str, status: str, request: str = "", message: str = "") -> None:
+def _put(pod_id: str, profile: str, package_id: str, version: str, status: str, request: str = "", message: str = "", attempts: int = 0) -> None:
     with _conn() as conn:
-        conn.execute("INSERT INTO market_bundle_delivery (pod, profile, package, version, request, status, message, ts) VALUES (?,?,?,?,?,?,?,?) "
+        conn.execute("INSERT INTO market_bundle_delivery (pod, profile, package, version, request, status, message, ts, attempts) VALUES (?,?,?,?,?,?,?,?,?) "
                      "ON CONFLICT(pod, profile, package) DO UPDATE SET version=excluded.version, request=excluded.request, "
-                     "status=excluded.status, message=excluded.message, ts=excluded.ts",
-                     (pod_id, profile, package_id, version, request, status, message[:300], _now()))
+                     "status=excluded.status, message=excluded.message, ts=excluded.ts, attempts=excluded.attempts",
+                     (pod_id, profile, package_id, version, request, status, message[:300], _now(), attempts))
+
+
+def _failed(attempts: int) -> str:
+    """일시적 실패를 attempts 번 겪은 뒤의 상태 — 아직 횟수가 남았으면 retry."""
+    return "failed" if attempts >= MAX_ATTEMPTS else "retry"
+
+
+def _due(row: dict) -> bool:
+    """retry 줄의 다음 시도 시각이 지났는가."""
+    try:
+        last = datetime.fromisoformat(str(row["ts"])).timestamp()
+    except (TypeError, ValueError):
+        return True
+    return _wall() >= last + backoff(int(row.get("attempts") or 0))
 
 
 def _settle(pod_id: str, rows: dict) -> None:
-    """queued 줄을 요청의 끝 상태로 고친다."""
+    """queued 줄을 요청의 끝 상태로 고친다. 허브에 잠깐 닿지 않아 실패한 요청(transient)은 retry 로 적는다."""
     waiting = [r for r in rows.values() if r["status"] == "queued" and r["request"]]
     if not waiting:
         return
     ended = {str(r["id"]): r for r in marketplace.requests(pod_id, 2000) if r["status"] in ("done", "failed")}
     for w in waiting:
         r = ended.get(w["request"])
-        if r is not None:
-            _put(pod_id, w["profile"], w["package"], w["version"], r["status"], w["request"], str(r.get("message") or ""))
-            rows[(w["profile"], w["package"])] = {**w, "status": r["status"]}
+        if r is None:
+            continue
+        status, attempts = r["status"], int(w.get("attempts") or 0)
+        if status == "failed" and r.get("transient"):
+            attempts += 1
+            status = _failed(attempts)
+        _put(pod_id, w["profile"], w["package"], w["version"], status, w["request"], str(r.get("message") or ""), attempts)
+        rows[(w["profile"], w["package"])] = {**w, "status": status, "attempts": attempts, "ts": _now()}
 
 
 def _ready() -> dict[str, dict]:
     """허브에 묶음 버전 이상이 게시된 패키지 {id: 허브 패키지}. 허브에 닿지 않으면 MarketError."""
     out = {}
-    for name in skill_bundle.names():
+    for name in skill_bundle.enabled_names():
         want = skill_bundle.front(name)["version"]
         try:
             pkg = marketplace.package(NAMESPACE, name)
@@ -126,16 +164,23 @@ def deliver(pods: list, profiles_of) -> list[str]:
                 if package_id not in ready:                # 허브에 아직 묶음 판이 없다 — 게시를 기다린다
                     continue
                 pkg = ready[package_id]
-                if row and row["status"] == "failed" and row["version"] == pkg["_bundle"]:   # 이 판은 이미 한 번 실패했다
+                same = bool(row) and row["version"] == pkg["_bundle"]
+                if same and row["status"] == "failed":     # 이 판은 이미 실패했다(영구 실패, 또는 일시적 실패를 MAX_ATTEMPTS 번)
                     continue
+                if same and row["status"] == "retry" and not _due(row):   # 일시적 실패 — 간격이 지나기를 기다린다
+                    continue
+                attempts = int(row.get("attempts") or 0) if same else 0     # 판이 바뀌면 처음부터
                 try:
                     req = marketplace.request_install(pod.id, pod.container, pkg, "", profile, "install", "aas", profiles)
                 except marketplace.MarketError as exc:
                     if exc.code == 409:                    # 끝나지 않은 요청 — 다음 주기
                         break
-                    _put(pod.id, profile, package_id, pkg["_bundle"], "failed", "", str(exc))
+                    if exc.transient:                      # 허브에 잠깐 닿지 않았다 — 간격을 두고 다시(OMAI-2085)
+                        _put(pod.id, profile, package_id, pkg["_bundle"], _failed(attempts + 1), "", str(exc), attempts + 1)
+                    else:
+                        _put(pod.id, profile, package_id, pkg["_bundle"], "failed", "", str(exc), attempts)
                     continue
-                _put(pod.id, profile, package_id, pkg["_bundle"], "queued", str(req["id"]))
+                _put(pod.id, profile, package_id, pkg["_bundle"], "queued", str(req["id"]), "", attempts)
                 done.append(f"{pod.id}/{profile} {package_id}")
                 break                                      # 한 프로파일 한 주기에 하나
     return done

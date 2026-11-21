@@ -14,6 +14,7 @@ import { forwardRef, KeyboardEvent, ReactNode, useEffect, useId, useImperativeHa
 
 import { tier1, tier2 } from '@/components/tierButton';
 import { t } from '@/i18n';
+import { apiConfig, appHref } from '@/lib/api';
 import { chatMetrics, chatType } from '@/lib/chatTokens';
 import { activeToken, applyPick, applyPickToFront, filterItems, pickable, SuggestItem, SuggestWhere } from '@/lib/composerSuggest';
 
@@ -76,8 +77,12 @@ export interface ComposerProps {
   inputLabel: string;
   sendLabel: string;
   stopLabel?: string;
-  /** 키 안내 글자 */
+  /** 글이 있는데 canSend 가 거짓이라 Enter 가 무시될 때 부른다(조합 중 제외). 화면이 이유를 키 안내 줄에 보인다(스펙 2026-11-19-003 D7) */
+  onBlockedEnter?: () => void;
+  /** 키 안내 글자. compact 는 눈에서 숨긴다(읽기는 된다) */
   hint?: ReactNode;
+  /** compact 에서도 키 안내를 보인다 — 답하는 중 흐르는 시간 */
+  hintShown?: boolean;
   /** 입력칸 위(칩 줄·업로드 줄) */
   top?: ReactNode;
   /** 'prominent': 채팅 화면의 큰 입력 카드(둥근 모서리·그림자·두 줄 이상·둥근 보내기 단추). 회의·오피스는 기본 모양 그대로 */
@@ -115,7 +120,11 @@ const hidden = {
 } as const;
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { value, onChange, onSend, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, disabled, placeholder, inputLabel, sendLabel, stopLabel, hint, top, leading, describedBy, compact, suggest, note, voice, readConv, variant = 'default', target },
+  {
+    value, onChange, onSend, onBlockedEnter, sendOn, canSend: canSendProp, busy, sendWhileBusy, onStop, stopDisabled, disabled,
+    placeholder, inputLabel, sendLabel, stopLabel, hint, hintShown, top, leading, describedBy, compact, suggest, note,
+    voice, readConv, variant = 'default', target,
+  },
   ref
 ) {
   const tk = useChatTokens();
@@ -207,7 +216,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
   const actStatus = () => {
     if (state === 'error') src?.onRetry?.();
-    else if (state === 'empty' && src?.emptyLink) window.location.hash = src.emptyLink.href.replace(/^#/, '');
+    else if (state === 'empty' && src?.emptyLink) {
+      const hash = src.emptyLink.href.replace(/^#/, '');
+      if (apiConfig().embed) window.open(appHref(hash), '_blank', 'noopener'); // 위젯은 호스트 주소창을 바꾸지 않는다(OMAI-1873)
+      else window.location.hash = hash;
+    }
   };
   const sug = useRef({ open, state, shown, active, pick, actStatus });
   sug.current = { open, state, shown, active, pick, actStatus };
@@ -215,8 +228,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // 한글 조합 중 Enter 는 글자 확정에 쓰인다. 그 Enter 를 기억했다가 조합이 끝나면 보낸다 — 끝 글자가 조합 중이면 Enter 로
   // 보내지지 않고 Ctrl+Enter(Ctrl 이 조합을 먼저 끝낸다)만 보내졌다(2026-10-16 사용자 보고). 조합이 끝난 뒤 바뀐 값으로 다시
   // 그린 다음 보내도록 한 박자 늦추고, 그 사이 브라우저가 Enter 를 한 번 더 보내면(macOS Chrome) 그 Enter 는 버린다.
-  const latest = useRef({ onSend: send, canSend });
-  latest.current = { onSend: send, canSend };
+  const latest = useRef({ onSend: send, canSend, onBlockedEnter, value });
+  latest.current = { onSend: send, canSend, onBlockedEnter, value };
   const afterIme = useRef<'none' | 'pending' | 'sending'>('none');
   useEffect(() => () => void (afterIme.current = 'none'), []);
 
@@ -267,6 +280,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (afterIme.current === 'sending') return; // 조합을 끝낸 Enter 가 한 번 더 왔다 — 곧 보낸다
     if (canSend) send();
     else if (voiceBusy) voiceRecorder.sendBlocked(voiceOwner);
+    else if (value.trim()) onBlockedEnter?.();
   };
 
   // 받아쓴 글 넣기(17A): 글이 도착한 때의 커서(선택 영역이면 그 끝) 자리에 넣고, 앞 글자가 공백이 아니면 공백 하나를 앞에 둔다.
@@ -392,6 +406,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const g = sug.current; // 조합을 끝낸 Enter 는 목록이 열려 있으면 고르기다(R6)
       if (g.open && g.state === 'list' && g.active >= 0 && g.shown[g.active]) g.pick(g.shown[g.active]);
       else if (latest.current.canSend) latest.current.onSend();
+      else if (latest.current.value.trim()) latest.current.onBlockedEnter?.();
     }, IME_SEND_DELAY_MS);
   };
 
@@ -434,7 +449,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const big = variant === 'prominent';
   // 큰 입력 카드의 보내기·멈춤: 둥근 단추, 보낼 수 있으면 채운 단추로 눈에 띄게
-  const roundBtn = big ? { width: 36, height: 36, borderRadius: '50%' } : { width: 32, height: 32, borderRadius: '8px' };
+  // flexShrink 0: 아래 줄이 좁아도 전송·멈춤 단추는 줄지 않는다(영어 키 안내가 길어 단추가 카드 밖으로 밀렸다, 스펙 2026-11-19-004 §6)
+  const roundBtn = big ? { width: 36, height: 36, borderRadius: '50%', flexShrink: 0 } : { width: 32, height: 32, borderRadius: '8px', flexShrink: 0 };
   const filled = big && canSend && !busy ? { bgcolor: tk.text, color: tk.canvas, borderColor: tk.text, '&:hover': { bgcolor: tk.text, opacity: 0.85 } } : {};
   return (
     <Box
@@ -531,7 +547,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <>
             <Box
               id={hintId}
-              sx={{ minWidth: 0, fontSize: chatType.meta, color: tk.muted, ...(compact ? hidden : { flex: '0 0 auto', whiteSpace: 'nowrap' }) }}
+              title={typeof hint === 'string' ? hint : undefined}
+              sx={{
+                minWidth: 0,
+                fontSize: chatType.meta,
+                color: tk.muted,
+                // 면책 글(flex 1)이 먼저 줄고, 그래도 모자라면 키 안내도 말줄임표로 준다(영어는 「Enter to send · Shift+Enter for a new line · Files up to 100MB」라
+                // 줄지 않으면 마이크·전송 단추가 카드 밖으로 밀렸다, 스펙 2026-11-19-004 §6). 전체 글은 title 로 본다
+                ...(compact && !hintShown ? hidden : { flex: '0 1 auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }),
+              }}
             >
               {hint}
             </Box>
@@ -563,7 +587,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {/* 마이크는 전송 단추 바로 앞(스펙 2026-10-22-005 §8-13 — 디자인 1A 의 「첨부 다음」을 바꿈).
             녹음 중에는 녹음 띠(경과·✕·✓)가 이 앞에 온다 */}
         {voice && (
-          <Box sx={{ display: 'flex', alignItems: 'center', ...touchChildren }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0, ...touchChildren }}>
             <VoiceButton owner={voiceOwner} voice={voice} onInsert={insertVoice} onEdit={voiceEdit} suggestOpen={open} rootRef={root} />
           </Box>
         )}

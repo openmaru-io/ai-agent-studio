@@ -103,7 +103,7 @@ class SkillStatesWaitTest(unittest.TestCase):
         pod = SimpleNamespace(id="ag-wait", hermes_home=home)
         gate = threading.Event()
 
-        def slow_collect(_home):
+        def slow_collect(_home, **_kw):                         # pod= 를 받는다(스펙 2026-11-19-005)
             gate.wait(5)
             return {"profiles": {"ma": {"skills": {"idle": 3}}}}
         skills = {"skills": [row("ma", "idle")]}

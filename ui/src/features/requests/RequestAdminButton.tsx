@@ -14,9 +14,9 @@ import { useState } from 'react';
 import { t } from '@/i18n';
 import { ApiError, get, post } from '@/lib/api';
 
-export type RequestKind = 'model_change' | 'profile_limit' | 'office_seat' | 'archive_restore' | 'channel_apply' | 'workspace_size' | 'other';
+export type RequestKind = 'model_change' | 'profile_limit' | 'office_seat' | 'archive_restore' | 'channel_apply' | 'workspace_size' | 'template_notice' | 'namespace_grant' | 'other';
 /** 서버 aas/ops/admin_requests.py KINDS 와 같아야 한다(시험이 맞춰 본다) */
-export const REQUEST_KINDS: readonly RequestKind[] = ['model_change', 'profile_limit', 'office_seat', 'archive_restore', 'channel_apply', 'workspace_size', 'other'];
+export const REQUEST_KINDS: readonly RequestKind[] = ['model_change', 'profile_limit', 'office_seat', 'archive_restore', 'channel_apply', 'workspace_size', 'template_notice', 'namespace_grant', 'other'];
 export const DETAIL_MAX = 300;
 
 interface Waiting {
@@ -29,7 +29,8 @@ interface Waiting {
 /** pod: 목록 줄처럼 지금 고른 에이전트가 아닌 작업공간을 가리킬 때(스펙 2026-11-06-005 D6). 없으면 쿠키로 고른 작업공간.
  *  ariaLabel: 같은 이름의 단추가 여러 줄에 있을 때 읽기 프로그램용 이름(D20) */
 /** sx: 놓인 줄의 다른 단추와 모양을 맞출 때(채팅 줄의 tier2·44px, 스펙 2026-11-07-001 디자인 5A) */
-export function RequestAdminButton({ profile, kind, label, detail: initial = '', pod, ariaLabel, sx, color }: { profile: string; kind: RequestKind; label?: string; detail?: string; pod?: string; ariaLabel?: string; sx?: SxProps<Theme>; color?: 'inherit' | 'primary' }) {
+/** namespace: 「제한 스킬·템플릿 설치 허용 요청」(namespace_grant)의 구역. 서버가 요청 앞머리에 남기고, 관리자가 그 구역을 허용하면 요청이 닫힌다(스펙 2026-11-18-015 X2) */
+export function RequestAdminButton({ profile, kind, label, detail: initial = '', pod, ariaLabel, sx, color, namespace }: { profile: string; kind: RequestKind; label?: string; detail?: string; pod?: string; ariaLabel?: string; sx?: SxProps<Theme>; color?: 'inherit' | 'primary'; namespace?: string }) {
   const qc = useQueryClient();
   const { enqueueSnackbar } = useSnackbar();
   const [open, setOpen] = useState(false);
@@ -53,7 +54,7 @@ export function RequestAdminButton({ profile, kind, label, detail: initial = '',
     setBusy(true);
     setError('');
     try {
-      await post('/api/requests', { profile, kind, detail: detail.trim(), ...(pod ? { pod } : {}) });
+      await post('/api/requests', { profile, kind, detail: detail.trim(), ...(pod ? { pod } : {}), ...(namespace ? { namespace } : {}) });
       enqueueSnackbar(t('requests.sent'), { variant: 'success' });
       setOpen(false);
       setDetail('');

@@ -7,6 +7,7 @@
   토큰     게시 전용 aas_admin 토큰. AAS_SKILLHUB_PUBLISH_TOKEN_FILE, 비었으면 서버 토큰 파일 옆의 publish-token
            (COP 차트가 Secret aas-skillhub-token 전체를 붙인다 — §9-6a). 목록 읽기·사용자 스킬 게시는 기존 토큰 그대로(R13)
            — 같은 패키지의 새 판은 처음 게시한 계정만 올릴 수 있어서, 기본 스킬은 처음부터 이 계정 하나로만 게시한다.
+           거절되면 서버 토큰으로 한 번 더 보낸다 — 마켓 레포에서 옮긴 MCP 짝 스킬은 OKE 에서 CI 계정(서버 토큰)이 처음 올렸다(OMAI-2031).
   기록     meta 의 `bundle_publish:<이름>` = {version, status, message, ts}. 검토 대기(pending_review)·실패(failed)인 판은
            같은 판을 다시 보내지 않는다(같은 오류를 주기마다 되풀이하지 않게). 판을 올리면 다시 게시한다.
 """
@@ -70,6 +71,17 @@ def _hub_version(name: str, cfg: dict) -> str:
     return str(((info or {}).get("publishedVersion") or {}).get("version") or "")
 
 
+def _send(name: str, version: str, token: str) -> tuple[int, dict]:
+    try:
+        return market_publish._post(NAMESPACE, name, version, package_zip(name), token=token)
+    except OSError as exc:
+        return 0, {"msg": type(exc).__name__}
+
+
+def _ok(code: int, res: dict) -> bool:
+    return (code == 200 and res.get("code") == 0) or "already exist" in str(res.get("msg") or "").lower()
+
+
 def publish_once() -> list[str]:
     """게시를 요청한 「이름 버전」 목록. 토큰·허브 주소가 없거나 시간 제한 안이면 빈 목록."""
     with _lock:
@@ -81,7 +93,8 @@ def publish_once() -> list[str]:
     if not cfg["url"] or not token:
         return []
     done: list[str] = []
-    for name in skill_bundle.names():
+    server = marketplace._token(cfg["token_file"]) if cfg.get("token_file") else ""
+    for name in skill_bundle.enabled_names():
         version = skill_bundle.front(name)["version"]
         prev = state(name)
         if prev and prev["version"] == version and prev["status"] in ("pending_review", "failed", "published"):
@@ -94,10 +107,11 @@ def publish_once() -> list[str]:
         if hub and marketplace._ver(hub) >= marketplace._ver(version):
             _save(name, version, "published", f"hub {hub}")
             continue
-        try:
-            code, res = market_publish._post(NAMESPACE, name, version, package_zip(name), token=token)
-        except OSError as exc:
-            code, res = 0, {"msg": type(exc).__name__}
+        code, res = _send(name, version, token)
+        if not _ok(code, res) and server and server != token:
+            # 처음 올린 계정만 새 판을 올린다. 마켓 레포 시절 CI 계정(서버 토큰)이 처음 올린 패키지(OKE 의 cogentai-mindwiki 등)는
+            # 게시 전용 토큰이 거절된다(OMAI-2031) — 서버 토큰으로 한 번 더 보낸다
+            code, res = _send(name, version, server)
         msg = str(res.get("msg") or "")
         if code == 200 and res.get("code") == 0:
             status = str((res.get("data") or {}).get("status") or "published").lower()

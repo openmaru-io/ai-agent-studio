@@ -69,6 +69,21 @@ def _one_line(value, limit: int, field: str) -> str:
     return text
 
 
+def _lines(value, limit: int, field: str) -> str:
+    """여러 줄 글(내용). 줄마다 겹친 공백·끝 공백을 줄이고(앞 들여쓰기는 둔다), 빈 줄은 하나까지, 앞뒤 빈 줄은 뺀다.
+    띠에는 제목만 보이고 내용은 풍선말·「자세히」·서버 페이지 띠에서 줄바꿈 그대로 보인다(2026-11-17, 전에는 한 줄로 합쳤다)."""
+    out: list[str] = []
+    for raw in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        words = raw.split()
+        line = raw[:len(raw) - len(raw.lstrip())] + " ".join(words) if words else ""
+        if line or (out and out[-1]):
+            out.append(line)
+    text = "\n".join(out).strip("\n")
+    if len(text) > limit:
+        raise NoticeError(tr(f"글은 {limit}자까지 쓸 수 있습니다", f"The text can be up to {limit} characters"), field)
+    return text
+
+
 def check_link(value) -> str:
     """AAS 안 경로(#/…)와 http(s) 주소만 받는다(A1). 나머지 스킴(javascript: 등)은 거절한다."""
     link = str(value or "").strip()
@@ -157,7 +172,7 @@ def save(body: dict, who: str, known_departments: list[str], at: datetime | None
     if kind not in KINDS:
         raise NoticeError(tr("공지 종류를 고르세요", "Choose the notice type"), "kind")
     title = _one_line(body.get("title"), TITLE_MAX, "title")
-    text = _one_line(body.get("body"), BODY_MAX, "body")
+    text = _lines(body.get("body"), BODY_MAX, "body")
     link = check_link(body.get("link"))
     starts = parse_time(body.get("starts_at"), "starts_at")
     ends = parse_time(body.get("ends_at"), "ends_at")

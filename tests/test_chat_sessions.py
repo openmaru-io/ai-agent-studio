@@ -138,6 +138,38 @@ class LiveSessionsTest(unittest.TestCase):
         self.assertEqual(calls, [("session.close", {"session_id": "old"})])
         self.assertNotIn("old", self.hub.sessions)
 
+    def test_prune_keeps_only_recent_idle_sessions_per_user(self):
+        """사용자마다 쉬는 세션을 최근 keep 개만 두고 나머지는 grace 가 지나면 닫는다. Hermes 가 세션마다 폴러 스레드를 돌려
+        「새 세션」으로 이어 가는 시험에서 271개가 쌓여 파드 응답이 4배 느려졌다(OMAI-1884)."""
+        now = 100000.0
+        for i in range(5):                                            # a: 5개, 오래된 것부터 s0..s4
+            self.hub.sessions[f"a{i}"] = {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 3000 + i * 100}
+        self.hub.sessions["b0"] = {"profile": "p", "created": 1.0, "title": "", "by": "b@x", "last_at": now - 5000}
+        self.hub.sessions["a_new"] = {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 30}
+        self.hub.sessions["a_run"] = {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": 10.0, "turn_open": True}
+        with mock.patch.object(self.hub, "request"):
+            gone = self.hub.prune(24 * 3600, now, keep=3, grace=600)
+        self.assertEqual(gone, ["a0", "a1", "a2"])                    # a_new·a4·a3 를 남기고, b 는 하나뿐이라 남는다
+        self.assertEqual(set(self.hub.sessions), {"a3", "a4", "b0", "a_new", "a_run"})
+
+    def test_prune_keep_waits_for_grace_and_drops_hidden_first(self):
+        now = 100000.0
+        self.hub.sessions.update({
+            "v_old": {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 2000},
+            "h_new": {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 1500, "hidden": True},
+            "v_new": {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 1000},
+            "young": {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 60},
+        })
+        with mock.patch.object(self.hub, "request"):
+            self.assertEqual(self.hub.prune(0, now, keep=2, grace=600), ["v_old", "h_new"])   # 숨긴 것은 더 최근이어도 닫는다
+            self.assertEqual(set(self.hub.sessions), {"v_new", "young"})
+            self.hub.sessions["young2"] = {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 30}
+            self.assertEqual(self.hub.prune(0, now, keep=2, grace=600), ["v_new"])   # 밀려났고 grace 도 지났다
+            self.hub.sessions["young3"] = {"profile": "p", "created": 1.0, "title": "", "by": "a@x", "last_at": now - 10}
+            self.assertEqual(self.hub.prune(0, now, keep=2, grace=600), [])          # young 은 밀려났지만 grace 안이라 둔다
+            self.assertEqual(set(self.hub.sessions), {"young", "young2", "young3"})
+        self.assertEqual(self.hub.prune(0, now), [])                  # ttl·keep 모두 0 이면 끔
+
     def test_prune_survives_a_failed_close(self):
         now = 100000.0
         self.hub.sessions["old"] = {"profile": "p", "created": 1.0, "title": "", "last_at": 10.0}
@@ -243,8 +275,13 @@ class ChatSessionsRouteTest(unittest.TestCase):
         with mock.patch.dict(server._hubs, hubs, clear=True), \
                 mock.patch.dict("os.environ", {"AAS_CHAT_SESSION_TTL_HOURS": "2"}):
             server._prune_chat_hubs()
-        hubs["a"].prune.assert_called_once_with(7200.0)
-        hubs["b"].prune.assert_called_once_with(7200.0)
+        hubs["a"].prune.assert_called_once_with(7200.0, keep=10, grace=600.0)
+        hubs["b"].prune.assert_called_once_with(7200.0, keep=10, grace=600.0)
+        hubs["a"].prune.reset_mock()
+        with mock.patch.dict(server._hubs, {"a": hubs["a"]}, clear=True), \
+                mock.patch.dict("os.environ", {"AAS_CHAT_IDLE_KEEP": "0", "AAS_CHAT_IDLE_GRACE_MINUTES": "x"}):
+            server._prune_chat_hubs()
+        hubs["a"].prune.assert_called_once_with(24 * 3600.0, keep=0, grace=600.0)
 
 
 if __name__ == "__main__":

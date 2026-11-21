@@ -38,6 +38,7 @@ class OriginTest(unittest.TestCase):
                         "skills/edited/SKILL.md": "---\nname: edited\n---\n원본",
                         "skills/hubbed/SKILL.md": "---\nname: hubbed\n---\n", "skills/market/pkg/SKILL.md": "---\nname: pkg\n---\n",
                         "skills/mine/SKILL.md": "---\nname: mine\n---\n", "skills/bot-made/SKILL.md": "---\nname: bot-made\n---\n",
+                        "profiles/ma/config.yaml": "model: x\n",        # 표시 파일이 있어야 프로파일이다
                         "profiles/ma/skills/mine2/SKILL.md": "---\nname: mine2\n---\n"})
         base_hash, edited_hash = md5_of(self.home, "skills/base"), md5_of(self.home, "skills/edited")
         (self.home / "skills/edited/SKILL.md").write_text("---\nname: edited\n---\n내가 고침", encoding="utf-8")   # 매니페스트 해시는 원본 기준
