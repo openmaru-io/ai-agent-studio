@@ -1747,9 +1747,16 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
         was_set = next((("true" if r["set"] else "false") for r in profiles.env_view(listing) if r["name"] == key), "false") if listing is not None else "unknown"
         if owner:                                                    # 주인: 모델 키·동작·접속 변수와 채널 변수는 거절. 목록을 읽지 못해도 거절(fail-closed)
             catalog = owner_guard.catalog_of(listing) if listing is not None else None
-            why, refused = owner_guard.env_key_check(key, catalog)
-            if refused:
-                raise files.FileError(refused, 403, reason=why, field=key)
+            if owner_guard.owner_url_allowed(key, catalog):          # 관리자가 허용한 접속 주소 변수: 이름 대신 값을 검사한다. 지우기는 주소를 바꾸지 않으므로 통과
+                if action == "env_set":
+                    why, refused, canonical_url = owner_guard.env_value_check(key, body.get("value"))
+                    if refused:
+                        raise files.FileError(refused, 403, reason=why, field=key)
+                    body = {**body, "value": canonical_url}
+            else:
+                why, refused = owner_guard.env_key_check(key, catalog)
+                if refused:
+                    raise files.FileError(refused, 403, reason=why, field=key)
         if action == "env_set":
             value = body.get("value")
             if isinstance(value, str) and key.startswith("MCP_") and key.endswith("_API_KEY"):   # MCP 토큰은 헤더에 Bearer 가 붙으므로 앞의 Bearer 를 뗀다(스펙 2026-10-23-002 R7)
@@ -7039,7 +7046,7 @@ class Handler(BaseHTTPRequestHandler):
                         if manages and not admin and detail.get("env"):    # 주인 화면: 서버가 막는 변수는 잠금 사유를 함께 준다(디자인 결정 2C, TD5)
                             catalog = {r["name"]: r["category"] for r in detail["env"]}
                             for r in detail["env"]:
-                                r["locked"] = owner_guard.env_key_error(r["name"], catalog)
+                                r["locked"] = owner_guard.env_lock_reason(r["name"], catalog)
                         secure = self._secrets_ok()
                         may = admin or manages                                # 이 서랍의 탭별 권한과 막힌 이유(디자인 결정 1A, TD1). 문장은 화면이 코드로 고른다
                         hidden = bool(detail["profile"].get("hidden_root"))

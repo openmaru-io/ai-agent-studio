@@ -34,6 +34,45 @@ class EnvKeyTest(unittest.TestCase):
         self.assertTrue(owner_guard.env_key_error("SERPER_API_KEY", None))          # fail-closed
 
 
+class OwnerUrlAllowListTest(unittest.TestCase):
+    URLS = "DOCS_BASE_URL=https://docs.example.com, WIKI_BASE_URL=https://docs.example.com/,OPENAI_BASE_URL=https://docs.example.com,HERMES_BASE_URL=https://docs.example.com"
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": self.URLS})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_both_document_addresses_open_only_for_the_allowed_value(self):
+        for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+            self.assertTrue(owner_guard.owner_url_allowed(key, CATALOG), key)
+            self.assertEqual(owner_guard.env_lock_reason(key, CATALOG), "", key)
+            for good in ("https://docs.example.com", "https://docs.example.com/", "HTTPS://DOCS.example.com", "https://docs.example.com:443"):
+                self.assertEqual(owner_guard.env_value_check(key, good), ("", "", "https://docs.example.com"), good)
+            for bad in ("http://docs.example.com", "https://other.example.com", "https://docs.example.com.evil.test", "https://user@docs.example.com",
+                        "https://docs.example.com:8443", "https://docs.example.com/api", "https://docs.example.com?x=1", "https://docs.example.com#x",
+                        "https://docs.example.com\n", "https://docs.example.com\t", " https://docs.example.com", "https://docs.example.com.", "", None, 1):
+                self.assertEqual(owner_guard.env_value_check(key, bad)[0], "url_not_allowed", repr(bad))
+
+    def test_model_platform_and_provider_names_stay_locked_even_if_listed(self):
+        for key in ("OPENAI_BASE_URL", "HERMES_BASE_URL"):
+            self.assertFalse(owner_guard.owner_url_allowed(key, CATALOG), key)
+            self.assertTrue(owner_guard.env_lock_reason(key, CATALOG), key)
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": "CUSTOM_BASE_URL=https://docs.example.com"}):
+            self.assertFalse(owner_guard.owner_url_allowed("CUSTOM_BASE_URL", {"CUSTOM_BASE_URL": "provider"}))
+
+    def test_unset_malformed_or_unreadable_stays_locked(self):
+        self.assertFalse(owner_guard.owner_url_allowed("DOCS_BASE_URL", None))
+        for raw in ("", "DOCS_BASE_URL", "DOCS_BASE_URL=http://docs.example.com", "DOCS_BASE_URL=https://docs.example.com/api", "DOCS_TOKEN=https://docs.example.com"):
+            with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": raw}):
+                self.assertFalse(owner_guard.owner_url_allowed("DOCS_BASE_URL", CATALOG), raw)
+                self.assertTrue(owner_guard.env_lock_reason("DOCS_BASE_URL", CATALOG), raw)
+
+    def test_name_only_paths_stay_refused(self):
+        """PC 가져오기·MCP 는 값 검사 없이 env_key_check 만 부르므로 허용 목록이 있어도 막혀야 한다."""
+        for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+            self.assertEqual(owner_guard.env_key_check(key, CATALOG)[0], "url_proxy", key)
+
+
 class ChannelEnvTest(unittest.TestCase):
     def test_only_token_and_real_user_ids_are_allowed(self):
         ok = (("telegram", "TELEGRAM_BOT_TOKEN", "123:abc"), ("telegram", "TELEGRAM_ALLOWED_USERS", "42,77"), ("discord", "DISCORD_BOT_TOKEN", "t"),

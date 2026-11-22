@@ -31,6 +31,9 @@ _BLOCKED_PREFIX = ("HERMES_", "GATEWAY_", "TERMINAL_", "AAS_", "LITELLM_", "PYTH
 _BLOCKED_EXACT = frozenset({"PATH", "HOME", "SHELL", "USER", "LANG", "TZ"})
 _BLOCKED_SUFFIX = ("_BASE_URL", "_PROXY", "_ENDPOINT")
 _BLOCKED_CATEGORY = frozenset({"provider", "setting", "messaging"})
+_MODEL_URL_PREFIX = ("OPENAI_", "ANTHROPIC_", "LLM_", "OPENROUTER_", "GEMINI_", "GOOGLE_", "AZURE_", "OLLAMA_", "VLLM_", "VOLCENGINE_", "DEEPSEEK_", "MISTRAL_", "QWEN_", "DASHSCOPE_")      # 허용 목록에 적혀도 열지 않는 모델 접속 주소
+_OWNER_URL_NAME = re.compile(r"[A-Z][A-Z0-9_]*_BASE_URL")
+_HTTPS_ORIGIN = re.compile(r"(?i:https)://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::(\d{1,5}))?/?")
 _USER_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,80}\Z")
 _SERVER_URL = re.compile(r"^https?://[^\s@/?#]+(?::\d{1,5})?(?:/[^\s@?#]*)?\Z")      # 메신저 서버 주소(Mattermost). 계정·공백·질의 문자열 없이
 
@@ -63,6 +66,54 @@ def env_key_check(key: str, catalog: dict[str, str] | None) -> tuple[str, str]:
 
 def env_key_error(key: str, catalog: dict[str, str] | None) -> str:
     return env_key_check(key, catalog)[1]
+
+
+def _canonical_https_origin(url: object) -> str:
+    """https 출처 하나의 정규형. 계정·경로·질의·조각·공백이 있으면 빈 문자열. urlsplit 은 탭·줄바꿈을 지우므로 쓰지 않는다."""
+    if not isinstance(url, str):
+        return ""
+    m = _HTTPS_ORIGIN.fullmatch(url)
+    if not m:
+        return ""
+    host, port = m.group(1).lower(), m.group(2)
+    if host.endswith(".") or ".." in host or (port and not 0 < int(port) <= 65535):
+        return ""
+    return f"https://{host}" if not port or int(port) == 443 else f"https://{host}:{int(port)}"
+
+
+def _owner_urls() -> dict[str, str]:
+    """관리자가 AAS_OWNER_ENV_URLS 에 적은 `이름=https 출처` 짝(쉼표 구분). 형식이 틀린 항목은 버려 잠긴 채로 둔다."""
+    out: dict[str, str] = {}
+    for item in str(config.get("AAS_OWNER_ENV_URLS", "") or "").split(","):
+        name, sep, url = item.strip().partition("=")
+        origin = _canonical_https_origin(url.strip())
+        if sep and origin and _OWNER_URL_NAME.fullmatch(name.strip()):
+            out[name.strip()] = origin
+    return out
+
+
+def owner_url_allowed(key: str, catalog: dict[str, str] | None) -> bool:
+    """주인이 허용 주소로 넣을 수 있는 접속 주소 변수인가. 모델·플랫폼 변수는 목록에 있어도 열지 않는다. 카탈로그를 못 읽으면 False."""
+    if catalog is None or key not in _owner_urls():
+        return False
+    if key in _BLOCKED_EXACT or key.startswith(_BLOCKED_PREFIX) or key.startswith(_MODEL_URL_PREFIX):
+        return False
+    return catalog.get(key, "") not in _BLOCKED_CATEGORY
+
+
+def env_lock_reason(key: str, catalog: dict[str, str] | None) -> str:
+    """주인 화면의 잠금 사유. 허용 주소 변수는 값으로 검사하므로 잠그지 않는다."""
+    return "" if owner_url_allowed(key, catalog) else env_key_error(key, catalog)
+
+
+def env_value_check(key: str, value: object) -> tuple[str, str, str]:
+    """허용 주소 변수의 값 검사. (사유 코드, 문장, 저장할 정규형). 통과면 사유·문장이 빈 문자열."""
+    allowed = _owner_urls().get(key, "")
+    origin = _canonical_https_origin(value)
+    if allowed and origin == allowed:
+        return "", "", allowed
+    return "url_not_allowed", tr(f"{key} 에는 관리자가 허용한 주소만 넣을 수 있습니다: {allowed}",
+                                 f"{key} accepts only the address an admin allowed: {allowed}"), ""
 
 
 _HOME_CHANNEL = {"telegram": re.compile(r"^-?\d{3,20}\Z"), "slack": re.compile(r"^[CG][A-Z0-9]{6,20}\Z"),

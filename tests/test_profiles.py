@@ -704,6 +704,22 @@ class ProfileTest(unittest.TestCase):
         self.assertFalse(any(c[0] == "PUT" for c in Fake.calls))
         self.assertEqual(self.act("shared4", "create", share_skills=True)[0], 400)                              # 원본이 없으면 거절(복제할 프로파일을 고르세요)
 
+    def test_owner_sets_document_address_only_to_the_allowed_value(self):
+        """관리자가 AAS_OWNER_ENV_URLS 에 적은 주소만 주인이 저장한다. 정규형으로 저장하고, 다른 주소는 Hermes 까지 가지 않는다."""
+        self.as_owner()
+        urls = "DOCS_BASE_URL=https://docs.example.com,WIKI_BASE_URL=https://docs.example.com"
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": urls}):
+            for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+                Fake.calls.clear()
+                code, out = self.act("ma", "env_set", target=key, value="https://evil.example.net")
+                self.assertEqual((code, out.get("reason"), out.get("field"), Fake.calls), (403, "url_not_allowed", key, []))
+                code, _ = self.act("ma", "env_set", target=key, value="https://docs.example.com/")
+                self.assertEqual((code, Fake.calls[-1]), (200, ("PUT", "/api/env", {"profile": "ma"}, {"key": key, "value": "https://docs.example.com", "profile": "ma"})))
+                code, _ = self.act("ma", "env_clear", target=key, confirm=key)
+                self.assertEqual((code, Fake.calls[-1][:2]), (200, ("DELETE", "/api/env")))
+            self.assertEqual(self.act("ma", "env_set", target="OPENAI_BASE_URL", value="https://docs.example.com")[1]["reason"], "url_proxy")
+        self.assertEqual(self.act("ma", "env_set", target="DOCS_BASE_URL", value="https://docs.example.com")[1]["reason"], "url_proxy")      # 설정이 없으면 잠김
+
     def test_rejections_carry_a_reason_code_and_the_field(self):
         """디자인 결정 2A(TD3): 거절 응답은 문장과 함께 reason 코드와 거절된 칸(field)을 준다."""
         self.as_owner()
