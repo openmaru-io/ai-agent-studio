@@ -43,6 +43,8 @@ export interface Me {
   own_pods?: string[];
   registry_error?: string;
   ws?: boolean; // 서버가 웹소켓(/ws)을 켰는가(AAS_WS). 꺼져 있으면 HTTP 로 읽는다
+  /** 브라우저가 여는 MindWiki 주소. MindWiki 를 함께 설치하지 않았으면 빈 값 — 상단 단추·저장 단추를 숨긴다(스펙 2026-11-23-019 G1·G4) */
+  mindwiki_url?: string;
   department?: string; // 보는 사람의 Keycloak 부서(없으면 빈 값). 오피스 이름에 쓴다(OMAI-1121)
   company_name?: string; // 설정 화면에 적은 회사명(미설정이면 빈 값)
   /** 비밀번호가 어디 있는가: keycloak · local · none. none 이면 내 정보 서랍은 변경 칸 대신 안내(스펙 2026-10-14-017) */

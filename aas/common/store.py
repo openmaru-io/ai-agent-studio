@@ -158,6 +158,13 @@ def connect():
     return conn
 
 
+
+def is_unique_violation(exc: BaseException) -> bool:
+    """고유 키 · 기본 키 위반인가 — SQLite(IntegrityError 의 UNIQUE)와 PostgreSQL(SQLSTATE 23505) 둘 다."""
+    if getattr(exc, "sqlstate", None) == "23505":
+        return True
+    return isinstance(exc, sqlite3.IntegrityError) and "UNIQUE constraint failed" in str(exc)
+
 _MIGRATED: set = set()
 
 

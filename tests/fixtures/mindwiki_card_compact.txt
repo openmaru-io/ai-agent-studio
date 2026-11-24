@@ -1,0 +1,4 @@
+card_format: compact/1
+```json
+{"type":"page","id":"01a1f7e5-0000-7000-8000-00000000a001","title":"보고서 마감은 언제인가요","database":{"id":"01a1f7e5-0000-7000-8000-0000000000d1","title":"문의"},"changedBy":{"id":"u-1","name":"앨리스"},"at":"2026-11-22T00:00:00Z","properties":{"처리 단계":{"type":"status","value":"접수"},"다시 맡긴 횟수":{"type":"number","value":1},"보완 들어옴":{"type":"checkbox","value":false}},"changed":{"처리 단계":{"from":"확인 필요","to":"접수"}},"empty_properties":["요약","질문 요점","분류"]}
+```

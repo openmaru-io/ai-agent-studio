@@ -1,7 +1,7 @@
 ---
 name: cogentai-mindwiki
-description: "MindWiki 찾기·읽기·고치기·수정 초안, aas-page-context 블록이 온 요청에 먼저 로드. 찾기는 tool_call→mcp__cogentai_mindwiki__search_pages. MindWiki 페이지 읽기는 mcp__cogentai_mindwiki__read_page(page_id). 답에 페이지 제목과 주소를 붙인다. 페이지·댓글 쓰기는 사용자가 허락할 때만 한다. mcp__cogentai_mindwiki__ 도구가 있을 때 고른다. 위키가 Outline(mcp__outline__*)이나 Docmost(mcp__docmost__*)면 그 스킬을 쓴다."
-version: 0.2.2
+description: "MindWiki 찾기·읽기·고치기·수정 초안, aas-page-context 블록이 온 요청에 먼저 로드. 찾기는 tool_call→mcp__cogentai_mindwiki__search_pages. MindWiki 페이지 읽기는 mcp__cogentai_mindwiki__read_page(page_id). 답에 페이지 제목과 주소를 붙인다. 페이지·댓글 쓰기는 사용자가 허락할 때만 한다. mcp__cogentai_mindwiki__ 도구가 있을 때 고른다. 위키가 Outline(mcp__outline__*)이나 Docmost(mcp__docmost__*)면 그 스킬을 쓴다. 멤버·팀스페이스·감사 기록·연동 상태를 물으면 관리 읽기 도구(list_members 등)."
+version: 0.2.3
 metadata:
   aas:
     auto_edit: false
@@ -79,7 +79,7 @@ selection:
 ## 1. 먼저 연결을 확인한다
 
 - `tool_call` 이 `mcp__cogentai_mindwiki__` 도구를 모른다고 하면 MindWiki 가 연결되지 않은 것이다. 이렇게 안내한다:
-  「AAS 의 내 AI 에이전트 > 프로파일 > 도구 탭 > 새 MCP 서버 > 카탈로그의 cogentai-mindwiki 에서 「MindWiki 계정으로 연결」을 누르세요(그 버튼이 없으면 MindWiki › 설정 › MCP 연결에서 만든 개인 토큰(wiki_pat_ 로 시작)을 넣으세요). 연결된 뒤 「새 대화」로 다시 물어 주세요. 이미 열려 있던 대화에는 새 도구가 보이지 않습니다.」
+  「AAS 의 내 AI 에이전트 > 프로파일 > 도구 탭 > 새 MCP 서버 > 카탈로그의 cogentai-mindwiki 에서 「MindWiki 계정으로 연결」을 누르세요(그 버튼이 없으면 MindWiki › 설정 › 연결 › 「MCP 연결」 탭에서 만든 개인 토큰(wiki_pat_ 로 시작)을 넣으세요. 「API 토큰」 탭의 wiki_api_ 토큰은 MCP 에 쓰지 못합니다). 연결된 뒤 「새 대화」로 다시 물어 주세요. 이미 열려 있던 대화에는 새 도구가 보이지 않습니다.」
 - 토큰을 대화에 붙여 넣으라고 하지 않는다. 사용자가 토큰을 대화에 붙여 넣으면 쓰지 말고, MindWiki 에서 그 토큰을 폐기하고 새 토큰을 화면으로 넣으라고 안내한다.
 - MindWiki 일에는 `mcp__cogentai_mindwiki__*` 도구만 쓴다. `manage_connections`·`setup_mcp` 를 부르지 않는다. MindWiki 는 이미 연결된 MCP 서버다. `mcp__cogentai_mindwiki__` 도구가 없으면 위 안내만 하고 멈춘다.
 
@@ -91,6 +91,14 @@ selection:
 - 데이터베이스(표) 페이지는 `list_databases` 로 찾고 `query_database` 로 행을 읽는다.
 - 페이지 목록·팀스페이스 구조(`list_pages`·`list_teamspaces`)는 사용자가 목록·구조를 직접 물을 때만 읽는다. 페이지를 찾으려고 목록을 다 읽지 않는다.
 - 페이지에 없는 내용을 지어내지 않는다. 찾지 못하면 찾지 못했다고 말한다.
+
+## 2b. 관리 정보 읽기
+
+- `list_members`(사람·역할·그룹·사용 중지), `list_teamspaces_admin`(모든 팀스페이스·소유자, `archived: true` 면 보관한 것), `read_audit_log`(최근 감사 기록), `integration_status`(연동마다 켜짐·상태·오류)는 읽기 도구다. MCP 토큰에 「관리 정보 읽기(admin_read)」가 있고, 토큰 주인이 지금 그 워크스페이스의 owner·admin 일 때만 보인다.
+- 멤버·역할·그룹, 워크스페이스의 모든 팀스페이스, 누가 언제 무엇을 바꿨는지, 연동이 도는지를 물으면 이 도구를 쓴다. `read_audit_log` 는 `action`(행동 이름 앞부분, 예: `integration.`·`api_token.`), `actor`(user_id), `since`·`until`(RFC 3339 시각), `limit`(100 까지)로 좁힌다. 바꾸기 전후 값과 IP 는 주지 않으니 지어내지 않는다.
+- 도구가 없으면 이렇게 안내한다: 「이 연결의 토큰에는 관리 정보 읽기 범위가 없습니다. MindWiki 의 owner·admin 이 설정 › 연결 › 「MCP 연결」 탭에서 「관리 정보 읽기」를 체크해 만든 토큰으로 연결해야 합니다. AAS 의 「MindWiki 계정으로 연결」로 만든 토큰에는 이 범위가 없습니다.」
+- 사람 초대·역할·그룹·팀스페이스 구성원·페이지 권한·연동 설정을 **바꾸는** 요청은 MCP 로 하지 못한다. MindWiki 화면의 설정에서 하도록 안내한다. 스크립트로 해야 하면 MindWiki 의 API 토큰(설정 › 연결 › 「API 토큰」 탭)을 쓰는 일이고, 이 에이전트는 그 토큰을 받거나 API 를 직접 부르지 않는다(§4).
+- 사람 이름·감사 기록 같은 관리 정보는 MindWiki 밖이나 여러 사람이 보는 곳에 옮기지 않는다(§6·§7).
 
 ## 3. 큰 페이지
 

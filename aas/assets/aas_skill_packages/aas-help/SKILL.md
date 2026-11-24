@@ -1,7 +1,7 @@
 ---
 name: aas-help
 description: "CogentAI AAS 화면 사용법(메뉴·하고 싶은 일별 단계). AAS 화면에서 무엇을 어디서 하는지 물으면 쓴다. / How to use the CogentAI AAS screens; use when asked where or how to do something in AAS."
-version: 1.0.14
+version: 1.0.16
 author: OPENMARU, Inc.
 metadata:
   aas:
@@ -19,6 +19,7 @@ metadata:
 - AI 에이전트 작업공간 목록에 「메모리 초과로 재시작」이 보이거나 대화에 「AI 에이전트 작업공간이 메모리 한도를 넘어 … 다시 시작되어 이 대화가 중단되었습니다」가 보이면: 작업 하나가 메모리 한도를 넘어 AI 에이전트 작업공간 전체가 다시 시작된 것이다. 그때 진행 중이던 대화·작업은 중단되었고, 같은 작업을 다시 보내면 또 멈출 수 있다. 「관리자에게 메모리 늘리기 요청」을 누르라고 안내한다. 관리자가 처리하면 AI 에이전트 작업공간이 한 번 다시 시작되고 결과 알림이 온다.
 - 대화의 작업 단계에 「모델 설정 때문에 막힘」이 보이거나 「BLOCKED by CogentAI AAS」가 나오면: 프로파일이나 도구(음성·그림 등)가 AAS LiteLLM 을 거치지 않는 모델 서버를 부르도록 설정되어 막힌 것이다. 같은 줄의 「관리자에게 요청」으로 설정 변경을 요청하라고 안내한다.
 - 프로파일을 지울 때: 그 프로파일로 열린 대화도 함께 닫힌다. 답하는 중이거나 뒤에서 일하는 대화, 진행 중인 스킬 설치가 있으면 지우지 않으니 끝난 뒤 다시 하라고 안내한다. 지워진 프로파일의 대화에는 「이 프로파일이 없어져 대화가 끝났습니다」가 보이고, 「새 대화」로 다른 AI 에이전트를 골라 이어 간다. 터미널의 hermes profile delete 는 그 프로파일로 열린 대화가 있으면 아무것도 지우지 않고 거절하므로 화면에서 지우라고 안내한다.
+- 프로파일 목록에 「MindWiki 자동화」 표시가 붙은 프로파일(mindwiki-auto, mwauto-<이름>): MindWiki 데이터베이스 자동화가 보낸 칸반 카드만 맡는 자동화 전용 프로파일이다. 채팅 고르기에는 보이지 않는다. MindWiki 자동화에 「복사할 프로파일」을 적으면 처음 실행할 때 그 프로파일의 설정(모델)·성격(SOUL)·작업 지침과 그 프로파일에서 켠 보호 스킬만 복사해 mwauto-<이름> 을 만든다. 채널·MCP 서버·사용자 스킬·기억은 복사하지 않고, MindWiki 쓰기는 자동화 실행의 대상 행에만 된다. 자동화에 쓸 스킬은 보호 스킬로 두어야 복사된다. 처음 한 번은 실행 기록이 「막힘」으로 남는다. AAS 에 다시 로그인한 뒤 MindWiki 에서 그 행의 계기를 다시 켜라고 안내한다. 복사할 프로파일을 고쳤으면 고친 내용이 따라가지 않으므로 프로파일 화면에서 mwauto-<이름> 을 지우라고 안내한다. 다음 실행이 다시 복사하고, 그 뒤 다시 로그인하고 행의 계기를 다시 켠다. 복사할 프로파일을 지웠으면 mwauto-<이름> 도 함께 지운다. 실행 기록 이유가 profile_unsafe 이면 mwauto-<이름> 을 지운 뒤 다시 켜고, 다시 막히면 AAS 관리자에게 알린다(관리자는 AAS 서버 로그의 mindwiki_auto_clone_failed·mindwiki_auto_profile_unsafe 줄에서 파드·이름·이유를 본다). profile_limit 이면 「MindWiki 자동화」 표시가 붙은 것 가운데 쓰지 않는 mwauto- 프로파일을 지운다(AI 에이전트 작업공간마다 3개). 이 자동화 프로파일들은 프로파일 개수 상한에서 세지 않는다.
 
 ### 메뉴 구조
 
@@ -369,6 +370,7 @@ When this happens (situations users run into and what to do):
 - If the AI Agent Workspace list shows "Restarted: out of memory" or a chat shows "The AI Agent Workspace went over its memory limit … and restarted at …, so this chat stopped": one task went over the memory limit and the whole AI Agent Workspace restarted. Chats and tasks running at that time were interrupted, and sending the same task again may stop it again. Tell the user to click "Ask an admin for more memory". When an administrator handles it, the AI Agent Workspace restarts once and a result notice arrives.
 - If a chat step shows "blocked by model settings" or "BLOCKED by CogentAI AAS": the profile or a tool (voice, images and so on) is set to call a model server that bypasses AAS LiteLLM, so the call was blocked. Tell the user to ask for a settings change with "Ask an admin" on that line.
 - When deleting a profile: chats open with that profile are closed too. If a chat is still answering or working in the background, or a skill is being installed, nothing is deleted, so tell the user to try again after it finishes. A chat whose profile was deleted shows "This profile no longer exists, so the chat has ended"; use "New chat" to pick another AI Agent. hermes profile delete in a terminal refuses without deleting anything while chats are open with that profile, so tell the user to delete it from the screen.
+- Profiles tagged "MindWiki automation" in the profile list (mindwiki-auto, mwauto-<name>): profiles used only for the kanban cards sent by MindWiki database automations. They are not shown in the chat picker. When a MindWiki automation names a "Profile to copy", the first run copies only the settings (model), personality (SOUL), work instructions and the protected skills turned on in it into mwauto-<name>. Channels, MCP servers, user skills and memories are not copied, and MindWiki writes go only to the rows of the automation run. A skill the automation needs must be a protected skill to be copied. The first run is recorded as "Blocked". Tell the user to sign in to AAS again, then turn the trigger of that row on again in MindWiki. Later changes to the copied profile are not followed, so tell the user to delete mwauto-<name> on the Profiles screen after changing it. The next run copies it again; then sign in again and turn the trigger of that row on again. If the copied profile was deleted, delete mwauto-<name> too. If the run reason is profile_unsafe, delete mwauto-<name> and turn the trigger on again; if it is blocked again, tell an AAS admin (the admin finds the AI Agent Workspace, name and reason in the mindwiki_auto_clone_failed and mindwiki_auto_profile_unsafe lines of the AAS server log). If it is profile_limit, delete an unused mwauto- profile tagged "MindWiki automation" (3 per AI Agent Workspace). These automation profiles are not counted against the profile limit.
 
 ### Menu structure
 

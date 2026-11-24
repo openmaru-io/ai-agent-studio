@@ -92,6 +92,12 @@ def create_app(background: bool = True) -> Starlette:
         from ..ops import mindwiki_connect
         if mindwiki_connect.config_warning():
             print(mindwiki_connect.config_warning(), flush=True)
+        from ..ops import mcp_servers
+        if mcp_servers.mindwiki_url_warning():                     # 브라우저용 주소 경고(스펙 2026-11-23-019 4-7)
+            print(mcp_servers.mindwiki_url_warning(), flush=True)
+        from ..ops import owner_guard
+        if owner_guard.owner_urls_log_line():                      # 허용 목록 해석 결과(스펙 2026-11-24-009 단계 3a). 값 원문은 적지 않는다
+            print(owner_guard.owner_urls_log_line(), flush=True)
         yield
 
     routes = [Route("/healthz", healthz), Route("/readyz", readyz)]

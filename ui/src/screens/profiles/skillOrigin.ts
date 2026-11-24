@@ -5,8 +5,9 @@
 
 import { t } from '@/i18n';
 
-/** Hermes provenance 중 「스킬」 탭 출처와 뜻이 같은 값(agent·external 은 뜻이 넓어 그대로 둔다) */
-const SAME_AS_ORIGIN: Record<string, string> = { bundled: 'bundled', hub: 'hub' };
+/** Hermes provenance 중 「스킬」 탭 출처와 뜻이 같은 값(agent·external 은 뜻이 넓어 그대로 둔다).
+ *  protected 는 AAS 서버가 아직 쓰지 않은 보호 스킬 줄에 붙인다(스펙 2026-11-21-003 §3-2) */
+const SAME_AS_ORIGIN: Record<string, string> = { bundled: 'bundled', hub: 'hub', protected: 'protected' };
 
 /**
  * 프로파일 패널 스킬 줄의 출처 이름표(스펙 2026-10-27-007 R6). 「스킬」 탭 목록에서 같은 프로파일·이름으로 찾은 origin 을 먼저 쓰고,
@@ -23,7 +24,7 @@ export function skillOriginLabel(
 }
 
 /** 「기본 제공」 출처(스펙 2026-10-27-011 R1): Hermes 기본·AAS 기본. 닫힌 목록이라 새 출처가 생기면 「내 스킬」 쪽에 보인다 */
-export const BUILTIN_ORIGINS: ReadonlySet<string> = new Set(['bundled', 'aas']);
+export const BUILTIN_ORIGINS: ReadonlySet<string> = new Set(['bundled', 'aas', 'protected']);
 
 /** 내 스킬인가: 기본 제공이 아닌 것 전부(직접·에이전트·스킬 허브·Hermes 허브·기본을 바꾼 것). 출처가 빈 줄도 내 스킬로 센다 */
 export const isMySkill = (origin?: string): boolean => !BUILTIN_ORIGINS.has(origin ?? '');

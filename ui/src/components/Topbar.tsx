@@ -29,6 +29,7 @@ import { shellColors, shellMetrics, toastTokens } from '@/lib/shellTokens';
 import { TipLines } from './AgentSwitch';
 import { AiChatButton } from './AiChatButton';
 import { useI18n } from './I18n';
+import { MindwikiLinkButton } from './MindwikiLinkButton';
 import { OfficeLinkButton } from './OfficeLinkButton';
 import { useThemeMode } from './ThemeMode';
 
@@ -156,6 +157,7 @@ export function Topbar({ collapsed, onToggleSidebar, onSearch, collected, collec
             </Box>
           </Box>
           <Box sx={{ ml: { xs: 0.5, sm: 1 }, display: 'flex', gap: { xs: 0.5, sm: 1 }, flexShrink: 0 }}>
+            <MindwikiLinkButton />
             <AiChatButton />
             <OfficeLinkButton />
           </Box>

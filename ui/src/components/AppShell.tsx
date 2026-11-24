@@ -24,6 +24,7 @@ import { GUIDES } from '@/lib/guides';
 import { guideSub, guideTitle } from '@/lib/guideText';
 import { buildMenus } from '@/lib/menu';
 import { reloadAtView, switchPod } from '@/lib/pod';
+import { AAS_TAB, startProductTab } from '@/lib/productTab';
 import { FOCUS_RING, shellColors, shellMetrics } from '@/lib/shellTokens';
 import { useNotices } from '@/lib/useNotices';
 import { viewById, viewVisible } from '@/lib/views';
@@ -97,6 +98,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const me = useMe();
   useEffect(() => wsClient.configure(!!me.data?.ws, me.data?.pod?.id), [me.data?.ws, me.data?.pod?.id]); // 서버가 켰을 때만 웹소켓으로 받는다
   useEffect(() => (me.data?.auth_enabled ? startActivity() : undefined), [me.data?.auth_enabled]); // 조작할 때만 로그인을 연장한다(OMAI-1112)
+  // MindWiki 와 탭 하나로 오가기(스펙 2026-11-23-019 L1): 앱 셸에서만 탭 이름과 ping 응답을 단다(위젯은 AppShell 을 쓰지 않는다)
+  const mindwikiUrl = me.data?.mindwiki_url ?? '';
+  useEffect(() => (mindwikiUrl ? startProductTab(AAS_TAB, mindwikiUrl) : undefined), [mindwikiUrl]);
   // 주 프로파일(main) 준비가 끝나면 프로파일을 쓰는 목록(채팅·스킬 허브·프로파일)을 다시 받아 main 이 저절로 나타나게 한다(2026-10-19-001 디자인 D8)
   const primaryReady = me.data?.primary?.ready;
   const wasPreparing = useRef(false);

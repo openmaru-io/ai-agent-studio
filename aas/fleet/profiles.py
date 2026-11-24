@@ -15,7 +15,7 @@ from . import env_desc
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}\Z")
 ACTIONS = {"describe", "soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "config", "config_preview", "config_revert", "model", "gateway", "skill", "toolset", "mcp", "mcp_test", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_apply", "mcp_url_check", "mcp_to_oauth",
-           "create", "rename", "export", "delete", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear"}
+           "create", "rename", "export", "delete", "env_set", "env_clear", "channel_save", "channel_remove", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear"}
 ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{1,63}\Z")
 
 

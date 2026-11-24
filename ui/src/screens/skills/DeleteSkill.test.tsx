@@ -30,6 +30,11 @@ describe('deleteMode — 숨김과 비활성+이유(DD3)', () => {
       expect(deleteMode(s, ctx).kind).toBe('none');
     expect(deleteMode(HUB, { ...ctx, market: undefined }).kind).toBe('none');            // 스킬 허브 기록을 아직 못 읽었다
   });
+  it('보호 스킬은 지우지 않고 보호 스킬 이유를 댄다(스펙 2026-11-21-003)', () => {
+    const got = deleteMode({ ...MINE, origin: 'protected', delete_block: 'origin' }, ctx);
+    expect(got.kind).toBe('none');
+    expect('why' in got ? got.why : '').toBe('AAS 서버가 관리하는 보호 스킬은 지울 수 없습니다. 끄면 사본이 지워집니다');
+  });
   it('내 스킬은 보관, 공용·같은 이름·이름 규칙은 이유와 함께 잠근다', () => {
     expect(deleteMode(MINE, ctx)).toEqual({ kind: 'archive' });
     expect(deleteMode({ ...MINE, profile: 'default' }, ctx)).toEqual({ kind: 'archive', disabled: '공용 스킬은 관리자만 지울 수 있습니다' });

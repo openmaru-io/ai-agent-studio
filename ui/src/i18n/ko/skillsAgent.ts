@@ -161,6 +161,7 @@ export default {
   'skillsAgent.env.close': '닫기',
   'skillsAgent.env.unknown': '저장됐는지 확인하지 못했습니다. 다시 저장하면 같은 값으로 덮어씁니다',
   'skillsAgent.env.adminOnly': '이 키는 관리자만 넣을 수 있습니다. 관리자에게 스킬 이름과 키 이름을 알려 주세요',
+  'skillsAgent.env.applyAllowed': '관리자가 정한 주소 넣기',
   'skillsAgent.env.copyKey': '키 이름 복사',
   'skillsAgent.env.channelVar': '채널 탭에서 바꾸세요',
   'skillsAgent.env.retryLater': '잠시 뒤 다시 저장하세요',

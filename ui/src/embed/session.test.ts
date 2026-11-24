@@ -113,6 +113,18 @@ describe('토큰 교환과 요청 계층', () => {
     expect(chat.openAgent).toHaveBeenCalledWith('@primary', 'pod-a');
   });
 
+  it('호스트가 준 프로파일로 처음 열고, pickAgent 는 그 파드 · 프로파일로 바꾼다(스펙 2026-11-21-002 §3-7)', async () => {
+    const fetchImpl = vi.fn(async () => json({ token: 'emb-1', expires: Date.now() + 15 * 60_000, sticky: 'stk', protocol: [1, 1], ws: true }));
+    const { s, store, chat } = setup(fetchImpl as unknown as typeof fetch, { cookie: `TK=${jwt({ sub: 'u1', exp: 9e9 })}` }, { agent: 'pod-a', profile: 'team' });
+    await s.start();
+    await vi.waitFor(() => expect(store.get().status).toBe('ready'));
+    expect(chat.openAgent).toHaveBeenCalledWith('team', 'pod-a');
+    await s.pickAgent('pod-b', 'other');
+    expect(chat.openAgent).toHaveBeenLastCalledWith('other', 'pod-b');
+    await s.pickAgent('pod-c');
+    expect(chat.openAgent).toHaveBeenLastCalledWith('@primary', 'pod-c');
+  });
+
   it('만료 1분 전에 다시 교환하고, 같은 사용자면 같은 웹소켓에 auth 를 다시 보낸다', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
     let n = 0;

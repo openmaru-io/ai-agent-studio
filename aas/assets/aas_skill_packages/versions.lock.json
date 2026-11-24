@@ -1,7 +1,7 @@
 {
   "aas-help": {
-    "sha256": "649583a99a78be1b44c4be31cf7a58b8c65eebb7c29b8de2ac073ad60481ab73",
-    "version": "1.0.14"
+    "sha256": "3ce146ec00d8e4e979be899458bd1c2380e51578a3ca151f18c0485470a06ba0",
+    "version": "1.0.16"
   },
   "business-card-ocr": {
     "sha256": "afe581f4c7ebb74e29347c51812db5e0a68653e337ec5232e3e0b30055cf0048",
@@ -16,8 +16,8 @@
     "version": "0.2.3"
   },
   "cogentai-mindwiki": {
-    "sha256": "a1321f193537c2da85fcca1a6c48f0e211be2529a480281225038dc9cdf478a1",
-    "version": "0.2.2"
+    "sha256": "2ee970286871419191f3e60e9324f0fd4e97366776c8a0f4749eda5c47a17089",
+    "version": "0.2.3"
   },
   "doc-to-markdown": {
     "sha256": "f3dab444cc7e24c66fa14d5f4f3acd0c74a7b2f1b18ac6048d90cb14c457ec14",

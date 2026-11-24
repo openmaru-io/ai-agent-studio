@@ -59,6 +59,7 @@ import { Toggle } from '@/screens/profiles/Panes';
 import { useProfileAct } from '@/screens/profiles/shared';
 import { BulkDeleteDialog, DeleteMode, useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import { ProtectedRules } from '@/screens/skills/ProtectedRulesEditor';
 import { isManagedEnv, RequiredEnv, SkillEnvButton, SkillEnvProvider } from '@/screens/skills/SkillEnvDialog';
 import { SkillsViewToggle } from '@/screens/skills/SkillsViewToggle';
 
@@ -2587,7 +2588,8 @@ function FilesPane({ row, one }: { row: AgentSkillRow; one?: SkillOne }) {
           {t('skills.editAction')}
         </ChatChip>
       </Stack>
-      {!one.shared_from && one.origin !== 'aas' && <DownloadSkill s={one} />}
+      {!one.shared_from && one.origin !== 'aas' && one.origin !== 'protected' && <DownloadSkill s={one} />}
+      {one.origin === 'protected' && <ProtectedRules profile={one.profile} skill={one.name} />}
       {!!f.data?.siblings?.length && (
         <Section
           title={t('skillsAgent.folderFiles')}

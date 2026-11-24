@@ -112,7 +112,10 @@ services:
       AAS_DOCMOST_MCP_URL: ${AAS_DOCMOST_MCP_URL:-}
       # Outline MCP 카탈로그 항목의 주소 미리 채우기(선택)
       AAS_OUTLINE_MCP_URL: ${AAS_OUTLINE_MCP_URL:-}
+      # 소유자가 넣을 수 있는 접속 주소 변수와 그 출처(스펙 2026-11-24-009). 서비스는 env_file 없이 이름을 하나씩 넘기므로 여기 적어야 서버에 닿는다
+      AAS_OWNER_ENV_URLS: ${AAS_OWNER_ENV_URLS:-}
       AAS_MINDWIKI_URL: ${AAS_MINDWIKI_URL:-}
+      AAS_MINDWIKI_PUBLIC_URL: ${AAS_MINDWIKI_PUBLIC_URL:-}
       AAS_MINDWIKI_ACCOUNT_CONNECT: ${AAS_MINDWIKI_ACCOUNT_CONNECT:-false}
       AAS_MINDWIKI_WORKSPACE: ${AAS_MINDWIKI_WORKSPACE:-}
       AAS_MINDWIKI_AUTO_CHECK: ${AAS_MINDWIKI_AUTO_CHECK:-true}

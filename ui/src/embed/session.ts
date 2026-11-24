@@ -338,7 +338,7 @@ export class EmbedSession {
   /** 첫 AI 에이전트를 연다(설정의 agent·앱의 기본 AI 에이전트가 허용 목록에 있으면 그것). 쓸 AI 에이전트가 없으면 대화 대신 상태 표의 「AI 에이전트 없음」 */
   async openAgent(pod?: string): Promise<void> {
     const chat = this.deps.chat;
-    await chat.openAgent(PRIMARY, pod ?? (this.preferred() || undefined));
+    await chat.openAgent(this.cfg.profile || PRIMARY, pod ?? (this.preferred() || undefined));
     if (this.destroyed) return;
     if (chat.status?.pod) this.deps.ws.pod = chat.status.pod;
     this.setStatus(this.noAgent() ? 'no_agent' : 'ready');
@@ -346,8 +346,8 @@ export class EmbedSession {
 
 
   /** 고른 AI 에이전트로 바꾼다. 웹소켓의 pod 도 다시 알린다 */
-  async pickAgent(pod: string): Promise<void> {
-    await this.deps.chat.openAgent(PRIMARY, pod);
+  async pickAgent(pod: string, profile?: string): Promise<void> {
+    await this.deps.chat.openAgent(profile || PRIMARY, pod);
     this.deps.ws.pod = pod;
     this.deps.ws.reauth();
   }

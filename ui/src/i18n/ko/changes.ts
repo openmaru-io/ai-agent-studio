@@ -106,6 +106,7 @@ export default {
   'changes.kind.profile_mcp': 'MCP 서버 사용 여부를 바꿈',
   'changes.kind.profile_env_set': '비밀값을 저장함',
   'changes.kind.profile_env_clear': '비밀값을 삭제함',
+  'changes.kind.profile_channel_remove': '메신저 연결을 삭제함',
   'changes.kind.profile_credential_put': '인증 파일을 넣거나 바꿈',
   'changes.kind.profile_credential_clear': '인증 파일을 지움',
   'changes.kind.skill_save': '스킬 문서를 수정함',

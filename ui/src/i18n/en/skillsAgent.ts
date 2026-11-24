@@ -162,6 +162,7 @@ export default {
   'skillsAgent.env.close': 'Close',
   'skillsAgent.env.unknown': 'Could not confirm it was saved. Saving again overwrites it with the same value',
   'skillsAgent.env.adminOnly': 'Only an admin can set this key. Tell an admin the skill name and key name',
+  'skillsAgent.env.applyAllowed': 'Use the admin-set address',
   'skillsAgent.env.copyKey': 'Copy key name',
   'skillsAgent.env.channelVar': 'Change it in the Channels tab',
   'skillsAgent.env.retryLater': 'Save again in a moment',

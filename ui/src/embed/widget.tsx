@@ -45,10 +45,11 @@ export const WIDGET_METHODS = [
   'sendMessage',
   'setContext',
   'focus',
+  'setAgent',
 ] as const;
 
 /** 이 위젯 판이 지원하는 호스트 기능(스펙 2026-11-15-002 D17). 호스트는 이 목록을 보고 전환을 보일지 정한다 */
-export const WIDGET_FEATURES = ['rect', 'context', 'headerAction', 'status', 'saveAnswer'] as const;
+export const WIDGET_FEATURES = ['rect', 'context', 'headerAction', 'status', 'saveAnswer', 'agent'] as const;
 
 export type OpenRect = { left: number; top: number; width: number; height: number };
 
@@ -337,6 +338,14 @@ export class CogentAIAASWidgetWrapper {
       cfg.getAccessToken !== prev.getAccessToken
     )
       void this.session.onUnauthorized();
+  }
+
+  /** AI 에이전트(작업공간)와 프로파일을 바꿔 연다(AAS 스펙 2026-11-21-002 §3-7, 기능 'agent'). 호스트가 사용자의 기본 에이전트를
+   * 바꿨을 때 부른다. 허용 목록에 없는 에이전트면 지금 것을 그대로 둔다 */
+  setAgent(pod: string, profile?: string): void {
+    if (!pod) return;
+    this.store.set({ config: { ...this.config, agent: pod, profile: profile || undefined } });
+    void this.session.pickAgent(pod, profile);
   }
 
   updateTheme(theme: 'light' | 'dark'): void {

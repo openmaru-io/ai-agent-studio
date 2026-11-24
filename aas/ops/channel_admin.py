@@ -75,6 +75,37 @@ _KO_TEST = [
 ]
 
 
+# Hermes 가 저장 때 값 모양으로 거절한 문장(hermes_cli/web_routers/messaging.py `_ENV_VALUE_RULES`)
+# → (칸, 한국어 문장, 영어 문장). 영어도 고정 문장을 쓴다: Hermes 문장은 redact 를 거쳐
+# "Basic Information" 이 "Basic ***" 로 가려진다. 스펙 2026-11-23-002 D6
+_SAVE_ERRORS = [
+    (r"Slack Bot Token must start with xoxb-\..*", "SLACK_BOT_TOKEN",
+     # i18n-ignore: (한국어, 영어) 짝 — save_error 가 tr(ko, en) 으로 고른다
+     "봇 토큰은 xoxb- 로 시작해야 합니다. Slack 앱 설정 › Install App 의 Bot User OAuth Token 을 넣으세요. "
+     "앱 토큰(xapp-)과 칸이 바뀌지 않았는지 확인하세요.",
+     "The bot token must start with xoxb-. Enter the Bot User OAuth Token under Slack app settings › Install App. "
+     "Check that it was not swapped with the app token (xapp-)."),
+    (r"Slack App Token must start with xapp-\..*", "SLACK_APP_TOKEN",
+     # i18n-ignore: (한국어, 영어) 짝 — save_error 가 tr(ko, en) 으로 고른다
+     "앱 토큰은 xapp- 로 시작해야 합니다. Slack 앱 설정 › Basic Information › App-Level Tokens 의 값을 넣으세요. "
+     "봇 토큰(xoxb-)과 칸이 바뀌지 않았는지 확인하세요.",
+     "The app token must start with xapp-. Enter the value under Slack app settings › Basic Information › "
+     "App-Level Tokens. Check that it was not swapped with the bot token (xoxb-)."),
+    (r"Slack allowed user IDs must be comma-separated member IDs.*", "SLACK_ALLOWED_USERS",
+     # i18n-ignore: (한국어, 영어) 짝 — save_error 가 tr(ko, en) 으로 고른다
+     "허용 사용자에는 U 로 시작하는 Slack 멤버 ID 를 쉼표로 구분해 넣으세요.",
+     "Enter allowed users as Slack member IDs that start with U, separated by commas."),
+]
+
+
+def save_error(message: str) -> tuple[str, str] | None:
+    """Hermes 저장 거절 문장을 (칸 이름, 화면 언어 문장)으로 바꾼다. 모르는 문장이면 None"""
+    for pat, field, ko, en in _SAVE_ERRORS:
+        if re.fullmatch(pat, message, re.S):
+            return field, tr(ko, en)
+    return None
+
+
 def _test_message(message: str) -> str:
     """화면 언어에 맞는 연결 시험 문장. 영어 화면은 Hermes 문장 그대로"""
     for pat, ko in _KO_TEST:

@@ -101,7 +101,7 @@ function Row({ side, head, foot, actions, pinActions, enter, children }: Message
         )}
         {children}
         {actions && (
-          <Box className="chat-row-actions" sx={{ mt: 0.25, display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+          <Box className="chat-row-actions" sx={{ mt: 0.25, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
             {actions}
           </Box>
         )}

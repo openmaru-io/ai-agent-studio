@@ -154,6 +154,50 @@ docker compose down -v     # 볼륨까지 지운다
 | `AAS_ALLOWED_HOSTS` | 허용할 Host. 비우면 `AAS_PORT` 를 따라간다 |
 | `AAS_TRUSTED_PROXY` | AAS 앞 HTTPS 리버스 프록시의 `X-Forwarded-Proto` 를 믿을 연결(`true` 또는 CIDR). 비우면 http 로 보아 localhost 가 아닌 주소에서는 비밀값 탭이 막힌다 |
 
+## 소유자가 넣는 접속 주소(AAS_OWNER_ENV_URLS, 스펙 2026-11-24-009)
+
+**받는 것은 https 출처(스킴·호스트·포트)뿐이고 경로는 받지 않는다.**
+
+이름이 `_BASE_URL` 로 끝나는 비밀값은 원래 관리자만 넣는다. 스킬이 쓰는 문서 서버 주소처럼 소유자가 직접 넣게 하려면, 관리자가 이 설정에 이름과 출처를 짝으로 적는다. 그러면 소유자 화면에는 입력란 대신 「관리자가 정한 주소 넣기」 단추가 나오고, 서버는 그 출처와 같은 값만 받는다. 이 검사는 화면·API 를 거친 실수를 막을 뿐 보안 경계는 아니다. 에이전트는 자기 `.env` 를 읽을 수 있다.
+
+```bash
+# .env (여러 항목은 쉼표로)
+AAS_OWNER_ENV_URLS=DOCS_BASE_URL=https://docs.example.com,WIKI_BASE_URL=https://wiki.example.com
+```
+
+```yaml
+# docker-compose 의 aas 서비스(이 폴더의 두 파일은 이미 넘긴다)
+environment:
+  AAS_OWNER_ENV_URLS: ${AAS_OWNER_ENV_URLS:-}
+```
+
+```yaml
+# 쿠버네티스 aas-server 배포의 env (값에 = 와 , 가 있으므로 따옴표로)
+- name: AAS_OWNER_ENV_URLS
+  value: "DOCS_BASE_URL=https://docs.example.com"
+```
+
+- 서버는 환경변수를 먼저 읽고, 비어 있으면 설정 파일(`AAS_CONFIG_DIR/aas.env`)을 읽는다. 값을 바꾼 뒤에는 `aas` 를 다시 띄운다. compose 는 `docker compose up -d aas` 로 다시 만든다. `restart` 로는 `environment:` 를 다시 읽지 않는다.
+- 서버가 시작할 때 해석 결과를 한 줄 남긴다(`docker compose logs aas | grep AAS_OWNER_ENV_URLS`). 칸은 「연 이름」·「접두어로 잠김」·「버린 항목(사유)」·「덮인 이름」이고, 값 원문은 적지 않는다.
+- 이름마다 출처는 하나다. 같은 이름이 두 번 나오면 뒤 항목이 앞을 덮는다.
+- 다음 항목은 버린다.
+  - 이름이 `_BASE_URL` 로 끝나지 않음(`not_base_url`)
+  - 이름에 소문자가 들었거나 `=` 가 없음(`malformed`)
+  - https 가 아니거나 경로·계정·질의가 붙은 주소, IP 주소 그대로이거나 `localhost` 인 주소(`bad_origin`)
+- 다음 이름은 목록에 적어도 열리지 않는다.
+  - 모델·플랫폼 주소(`OPENAI_`·`ANTHROPIC_`·`HERMES_`·`LITELLM_` 등 접두어)
+  - Hermes 변수 목록에서 범주가 provider·setting·messaging 인 이름
+  - 범주가 tool 인 주소(`HONCHO_BASE_URL` 등)는 적으면 열린다.
+- 경로가 필요한 변수는 목록에 올리지 않는다. 소유자는 출처만 넣을 수 있어서, 덮어쓰면 스킬이 깨진다.
+- 목록을 바꿔도 이미 저장된 값은 다시 검사하지 않는다. 목록에서 뺀 이름의 값은 소유자가 지울 수 없으니 관리자가 지운다. 관리자 계정으로 프로파일 → 「비밀값」 → 그 이름 → 「지우기」를 누르거나, `POST /api/profile/action` 에 `{"action":"env_clear","name":"<프로파일>","target":"<이름>","confirm":"<이름>"}` 를 보낸다.
+- 스킬 작성자: SKILL.md 의 `required_environment_variables` 에 `*_BASE_URL` 을 선언하면, 관리자가 이 목록에 올렸을 때만 소유자가 넣을 수 있다. 템플릿에는 이런 이름을 선언할 수 없다. 설치마다 목록이 다르기 때문이다.
+
+| 거절 사유 코드 | 뜻 | 할 일 |
+|---|---|---|
+| `url_proxy` | 접속 주소 이름이라 관리자만 넣는다(목록에 없거나, 목록에 있어도 모델·플랫폼 주소) | 관리자가 넣거나 목록에 올린다. 목록에 적었는데도 이 코드가 나오면 시작 로그의 「접두어로 잠김」을 본다 |
+| `url_not_allowed` | 목록의 출처와 다른 값, 또는 지금 목록에 없음 | 「관리자가 정한 주소 넣기」 단추를 쓴다 |
+| `list_unreadable` | Hermes 변수 목록을 읽지 못함 | 잠시 뒤 다시 시도한다 |
+
 ## Keycloak SSO 확인
 
 ```bash

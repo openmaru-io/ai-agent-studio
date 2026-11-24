@@ -48,6 +48,8 @@ export interface EnvVar {
   category?: string;
   /** 주인 화면에서 서버가 막는 변수의 잠금 사유(빈 문자열이면 바꿀 수 있다, 디자인 결정 2C) */
   locked?: string;
+  /** 관리자가 AAS_OWNER_ENV_URLS 로 허용한 출처. 있으면 입력란 대신 「관리자가 정한 주소 넣기」 단추(스펙 2026-11-24-009 단계 1b). 소유자에게만 온다 */
+  allowed_origin?: string;
 }
 export interface SkillItem {
   name: string;
@@ -132,6 +134,8 @@ export interface AgentsDoc extends Doc {
   never_saved?: boolean;
 }
 export interface ProfileDetailData {
+  /** 아직 넣지 않은 이름(?key= 로 여는 새 이름 칸)용 허용 출처(이름 → 출처, 스펙 2026-11-24-009 단계 1b). 소유자에게만 온다 */
+  allowed_origins?: Record<string, string>;
   profile: ProfileRow;
   can_edit: boolean;
   /** 지금 POD 의 주인인가. 주인은 SOUL 과 스킬 켜고 끄기를 바꾼다(OMAI-1126, 스펙 2026-10-13-014) */

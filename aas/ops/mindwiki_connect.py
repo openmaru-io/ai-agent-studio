@@ -151,11 +151,11 @@ def token_days(write: bool) -> int:
 
 
 def token_body(profile: str, write: bool) -> dict:
-    """POST /api/tokens 본문. 자동화 전용 프로파일(mindwiki-auto…)의 쓰기 토큰은 자동화 전용이다(스펙 2026-11-15-002 D24): MindWiki 가 그
-    토큰의 쓰기를 열린 자동화 실행의 대상으로만 받는다."""
-    from .mindwiki_webhook import AUTO_PROFILES
+    """POST /api/tokens 본문. 자동화 전용 프로파일(mindwiki-auto…, 고른 프로파일의 복제본 mwauto-…)의 쓰기 토큰은 자동화 전용이다
+    (스펙 2026-11-15-002 D24, 2026-11-21-002 §3-2 3): MindWiki 가 그 토큰의 쓰기를 열린 자동화 실행의 대상으로만 받는다."""
+    from .mindwiki_webhook import is_auto_profile
     body = {"name": token_name(profile), "write": write, "days": token_days(write)}
-    if write and profile in AUTO_PROFILES:
+    if write and is_auto_profile(profile):
         body["automation"] = True
     return body
 
@@ -260,6 +260,10 @@ def forget(pod: str, profile: str, opt_out: bool = False) -> int:
                          "auto_reason='', lease_until=0 WHERE product=? AND pod=? AND profile=?", (PRODUCT, pod, profile))
         else:
             conn.execute("DELETE FROM connector_tokens WHERE product=? AND pod=? AND profile=?", (PRODUCT, pod, profile))
+    # 기억한 저장 위치도 지운다 — 지우지 않으면 다시 연결한 뒤(다른 워크스페이스일 수 있다) 옛 위치로 저장하려 한다.
+    # forget_targets 를 부르는 운영 코드가 없던 빈틈을 여기서 막는다(스펙 2026-11-23-019 R2·1a, 리뷰 spec3 1-1)
+    from . import mindwiki_save
+    mindwiki_save.forget_targets(pod, profile)
     return sum((1 if r["tid"] else 0) + (1 if r["prev_tid"] else 0) for r in rows)
 
 
@@ -531,7 +535,7 @@ def _commit_new(sub: str, pod: str, profile: str, owner: str, *, tid: str, ws: s
     old_prev, old_prev_ws = str(old.get("prev_tid") or ""), str(old.get("prev_workspace") or old_ws)
     keep_prev = bool(old_tid) and old_tid != tid and old_ws == ws
     cols = {"tid": tid, "workspace": ws, "write": 1 if write else 0, "name": name, "expires_at": expires_at, "status": "connected", "reason": "",
-            "detail": "", "tool_count": len(mcp_servers._mindwiki_tools(write)), "lease_until": 0, "last_checked": _iso(_now()),
+            "detail": "", "tool_count": len(mcp_servers._mindwiki_tools(write, profile)), "lease_until": 0, "last_checked": _iso(_now()),
             "prev_tid": old_tid if keep_prev else "", "prev_expires_at": str(old.get("expires_at") or "") if keep_prev else "",
             "prev_workspace": old_ws if keep_prev else "", "auto_reason": "", "auto_streak": 0, "next_check_at": now() + CHECK_EVERY}
     if notified is not None:
@@ -753,8 +757,9 @@ def _auto_first(sub: str, pod: str, profile: str, owner: str, token: str, host: 
     """주 프로파일 자동 첫 연결(A1·A2): 쓰기 허용(사용자 결정 2026-11-15, 처음에는 읽기 전용), 워크스페이스가 정해질 때만.
     연결되면 행에 안내 표시(notified_at='auto'). MindWiki 가 연결 client 의 쓰기 토큰을 막았으면(write_disabled) 읽기로 연결한다."""
     # 여럿이면 need_workspace → 건너뜀(화면은 2단계 고르기 안내). 자동화 전용 프로파일은 웹훅이 적어 둔 워크스페이스로(want_auto)
-    from .mindwiki_webhook import AUTO_PROFILES
-    auto = profile in AUTO_PROFILES
+    # 복제본(mwauto-…)은 주 프로파일이 아니지만 웹훅이 둔 빈 행(want_auto)으로 여기 온다 — 같은 자동화 전용 첫 연결(스펙 2026-11-21-002 §3-2 3)
+    from .mindwiki_webhook import is_auto_profile
+    auto = is_auto_profile(profile)
     ws = _pick_workspace(_call("GET", "/api/me", token), str(row.get("workspace") or "") if auto else "", "")
     try:
         tid = _issue(token, sub, pod, profile, owner, ws, True, row, host, "auto")

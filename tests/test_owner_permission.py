@@ -57,7 +57,7 @@ class ProfileActionTest(unittest.TestCase):
         # mcp_mindwiki_write 는 OMAI-2018(스펙 2026-11-14-001)에서 Docmost·Outline 쓰기 스위치와 같은 권한으로 더했다. mcp_mindwiki_connect(2단계)는 주인 자신의 MindWiki 계정으로만 — 핸들러가 남의 작업공간이면 관리자도 403. mcp_mindwiki_ack(3단계, 스펙 2026-11-14-012)는 자동 첫 연결 안내 닫기로, 요청한 사람 자신의 행만 바꾼다
         # 작업 지침(AGENTS.md) 넷은 OMAI-1340(스펙 2026-10-19-004 D2·§10 H3)에서 SOUL 과 같은 권한으로 더했다
         # pairing_clear(연결 대기 비우기)는 OMAI-2092(스펙 2026-11-17-008 §5-3)에서 페어링 승인·철회와 같은 권한으로 더했다
-        allowed = {"soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "skill", "toolset", "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",
+        allowed = {"soul", "soul_preview", "soul_revert", "agents", "agents_preview", "agents_revert", "agents_ack", "skill", "toolset", "env_set", "env_clear", "channel_save", "channel_remove", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",
                    "config", "config_preview", "config_revert", "mcp", "mcp_test", "rename", "create", "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_apply", "mcp_url_check", "mcp_to_oauth"}
         self.assertEqual(server.OWNER_PROFILE_ACTIONS, allowed)                                  # 조용히 넓어지지 않게 정확한 집합을 고정한다
         for action in allowed:

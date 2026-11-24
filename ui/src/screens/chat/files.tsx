@@ -180,6 +180,36 @@ export function AnswerMarkdown({ text, store }: { text: string; store: ChatStore
   return <Markdown text={text} files={files} />;
 }
 
+/** 답의 결과 파일 칩 + 「MindWiki 에 저장」(스펙 2026-11-23-019 S2). 올린 파일 칩(SentFiles)에는 두지 않는다 — FileChip 은 그대로 두고 여기서만 붙인다.
+ *  마우스 화면에서는 칩에 마우스를 올리거나 초점이 갔을 때, 손가락 화면에서는 늘 보인다(Design D10). 막힌 파일(공유·지움)은 뺀다 */
+function ResultChip({ file, store }: { file: FileRef; store: ChatStore }) {
+  const tk = useChatTokens();
+  const blocked = !!personalFile(store, file).blocked;
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        '@media (pointer: fine)': { '& .mw-chip-save': { opacity: 0 }, '&:hover .mw-chip-save, &:focus-within .mw-chip-save': { opacity: 1 } },
+      }}
+    >
+      <FileChip file={file} store={store} />
+      {store.pod && store.profile && !blocked && (
+        <Box component="span" className="mw-chip-save" sx={{ display: 'inline-flex' }}>
+          <SaveFileToMindwiki
+            pod={store.pod}
+            profile={store.profile}
+            path={file.path}
+            name={file.name}
+            sx={{ p: 0.5, color: tk.muted, '&:hover': { color: tk.text }, '@media (pointer: coarse)': { minWidth: 44, minHeight: 44 } }}
+          />
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 /** 답 아래 「이번 답에서 바뀐 파일」 묶음(D5). 서버가 정렬·거름·자르기를 마쳤다. */
 export function FilesBlock({ item, store }: { item: Item; store: ChatStore }) {
   const [all, setAll] = useState(false);
@@ -202,7 +232,7 @@ export function FilesBlock({ item, store }: { item: Item; store: ChatStore }) {
       </Typography>
       <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
         {shown.map((f) => (
-          <FileChip key={f.path} file={f} store={store} />
+          <ResultChip key={f.path} file={f} store={store} />
         ))}
         {more > 0 && (
           <Button size="small" onClick={() => setAll(true)}>

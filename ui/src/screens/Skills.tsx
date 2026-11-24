@@ -45,6 +45,7 @@ import { isMySkill } from '@/screens/profiles/skillOrigin';
 import { agentOrder, AgentSkills, type AgentSkillsData } from '@/screens/skills/AgentSkills';
 import { useSkillDelete } from '@/screens/skills/DeleteSkill';
 import { DownloadSkill } from '@/screens/skills/DownloadSkill';
+import { ProtectedRules } from '@/screens/skills/ProtectedRulesEditor';
 import {
   isManagedEnv,
   ManagedEnvLines,
@@ -62,7 +63,7 @@ interface SkillRow {
   description_src?: string;
   description_by?: string;
   profile: string;
-  /** 출처(bundled·bundled_modified·hub·market·agent·local) — 서버가 Hermes 파일을 읽어 판정한다 */
+  /** 출처(bundled·bundled_modified·hub·market·agent·local·protected) — 서버가 Hermes 파일을 읽어 판정한다 */
   origin?: string;
   /** 설정의 skills.external_dirs 로 다른 프로파일에서 가져온 스킬이면 그 프로파일 이름(스펙 2026-10-15-011 D6) */
   shared_from?: string;
@@ -576,6 +577,15 @@ function SkillDetail({ s0 }: { s0: SkillRow }) {
         <Alert severity="info" sx={{ mb: 1 }}>
           {t('skills.originNoteAas')}
         </Alert>
+      ) : s.origin === 'protected' ? (
+        // 보호 스킬은 AAS 서버가 쓰고 되돌린다 — 고치기·내려받기를 두지 않는다(스펙 2026-11-21-003 §3-2)
+        <>
+          <Alert severity="info" sx={{ mb: 1 }}>
+            {t('skills.originNoteProtected')}
+          </Alert>
+          {/* 설치 규칙(스펙 2026-11-24-001 6절 D6): 파일 대신 이 설치에 더할 규칙을 쓴다 */}
+          <ProtectedRules profile={s.profile} skill={s.name} />
+        </>
       ) : s.shared_from ? (
         <Alert severity="info" sx={{ mb: 1 }}>
           {t('skills.sharedNote', { name: s.shared_from === 'default' ? t('skills.shared') : s.shared_from })}

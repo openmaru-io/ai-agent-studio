@@ -7,6 +7,7 @@
 // 연결한 메신저만 카드로 보이고, 「+ 메신저 연결」 대화 상자에서 ① 메신저를 고르고 ② 값을 채운다(2026-10-18: 모든 메신저를 펼치면 너무 길다).
 import AddIcon from '@mui/icons-material/Add';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import NetworkCheckOutlinedIcon from '@mui/icons-material/NetworkCheckOutlined';
 import {
@@ -37,6 +38,7 @@ import { get } from '@/lib/api';
 import { useMe } from '@/lib/data';
 
 import { calmAlertSx, capWhy, mayManage, useProfileAct } from './shared';
+import { SLACK_MANIFEST } from './slackManifest';
 import { useProfileSpot } from './spot';
 import type { ProfileDetailData } from './types';
 
@@ -95,7 +97,69 @@ function causeText(tr: TestResult['test']): string {
   return key ? t(`profiles.chan.cause.${key}`, { message: detail }) : detail;
 }
 
-function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok: boolean; pairing: ChannelsData['pairing'] }) {
+// 저장 전 칸 아래 도움말이 따로 있는 변수(시작 글자와 Slack 메뉴 위치, 스펙 2026-11-23-002 D5)
+const TOKEN_HELP = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'];
+
+/** 토큰 칸 도움말. 필수 칸은 앞에 「필수 값」을 붙인다 */
+function tokenHelp(key: string, required: boolean): string {
+  const help = t(`profiles.chan.tokenHelp.${key}`);
+  return required ? `${t('profiles.chan.required')} · ${help}` : help;
+}
+
+/** Slack 창 맨 위의 접힌 「Slack 앱 만드는 법」(스펙 2026-11-23-002 D1·D3). 주소는 에어갭 검사 때문에 글로만 적는다(D4) */
+function SlackHowTo() {
+  const { enqueueSnackbar } = useSnackbar();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(SLACK_MANIFEST);
+      enqueueSnackbar(t('profiles.chan.slackHowTo.copied'), { variant: 'success' });
+    } catch {
+      enqueueSnackbar(t('profiles.chan.slackHowTo.copyFailed'), { variant: 'warning' });
+    }
+  };
+  return (
+    <Box component="details" sx={{ border: 1, borderColor: 'divider', borderRadius: 1, px: 1.5, py: 1 }}>
+      <Box component="summary" sx={{ cursor: 'pointer', typography: 'subtitle2' }}>
+        {t('profiles.chan.slackHowTo.title')}
+      </Box>
+      <Box component="ol" sx={{ pl: 2.5, my: 1, typography: 'body2', '& li': { mb: 0.5 } }}>
+        {[1, 2, 3, 4].map((n) => (
+          <li key={n}>{t(`profiles.chan.slackHowTo.step${n}`)}</li>
+        ))}
+      </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        {t('profiles.chan.slackHowTo.otherValues')}
+      </Typography>
+      <Button size="small" variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => void copy()}>
+        {t('profiles.chan.slackHowTo.copy')}
+      </Button>
+      <Box
+        component="pre"
+        aria-label={t('profiles.chan.slackHowTo.manifestLabel')}
+        sx={{ mt: 1, mb: 0, p: 1, maxHeight: 200, overflow: 'auto', fontSize: 12, bgcolor: 'action.hover', borderRadius: 1 }}
+      >
+        {SLACK_MANIFEST}
+      </Box>
+    </Box>
+  );
+}
+
+function PlatformForm({
+  p,
+  name,
+  ok,
+  mayEdit,
+  pairing,
+  onRemoved,
+}: {
+  p: Platform;
+  name: string;
+  ok: boolean;
+  /** 관리자·주인. 연결 삭제는 비밀값을 보내지 않으므로 https 가 아니어도 된다(스펙 2026-11-24-005) */
+  mayEdit: boolean;
+  pairing: ChannelsData['pairing'];
+  onRemoved: () => void;
+}) {
   const qc = useQueryClient();
   const { act } = useProfileAct(name);
   const { enqueueSnackbar } = useSnackbar();
@@ -170,6 +234,28 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
       }
       await Promise.all([refresh(), qc.invalidateQueries({ queryKey: ['channels'] }), qc.invalidateQueries({ queryKey: ['profile', name] })]);
     });
+  // 「연결 삭제」: 지울 이름은 서버가 정한다(D1). 끝나면 대화 상자를 닫고 입력 값을 비운다 — 남은 값이 「저장하고 켜기」로 토큰을 되살리지 않게
+  const hasValue = p.env_vars.some((v) => v.is_set);
+  const remove = async () => {
+    const label = p.name || p.id;
+    if (!(await confirm(t('profiles.chan.removeConfirm', { name: label }), { danger: true, title: t('profiles.chan.removeTitle', { name: label }), confirmLabel: t('profiles.chan.remove') })))
+      return;
+    await run(async () => {
+      const res = await act<{ kept?: string[]; duplicate?: boolean }>('channel_remove', { platform: p.id });
+      setValues({});
+      const kept = res.kept?.length ?? 0;
+      const text = [
+        t('profiles.chan.removed', { name: label }),
+        kept ? t('profiles.chan.removedKept', { n: kept }) : '',
+        res.duplicate ? t('profiles.chan.removedDuplicate') : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+      enqueueSnackbar(text, { variant: 'success' });
+      await Promise.all([refresh(), qc.invalidateQueries({ queryKey: ['channels'] }), qc.invalidateQueries({ queryKey: ['profile', name] })]);
+      onRemoved();
+    });
+  };
   const test = () =>
     run(async () => {
       const res = await act<TestResult>('channel_test', { platform: p.id });
@@ -180,6 +266,7 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
   const mine = (rows: PairRow[]) => rows.filter((r) => r.platform === p.id);
   return (
     <Stack spacing={1.25}>
+        {p.id === 'slack' && <SlackHowTo />}
         <Stack direction="row" spacing={1} alignItems="center">
           <Tag tone={tone}>{labelKey ? t(labelKey) : p.state || '—'}</Tag>
           {p.error_message && (
@@ -208,6 +295,8 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
                   ? t(`profiles.chan.idHelp.${p.id}`)
                   : v.key.endsWith('_URL')
                   ? t('profiles.chan.serverUrlHelp')
+                  : TOKEN_HELP.includes(v.key)
+                  ? tokenHelp(v.key, v.required)
                   : v.required
                     ? t('profiles.chan.required')
                     : undefined
@@ -238,6 +327,9 @@ function PlatformForm({ p, name, ok, pairing }: { p: Platform; name: string; ok:
           </Button>
           <Button startIcon={<NetworkCheckOutlinedIcon />} size="small" variant="outlined" disabled={!ok || busy} onClick={() => void test()}>
             {t('profiles.chan.test')}
+          </Button>
+          <Button size="small" variant="outlined" color="error" disabled={!mayEdit || busy || !hasValue} onClick={() => void remove()}>
+            {t('profiles.chan.remove')}
           </Button>
         </Stack>
         {result && <Alert severity={result.ok ? 'success' : 'warning'} sx={calmAlertSx}>{result.text}</Alert>}
@@ -363,6 +455,7 @@ function ConnectDialog({
   data,
   name,
   ok,
+  mayEdit,
   onPick,
   onClose,
 }: {
@@ -372,6 +465,7 @@ function ConnectDialog({
   data: ChannelsData;
   name: string;
   ok: boolean;
+  mayEdit: boolean;
   onPick: (id: string | null) => void;
   onClose: () => void;
 }) {
@@ -386,7 +480,7 @@ function ConnectDialog({
       <DialogContent>
         {p ? (
           <Box sx={{ pt: 0.5 }}>
-            <PlatformForm key={p.id} p={p} name={name} ok={ok} pairing={data.pairing} />
+            <PlatformForm key={p.id} p={p} name={name} ok={ok} mayEdit={mayEdit} pairing={data.pairing} onRemoved={onClose} />
           </Box>
         ) : (
           <Stack spacing={1} sx={{ pt: 0.5 }}>
@@ -490,6 +584,7 @@ export function ChannelPane({ d }: { d: ProfileDetailData }) {
         data={data}
         name={name}
         ok={ok}
+        mayEdit={mayEdit}
         onPick={(id) => setDlg((s) => ({ ...s, pick: id }))}
         onClose={close}
       />

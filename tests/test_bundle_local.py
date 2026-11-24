@@ -80,6 +80,12 @@ class LocalTest(unittest.TestCase):
         self.assertEqual(self.disk.files[f"{_skill_dir('main', 'markdown-to-doc')}/scripts/md_to_xlsx.py"],
                          (skill_bundle.PACKAGES_DIR / "markdown-to-doc/scripts/md_to_xlsx.py").read_bytes())
 
+    def test_automation_profiles_get_no_default_skills(self):
+        # mindwiki-auto · mwauto-… only work automation cards; the skill list rides in every call's system prompt (spec 2026-11-22-004 M5)
+        self._run(profiles=("main", "mindwiki-auto", "mwauto-team-alpha", "default"))
+        self.assertIn(f"{_skill_dir('main', NAMES[0])}/SKILL.md", self.disk.files)
+        self.assertFalse(any(p.startswith(("profiles/mindwiki-auto/skills/", "profiles/mwauto-team-alpha/skills/")) for p in self.disk.files))
+
     def test_skill_md_is_written_last_for_each_package(self):
         self._run(profiles=("main",))
         for name in NAMES:

@@ -537,3 +537,32 @@ describe('값 넣기 창 — AAS 가 주는 LLM 접속값', () => {
     expect(within(dlg).queryByRole('textbox')).toBeNull();
   });
 });
+
+describe('값 넣기 창 — 관리자가 정한 주소(스펙 2026-11-24-009 단계 1b)', () => {
+  const withOrigin = () =>
+    crmOne([], {
+      required_env: [
+        { name: 'DOCS_BASE_URL', prompt: '문서 서버', set: false, allowed_origin: 'https://docs.example.com' },
+        { name: 'CRM_TOKEN', prompt: 'CRM 토큰', set: false },
+      ],
+    });
+
+  it('allowed_origin 이 있는 이름은 입력란 대신 주소와 단추를 보이고, 누르고 저장하면 그 주소를 그대로 보낸다', async () => {
+    const user = userEvent.setup();
+    const fn = mountDialog(withOrigin());
+    const dlg = await screen.findByTestId('skill-env-dialog');
+    expect(await within(dlg).findByText('https://docs.example.com')).toBeInTheDocument();
+    expect(within(dlg).queryByLabelText('DOCS_BASE_URL')).toBeNull(); // 입력란이 없다
+    await user.click(within(dlg).getByRole('button', { name: '관리자가 정한 주소 넣기' }));
+    await user.click(within(dlg).getByRole('button', { name: '저장' }));
+    await waitFor(() => expect(postedTo(fn, '/api/profile/action')).toHaveLength(1));
+    expect(postedTo(fn, '/api/profile/action')[0]).toMatchObject({ action: 'env_set', target: 'DOCS_BASE_URL', value: 'https://docs.example.com' });
+  });
+
+  it('allowed_origin 이 없으면(관리자 화면 등) 입력란 그대로', async () => {
+    mountDialog(crmOne([], { required_env: [{ name: 'DOCS_BASE_URL', prompt: '문서 서버', set: false }] }));
+    const dlg = await screen.findByTestId('skill-env-dialog');
+    expect(await within(dlg).findByLabelText('DOCS_BASE_URL')).toBeInTheDocument();
+    expect(within(dlg).queryByRole('button', { name: '관리자가 정한 주소 넣기' })).toBeNull();
+  });
+});

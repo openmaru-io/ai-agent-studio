@@ -64,6 +64,8 @@ class Facts:
 
 def origin(facts: Facts, name: str, rel_in_root: str, folder) -> str:
     """rel_in_root = 프로파일 폴더 기준 스킬 폴더 경로(skills/…)."""
+    if rel_in_root.startswith("skills/protected/"):            # AAS 서버가 쓰고 되돌리는 보호 스킬 — 허브·매니페스트 판정보다 먼저(스펙 2026-11-21-003)
+        return "protected"
     if name in facts.hub:
         return "hub"
     if name in facts.manifest:

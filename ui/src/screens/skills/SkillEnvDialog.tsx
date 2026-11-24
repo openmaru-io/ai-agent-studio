@@ -69,6 +69,8 @@ export interface RequiredEnv {
   managed?: 'aas';
   managed_source?: 'aas' | 'profile';
   owner_locked?: boolean;
+  /** 관리자가 AAS_OWNER_ENV_URLS 로 허용한 출처. 있으면 입력란 대신 그 주소를 채우는 단추(스펙 2026-11-24-009 단계 1b). 소유자에게만 온다 */
+  allowed_origin?: string;
 }
 
 export const isManagedEnv = (e: Pick<RequiredEnv, 'managed'>) => e.managed === 'aas';
@@ -680,6 +682,24 @@ function EnvField({
         </Typography>
       ) : null}
       {/* 떠 있는 레이블이 위 설명 줄과 겹치지 않게 띄운다 */}
+      {f.allowed_origin ? (
+        // 관리자가 정한 주소는 하나뿐이라 치게 하지 않는다 — 단추로 채우고 창의 저장으로 보낸다(서버가 다시 검사한다)
+        <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
+          <Typography variant="body2" component="code" sx={{ fontFamily: MONO_FONT }}>
+            {f.allowed_origin}
+          </Typography>
+          <Button
+            size="small"
+            variant={value === f.allowed_origin ? 'contained' : 'outlined'}
+            disabled={disabled}
+            aria-pressed={value === f.allowed_origin}
+            onClick={() => onChange(value === f.allowed_origin ? '' : f.allowed_origin ?? '')}
+          >
+            {t('skillsAgent.env.applyAllowed')}
+          </Button>
+          <Box sx={{ width: '100%' }}>{helper}</Box>
+        </Stack>
+      ) : (
       <Box sx={{ mt: 1 }}>
         <SecretValueField
           label={f.name}
@@ -692,6 +712,7 @@ function EnvField({
           inputRef={takeFocus}
         />
       </Box>
+      )}
       {failure}
     </Box>
   );

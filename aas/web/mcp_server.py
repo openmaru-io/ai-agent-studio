@@ -47,7 +47,7 @@ INSTRUCTIONS = ("CogentAI AAS: talk to your remote Hermes agents. Start with age
 
 
 class ToolError(Exception):
-    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·in_use·reconnect·unavailable.
+    """도구 결과의 isError. word 는 고정 낱말(§3-3): auth·forbidden·busy·invalid·in_use·reconnect·unavailable·not_found·conflict.
     data 는 결과에 그대로 붙일 값(in_use 의 부르는 곳 목록 dependents)."""
     def __init__(self, word: str, message: str = "", hint: str = "", data: dict | None = None):
         super().__init__(message or word)
@@ -216,6 +216,8 @@ def _ok(status: int, out):
         raise ToolError("invalid", msg)
     # 스킬 지우기 차단(스펙 2026-11-19-003 §3-3): 상태 코드가 아니라 본문의 이유 코드로 가른다 — 같은 409 를 파일 저장의 base_sha 충돌도 쓴다
     reason = out.get("reason") if isinstance(out, dict) else None
+    if status in (404, 409) and reason in ("not_found", "conflict"):   # 보호 스킬 켜기 거절(스펙 2026-11-21-003 §3-2 거절 표)
+        raise ToolError(reason, msg)
     if status == 409 and reason == "in_use":
         raise ToolError("in_use", msg, _hint("in_use"), {"dependents": out.get("dependents")})
     if status == 409 and reason == "state":               # 게시 요청 거두기: 이미 게시·반려·거둠 — 다시 불러도 같다(스펙 2026-11-20-009 §3-2 5)
@@ -626,7 +628,7 @@ async def files_list(ctx: Ctx, args: dict):
     return await ctx.call("GET", "/api/chat/files/list", pid, {"pod": pid})
 
 
-SKILL_ROW = ("id", "name", "profile", "description", "enabled", "origin", "category", "tags", "new_version")
+SKILL_ROW = ("id", "name", "profile", "description", "enabled", "origin", "category", "tags", "new_version", "protected")
 
 
 async def skills_list(ctx: Ctx, args: dict):
@@ -1686,7 +1688,8 @@ TOOLS = {t["name"]: t for t in (
           "Replace one skill file. Give base_sha from skill_file_read to avoid overwriting someone else's change (409 busy).",
           {"pod": POD, "path": _s("File path"), "content": _s("Whole new file text"), "base_sha": _s("sha you edited"),
            "note": _s("Change note")}, ("pod", "path", "content")),
-    _tool("skill_toggle", "skills:write", skill_toggle, "Turn a skill on or off for a profile.",
+    _tool("skill_toggle", "skills:write", skill_toggle, "Turn a skill on or off for a profile. Protected skills (origin protected) are "
+          "managed by the AAS server: turning one off deletes its copy, turning one on writes it within 60 seconds (state pending, then on).",
           {"pod": POD, "profile": _s("Profile name"), "name": _s("Skill name"), "enabled": {"type": "boolean"}},
           ("pod", "profile", "name", "enabled")),
     _tool("secret_set", "secrets:write", secret_set,

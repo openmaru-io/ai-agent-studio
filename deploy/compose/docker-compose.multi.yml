@@ -115,6 +115,8 @@ services:
       AAS_MARKET_INSTALL: "off"
       # 화면이 웹소켓(/ws) 하나로 받는다. 기본은 켜짐 — off 면 HTTP 폴링·SSE 로 받는다
       AAS_WS: ${AAS_WS:-on}
+      # 소유자가 넣을 수 있는 접속 주소 변수와 그 출처(스펙 2026-11-24-009). env_file 없이 이름을 하나씩 넘기므로 여기 적어야 서버에 닿는다
+      AAS_OWNER_ENV_URLS: ${AAS_OWNER_ENV_URLS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

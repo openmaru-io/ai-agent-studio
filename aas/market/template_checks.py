@@ -65,7 +65,8 @@ def refs(value) -> set[str]:
 
 
 def blocked(name: str) -> bool:
-    """주인이 넣을 수 없는 이름(owner_guard 의 접속·동작 이름)이거나 이름 꼴이 아니다. 설치한 사람이 넣을 수 없으니 템플릿도 쓰지 못한다."""
+    """주인이 넣을 수 없는 이름(owner_guard 의 접속·동작 이름)이거나 이름 꼴이 아니다. 설치한 사람이 넣을 수 없으니 템플릿도 쓰지 못한다.
+    AAS_OWNER_ENV_URLS 허용 목록은 보지 않는다 — 템플릿은 다른 설치에서도 쓰이므로 한 설치의 허용 목록에 기대면 안 된다(스펙 2026-11-24-009 D3)."""
     if not ENV_NAME.match(name or ""):
         return True
     return bool(owner_guard.env_key_check(name, {})[0])

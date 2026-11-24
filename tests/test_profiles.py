@@ -87,6 +87,8 @@ class Fake(BaseHTTPRequestHandler):
         if u.path.startswith("/api/messaging/platforms/") and method == "PUT":
             if (body.get("env") or {}).get("SLACK_BOT_TOKEN") == "conflict":
                 return self._send(409, {"detail": "Cannot enable 'slack': already served"})
+            if str((body.get("env") or {}).get("SLACK_BOT_TOKEN", "")).startswith("xapp-"):       # Hermes 값 모양 검사(_ENV_VALUE_RULES)
+                return self._send(400, {"detail": "Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions."})
             return self._send(200, {"ok": True, "platform": u.path.rsplit("/", 1)[1], "hot_served": True})
         if u.path == "/api/env" and method == "GET" and Fake.env_down:
             return self._send(500, {"detail": "down"})
@@ -704,6 +706,74 @@ class ProfileTest(unittest.TestCase):
         self.assertFalse(any(c[0] == "PUT" for c in Fake.calls))
         self.assertEqual(self.act("shared4", "create", share_skills=True)[0], 400)                              # 원본이 없으면 거절(복제할 프로파일을 고르세요)
 
+    def test_owner_sets_document_address_only_to_the_allowed_value(self):
+        """관리자가 AAS_OWNER_ENV_URLS 에 적은 주소만 주인이 저장한다. 정규형으로 저장하고, 다른 주소는 Hermes 까지 가지 않는다."""
+        self.as_owner()
+        urls = "DOCS_BASE_URL=https://docs.example.com,WIKI_BASE_URL=https://docs.example.com"
+        cfg = tempfile.TemporaryDirectory(); self.addCleanup(cfg.cleanup)       # aas.env 가 섞이지 않게(단계 2a)
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": urls, "AAS_CONFIG_DIR": cfg.name}):
+            for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+                Fake.calls.clear()
+                code, out = self.act("ma", "env_set", target=key, value="https://evil.example.net")
+                self.assertEqual((code, out.get("reason"), out.get("field"), Fake.calls), (403, "url_not_allowed", key, []))
+                code, _ = self.act("ma", "env_set", target=key, value="https://docs.example.com/")
+                self.assertEqual((code, Fake.calls[-1]), (200, ("PUT", "/api/env", {"profile": "ma"}, {"key": key, "value": "https://docs.example.com", "profile": "ma"})))
+                code, _ = self.act("ma", "env_clear", target=key, confirm=key)
+                self.assertEqual((code, Fake.calls[-1][:2]), (200, ("DELETE", "/api/env")))
+            self.assertEqual(self.act("ma", "env_set", target="OPENAI_BASE_URL", value="https://docs.example.com")[1]["reason"], "url_proxy")
+        with mock.patch.dict(os.environ, {"AAS_CONFIG_DIR": cfg.name}):
+            self.assertEqual(self.act("ma", "env_set", target="DOCS_BASE_URL", value="https://docs.example.com")[1]["reason"], "url_proxy")  # 설정이 없으면 잠김
+
+    def test_owner_sees_allowed_origin_buttons_only_for_openable_names(self):
+        """스펙 2026-11-24-009 단계 1·1b: 소유자 화면의 잠금 사유와 「관리자가 정한 주소 넣기」 단추용 allowed_origin(s). 관리자 응답에는 없다."""
+        cfg = tempfile.TemporaryDirectory(); self.addCleanup(cfg.cleanup)
+        urls = "DOCS_BASE_URL=https://docs.example.com,OPENAI_BASE_URL=https://docs.example.com,XAI_BASE_URL=https://docs.example.com"
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": urls, "AAS_CONFIG_DIR": cfg.name}):
+            code, det = self.req("GET", "/api/profile?name=ma")                     # 관리자(로그인 꺼짐)
+            self.assertEqual(code, 200)
+            self.assertNotIn("allowed_origins", det)
+            self.as_owner()
+            Fake.catalog_extra = {**Fake.catalog_extra, "DOCS_BASE_URL": {"category": "", "is_set": False},
+                                  "OPENAI_BASE_URL": {"category": "provider", "is_set": False}, "XAI_BASE_URL": {"category": "provider", "is_set": False}}
+            code, det = self.req("GET", "/api/profile?name=ma")
+            self.assertEqual(code, 200)
+            rows = {r["name"]: r for r in det["env"]}
+            self.assertEqual((rows["DOCS_BASE_URL"]["locked"], rows["DOCS_BASE_URL"].get("allowed_origin")), ("", "https://docs.example.com"))
+            self.assertTrue(rows["OPENAI_BASE_URL"]["locked"]); self.assertNotIn("allowed_origin", rows["OPENAI_BASE_URL"])
+            self.assertTrue(rows["XAI_BASE_URL"]["locked"]); self.assertNotIn("allowed_origin", rows["XAI_BASE_URL"])   # 접두어 밖 provider 범주
+            self.assertEqual(det["allowed_origins"], {"DOCS_BASE_URL": "https://docs.example.com"})
+
+    def test_skill_setup_rows_get_allowed_origin_with_the_same_rule(self):
+        """「설정 필요」 창도 Hermes 카탈로그로 판단한다 — provider 범주 이름에 단추를 보이고 저장은 거절하는 일이 없다. 못 읽으면 싣지 않는다."""
+        from aas.assets import skill_setup
+        req = skill_setup.required_env({"required_environment_variables": ["DOCS_BASE_URL", "XAI_BASE_URL", "CRM_TOKEN"]})
+        row = {"id": "ma/docs", "name": "docs", "profile": "ma", "description": "d", "modified": "", "origin": "local",
+               "mcp": [], "rest": [], "scripts": [], "external_scripts": [], "cron": [], "required_env": req}
+        graph = {"built_at": "x", "totals": {}, "skills": [row], "by_mcp": {}, "by_host": {}, "mcp_configured": []}
+        _mkprof(self.pod.hermes_home / "profiles" / "ma")
+        self.addCleanup(server._cache.clear)
+        for key in (f"{self.pod.id}:skills", server._lang_key(f"{self.pod.id}:skills", True)):
+            server._cache[key] = (time.time() + 3600, graph)
+        cfg = tempfile.TemporaryDirectory(); self.addCleanup(cfg.cleanup)
+
+        def get():
+            with mock.patch.object(server.market_tags, "skill_tags", return_value=[]):
+                code, d = self.req("GET", "/api/skill?id=ma/docs")
+            self.assertEqual(code, 200)
+            return {e["name"]: e for e in d["required_env"]}
+
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": "DOCS_BASE_URL=https://docs.example.com,XAI_BASE_URL=https://docs.example.com",
+                                          "AAS_CONFIG_DIR": cfg.name}):
+            self.assertNotIn("allowed_origin", get()["DOCS_BASE_URL"])                   # 관리자에게는 없다(입력란 그대로)
+            self.as_owner()
+            Fake.catalog_extra = {**Fake.catalog_extra, "XAI_BASE_URL": {"category": "provider", "is_set": False}}
+            by = get()
+            self.assertEqual(by["DOCS_BASE_URL"].get("allowed_origin"), "https://docs.example.com")
+            self.assertNotIn("allowed_origin", by["XAI_BASE_URL"])
+            self.assertNotIn("allowed_origin", by["CRM_TOKEN"])
+            Fake.env_down = True                                                          # 카탈로그를 못 읽으면 싣지 않는다(fail-closed)
+            self.assertNotIn("allowed_origin", get()["DOCS_BASE_URL"])
+
     def test_rejections_carry_a_reason_code_and_the_field(self):
         """디자인 결정 2A(TD3): 거절 응답은 문장과 함께 reason 코드와 거절된 칸(field)을 준다."""
         self.as_owner()
@@ -820,6 +890,46 @@ class ProfileTest(unittest.TestCase):
         from aas.ops import owner_guard
         with mock.patch.object(owner_guard, "profile_limit", return_value=1):
             self.assertEqual(self.act("adm1", "create", clone_from="sa", no_skills=True)[0], 200)
+
+    def test_mindwiki_automation_names_are_reserved_for_people_and_client_flags_are_dropped(self):
+        """스펙 2026-11-21-002 §3-2 3·엔지니어링 E4·E9: 사람의 만들기·이름 바꾸기는 mwauto-·mindwiki-auto 이름을 거절하고,
+        클라이언트가 보낸 _auto·_create_locked 같은 _ 키는 처리기가 버린다(웹훅의 자동화 만들기만 내부 인자 auto=True 로 통과)."""
+        from unittest import mock
+        Fake.calls.clear()
+        for name in ("mwauto-x", "mwauto-web-x", "mindwiki-auto-x", "mindwiki-auto"):
+            code, out = self.act(name, "create", clone_from="sa")
+            self.assertEqual(code, 400, name)
+            self.assertIn("mwauto-", out["error"])
+        code, _ = self.act("mwauto-x", "create", clone_from="sa", _auto=True, _create_locked=True)   # 클라이언트 값은 버려진다
+        self.assertEqual(code, 400)
+        self.assertFalse(any(c[:2] == ("POST", "/api/profiles") for c in Fake.calls))
+        with mock.patch.object(server.marketplace, "create_lock", wraps=server.marketplace.create_lock) as lock:
+            self.assertEqual(self.act("okname", "create", clone_from="sa", _create_locked=True)[0], 200)
+            lock.assert_called_once()                                                              # _create_locked 를 보내도 잠금을 거친다
+        self.assertEqual(self.act("sa", "rename", new_name="mwauto-sa")[0], 400)                    # 바뀌는 쪽
+        Fake.profiles = ["default", "ma", "sa", "mwauto-sa"]
+        server._cache.pop(f"{self.pod.id}:profiles", None)
+        self.assertEqual(self.act("mwauto-sa", "rename", new_name="sa3")[0], 400)                   # 바꾸는 쪽
+        self.assertFalse(any(c[0] == "PATCH" for c in Fake.calls))
+        with server.marketplace.create_lock(self.pod.id):                                          # 내부 경로(auto=True, locked=True)는 통과
+            server._profile_action(self.pod, {"action": "create", "name": "mwauto-ma", "clone_from": None, "no_skills": True}, "system",
+                                   auto=True, locked=True)
+        self.assertIn(("POST", "/api/profiles"), [c[:2] for c in Fake.calls])
+        self.assertEqual(next(c[3] for c in Fake.calls if c[:2] == ("POST", "/api/profiles") and c[3]["name"] == "mwauto-ma")["no_skills"], True)
+
+    def test_automation_profiles_are_not_counted_against_the_profile_limit(self):
+        from unittest import mock
+        from aas.ops import owner_guard
+        self.as_owner()
+        Fake.profiles = ["default", "ma", "sa", "mindwiki-auto", "mwauto-ma", "mwauto-web-ma"]
+        server._cache.pop(f"{self.pod.id}:profiles", None)
+        with mock.patch.object(owner_guard, "profile_limit", return_value=5):
+            d = self.req("GET", "/api/profiles")[1]
+        self.assertEqual(d["profile_limit"], {"used": 3, "max": 5})                                 # default·ma·sa — 자동화 셋은 세지 않는다
+        names = ["default", "ma", "sa", "mindwiki-auto", "mwauto-ma"]
+        with mock.patch.object(owner_guard, "profile_limit", return_value=4):
+            self.assertEqual(owner_guard.create_error(self.pod.id, "", False, server.marketplace.counted_profiles(self.pod.id, names))[0], 0)
+            self.assertIsNone(server.marketplace.limit_error(self.pod.id, names))
 
     def test_owner_deletes_any_profile_except_main_and_the_seats_follow(self):
         from unittest import mock
@@ -1073,6 +1183,12 @@ class ProfileTest(unittest.TestCase):
                              {"X-AAS": "1", "Host": "10.0.0.5:17900"})
         self.assertEqual((code, Fake.calls), (403, [])); self.assertIn("암호화", out["error"])
         self.assertEqual(self.chan("channel_save", platform="telegram", enabled=False)[0], 200)             # 값이 없는 끄기는 받는다
+
+    def test_channel_save_names_the_field_hermes_refused(self):
+        """스펙 2026-11-23-002 D6: 봇 토큰 칸에 앱 토큰을 넣으면 그 칸 이름과 한국어 문장으로 돌려준다"""
+        code, out = self.chan("channel_save", platform="slack", enabled=True, env={"SLACK_BOT_TOKEN": "xapp-1-A-1-x", "SLACK_APP_TOKEN": "xoxb-1"})
+        self.assertEqual((code, out["field"], out["reason"]), (400, "SLACK_BOT_TOKEN", "value_invalid"), out)
+        self.assertIn("xoxb-", out["error"]); self.assertNotIn("Paste the bot token", out["error"])
 
     def test_channel_save_passes_hermes_conflict_through(self):
         code, out = self.chan("channel_save", platform="slack", enabled=True, env={"SLACK_BOT_TOKEN": "conflict"})

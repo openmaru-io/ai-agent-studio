@@ -34,6 +34,103 @@ class EnvKeyTest(unittest.TestCase):
         self.assertTrue(owner_guard.env_key_error("SERPER_API_KEY", None))          # fail-closed
 
 
+class OwnerUrlAllowListTest(unittest.TestCase):
+    URLS = "DOCS_BASE_URL=https://docs.example.com, WIKI_BASE_URL=https://docs.example.com/,OPENAI_BASE_URL=https://docs.example.com,HERMES_BASE_URL=https://docs.example.com"
+
+    def setUp(self):
+        # config.get 은 환경변수가 비면 AAS_CONFIG_DIR/aas.env 를 읽는다 — 개발자·CI 의 설정 파일이 섞이지 않게 빈 폴더로(스펙 2026-11-24-009 단계 2a)
+        self.cfg = tempfile.TemporaryDirectory()
+        self.addCleanup(self.cfg.cleanup)
+        patcher = mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": self.URLS, "AAS_CONFIG_DIR": self.cfg.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_both_document_addresses_open_only_for_the_allowed_value(self):
+        for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+            self.assertTrue(owner_guard.owner_url_allowed(key, CATALOG), key)
+            self.assertEqual(owner_guard.env_lock_reason(key, CATALOG), "", key)
+            for good in ("https://docs.example.com", "https://docs.example.com/", "HTTPS://DOCS.example.com", "https://docs.example.com:443"):
+                self.assertEqual(owner_guard.env_value_check(key, good), ("", "", "https://docs.example.com"), good)
+            for bad in ("http://docs.example.com", "https://other.example.com", "https://docs.example.com.evil.test", "https://user@docs.example.com",
+                        "https://docs.example.com:8443", "https://docs.example.com/api", "https://docs.example.com?x=1", "https://docs.example.com#x",
+                        "https://docs.example.com\n", "https://docs.example.com\t", " https://docs.example.com", "https://docs.example.com.", "", None, 1):
+                self.assertEqual(owner_guard.env_value_check(key, bad)[0], "url_not_allowed", repr(bad))
+
+    def test_model_platform_and_provider_names_stay_locked_even_if_listed(self):
+        for key in ("OPENAI_BASE_URL", "HERMES_BASE_URL"):
+            self.assertFalse(owner_guard.owner_url_allowed(key, CATALOG), key)
+            self.assertTrue(owner_guard.env_lock_reason(key, CATALOG), key)
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": "CUSTOM_BASE_URL=https://docs.example.com"}):
+            self.assertFalse(owner_guard.owner_url_allowed("CUSTOM_BASE_URL", {"CUSTOM_BASE_URL": "provider"}))
+
+    def test_unset_malformed_or_unreadable_stays_locked(self):
+        self.assertFalse(owner_guard.owner_url_allowed("DOCS_BASE_URL", None))
+        for raw in ("", "DOCS_BASE_URL", "DOCS_BASE_URL=http://docs.example.com", "DOCS_BASE_URL=https://docs.example.com/api", "DOCS_TOKEN=https://docs.example.com"):
+            with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": raw}):
+                self.assertFalse(owner_guard.owner_url_allowed("DOCS_BASE_URL", CATALOG), raw)
+                self.assertTrue(owner_guard.env_lock_reason("DOCS_BASE_URL", CATALOG), raw)
+
+    def test_allowed_returns_the_origin_and_managed_llm_names_stay_locked(self):
+        """owner_url_allowed 는 허용 출처를 돌려준다. AAS 가 주는 LLM 이름은 목록에 적어도 잠긴다(F1, 스킬 상세 owner_locked 를 그대로 두는 근거)."""
+        self.assertEqual(owner_guard.owner_url_allowed("DOCS_BASE_URL", CATALOG), "https://docs.example.com")
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": "LLM_BASE_URL=https://docs.example.com,HERMES_LLM_BASE_URL=https://docs.example.com"}):
+            for key in ("LLM_BASE_URL", "HERMES_LLM_BASE_URL"):
+                self.assertEqual(owner_guard.owner_url_allowed(key, CATALOG), "", key)
+
+    def test_one_parse_per_request_and_messages_without_the_input(self):
+        """같은 요청에서 해석한 urls·allowed 를 넘기면 다시 읽지 않는다. 거절 문장에는 출처가 있고 소유자가 넣은 값은 없다."""
+        urls = owner_guard.owner_urls()
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": ""}):          # 검사 사이에 설정이 비어도
+            allowed = owner_guard.owner_url_allowed("DOCS_BASE_URL", CATALOG, urls)
+            why, msg, _ = owner_guard.env_value_check("DOCS_BASE_URL", "https://u:secret-token@evil.example.net", allowed)
+        self.assertEqual((allowed, why), ("https://docs.example.com", "url_not_allowed"))
+        self.assertIn("https://docs.example.com", msg)
+        self.assertNotIn("secret-token", msg)
+        why, msg, _ = owner_guard.env_value_check("DOCS_BASE_URL", "https://docs.example.com", "")
+        self.assertEqual(why, "url_not_allowed")
+        self.assertIn("DOCS_BASE_URL", msg)
+        self.assertFalse(msg.rstrip().endswith(":"))                           # 빈 출처로 끝나는 문장이 아니다
+        self.assertNotIn("AAS_OWNER_ENV_URLS", msg)                           # 서버 설정 이름은 소유자에게 보이지 않는다
+
+    def test_parse_reports_dropped_items_with_reasons_and_no_values(self):
+        got = owner_guard.parse_owner_urls("DOCS_BASE_URL=https://a.example.com, docs_base_url=https://a.example.com,DOCS_TOKEN=https://a.example.com,"
+                                           "META_BASE_URL=https://169.254.169.254,LOCAL_BASE_URL=https://localhost:8443,"
+                                           "SECRET_BASE_URL=https://u:tok@a.example.com,NOEQUALS,DOCS_BASE_URL=https://b.example.com,")
+        self.assertEqual(got["urls"], {"DOCS_BASE_URL": "https://b.example.com"})
+        self.assertEqual(got["overridden"], ["DOCS_BASE_URL"])
+        self.assertEqual(got["dropped"], [("docs_base_url", "malformed"), ("DOCS_TOKEN", "not_base_url"), ("META_BASE_URL", "bad_origin"),
+                                          ("LOCAL_BASE_URL", "bad_origin"), ("SECRET_BASE_URL", "bad_origin"), ("NOEQUALS", "malformed")])
+
+    def test_startup_log_line_has_four_columns_and_never_the_raw_value(self):
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": "DOCS_BASE_URL=https://a.example.com,OPENAI_BASE_URL=https://a.example.com,"
+                                                                "SECRET_BASE_URL=https://u:tok@a.example.com,DOCS_BASE_URL=https://b.example.com"}):
+            line = owner_guard.owner_urls_log_line()
+        self.assertIn("연 이름 DOCS_BASE_URL=https://b.example.com", line)
+        self.assertIn("접두어로 잠김 OPENAI_BASE_URL", line)
+        self.assertIn("버린 항목 SECRET_BASE_URL(bad_origin)", line)
+        self.assertIn("덮인 이름 DOCS_BASE_URL", line)
+        self.assertNotIn("tok", line)
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": ""}):
+            self.assertEqual(owner_guard.owner_urls_log_line(), "")              # 설정이 없으면 적지 않는다
+
+    def test_setting_file_is_read_only_from_the_isolated_folder(self):
+        """환경변수가 비면 AAS_CONFIG_DIR/aas.env 를 읽는다 — 시험은 빈 임시 폴더라 「설정 없음」이 환경에 따라 달라지지 않는다."""
+        with mock.patch.dict(os.environ, {"AAS_OWNER_ENV_URLS": ""}):
+            self.assertEqual(owner_guard.owner_urls(), {})
+            Path(self.cfg.name, "aas.env").write_text("AAS_OWNER_ENV_URLS=DOCS_BASE_URL=https://f.example.com\n", encoding="utf-8")
+            self.assertEqual(owner_guard.owner_urls(), {"DOCS_BASE_URL": "https://f.example.com"})
+
+    def test_templates_ignore_the_allow_list(self):
+        """템플릿은 다른 설치에서도 쓰이므로 허용 목록이 있어도 접속 주소 이름을 선언하지 못한다(D3 A)."""
+        from aas.market import template_checks
+        self.assertTrue(template_checks.blocked("DOCS_BASE_URL"))
+
+    def test_name_only_paths_stay_refused(self):
+        """PC 가져오기·MCP 는 값 검사 없이 env_key_check 만 부르므로 허용 목록이 있어도 막혀야 한다."""
+        for key in ("DOCS_BASE_URL", "WIKI_BASE_URL"):
+            self.assertEqual(owner_guard.env_key_check(key, CATALOG)[0], "url_proxy", key)
+
+
 class ChannelEnvTest(unittest.TestCase):
     def test_only_token_and_real_user_ids_are_allowed(self):
         ok = (("telegram", "TELEGRAM_BOT_TOKEN", "123:abc"), ("telegram", "TELEGRAM_ALLOWED_USERS", "42,77"), ("discord", "DISCORD_BOT_TOKEN", "t"),

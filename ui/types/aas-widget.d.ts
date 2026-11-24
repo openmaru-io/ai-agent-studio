@@ -131,6 +131,8 @@ declare namespace CogentAIAAS {
     height?: string;
     title?: string;
     agent?: string;
+    /** 처음 열 프로파일(그 에이전트에 없으면 채팅 기본) */
+    profile?: string;
     showLauncher?: boolean;
     widgetInfo?: string;
     headerAction?: { label: Label; onClick: () => void };
@@ -159,6 +161,8 @@ declare namespace CogentAIAAS {
     resizeEvent(e: UIEvent | null, width: number, height: number): void;
     sendMessage(message: string, displayMessage?: string, language?: Lang): boolean;
     setContext(ctx: PageContext | null): void;
+    /** AI 에이전트(작업공간)와 프로파일을 바꿔 연다. features 에 'agent' 가 있을 때만 */
+    setAgent(pod: string, profile?: string): void;
     /** 답 저장 단추의 지금 상태 */
     saveAnswerState(): SaveAnswerState;
   }

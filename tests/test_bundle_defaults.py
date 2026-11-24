@@ -93,6 +93,12 @@ class DeliverTest(unittest.TestCase):
         self.assertEqual(got, {(p, f"free/{n}") for p in ("main", "work") for n in NAMES})
         self.assertFalse(any(r["profile"] == "default" for r in fake.requests))
 
+    def test_automation_profiles_are_never_requested(self):
+        # spec 2026-11-22-004 M5: automation profiles do not use the default skills
+        fake = Fake()
+        self._run(fake, profiles=("main", "mindwiki-auto-web", "mwauto-web-team-alpha"))
+        self.assertEqual(sorted({r["profile"] for r in fake.requests}), ["main"])
+
     def test_done_is_recorded_after_the_request_finishes_and_never_requested_again(self):
         fake = Fake()
         self._run(fake, profiles=("main",))

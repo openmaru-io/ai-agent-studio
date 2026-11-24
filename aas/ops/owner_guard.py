@@ -31,6 +31,9 @@ _BLOCKED_PREFIX = ("HERMES_", "GATEWAY_", "TERMINAL_", "AAS_", "LITELLM_", "PYTH
 _BLOCKED_EXACT = frozenset({"PATH", "HOME", "SHELL", "USER", "LANG", "TZ"})
 _BLOCKED_SUFFIX = ("_BASE_URL", "_PROXY", "_ENDPOINT")
 _BLOCKED_CATEGORY = frozenset({"provider", "setting", "messaging"})
+_MODEL_URL_PREFIX = ("OPENAI_", "ANTHROPIC_", "LLM_", "OPENROUTER_", "GEMINI_", "GOOGLE_", "AZURE_", "OLLAMA_", "VLLM_", "VOLCENGINE_", "DEEPSEEK_", "MISTRAL_", "QWEN_", "DASHSCOPE_")      # 허용 목록에 적혀도 열지 않는 모델 접속 주소
+_OWNER_URL_NAME = re.compile(r"[A-Z][A-Z0-9_]*_BASE_URL")
+_HTTPS_ORIGIN = re.compile(r"(?i:https)://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::(\d{1,5}))?/?")
 _USER_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,80}\Z")
 _SERVER_URL = re.compile(r"^https?://[^\s@/?#]+(?::\d{1,5})?(?:/[^\s@?#]*)?\Z")      # 메신저 서버 주소(Mattermost). 계정·공백·질의 문자열 없이
 
@@ -54,7 +57,7 @@ def env_key_check(key: str, catalog: dict[str, str] | None) -> tuple[str, str]:
         return "platform_var", tr(f"{key} 는 Hermes 동작·접속을 정하는 이름이라 관리자만 바꿉니다.", f"{key} controls Hermes behavior or connections; only admins can change it.")
     category = catalog.get(key, "")
     if category == "messaging":
-        return "channel_var", tr(f"{key} 는 채널 변수입니다. 「채널」 탭에서 바꾸세요.", f"{key} is a channel variable. Change it in the Channels tab.")
+        return "channel_var", tr(f"{key} 는 메신저 변수입니다. 「메신저 연결」 탭에서 바꾸세요.", f"{key} is a messenger variable. Change it in the Messenger connections tab.")
     if category in _BLOCKED_CATEGORY:
         return "provider_key", tr(f"{key} 는 모델 제공자·동작 설정 값이라 관리자만 바꿉니다. 모델 키는 LiteLLM 으로 모아 관리합니다.",
                                  f"{key} is a model provider or behavior setting; only admins can change it. Model keys are managed through LiteLLM.")
@@ -63,6 +66,108 @@ def env_key_check(key: str, catalog: dict[str, str] | None) -> tuple[str, str]:
 
 def env_key_error(key: str, catalog: dict[str, str] | None) -> str:
     return env_key_check(key, catalog)[1]
+
+
+def _canonical_https_origin(url: object) -> str:
+    """https 출처 하나의 정규형. 계정·경로·질의·조각·공백이 있으면 빈 문자열. urlsplit 은 탭·줄바꿈을 지우므로 쓰지 않는다.
+    IP 주소 그대로인 출처와 localhost 는 받지 않는다(관리자가 내부 주소를 잘못 적는 것을 막는다, 스펙 2026-11-24-009 단계 3a)."""
+    if not isinstance(url, str):
+        return ""
+    m = _HTTPS_ORIGIN.fullmatch(url)
+    if not m:
+        return ""
+    host, port = m.group(1).lower(), m.group(2)
+    if host.endswith(".") or ".." in host or (port and not 0 < int(port) <= 65535):
+        return ""
+    if _IP_HOST.fullmatch(host) or host == "localhost" or host.endswith(".localhost"):
+        return ""
+    return f"https://{host}" if not port or int(port) == 443 else f"https://{host}:{int(port)}"
+
+
+_IP_HOST = re.compile(r"[0-9.]+")          # IPv4 꼴(숫자와 점만). IPv6 는 호스트 정규식이 처음부터 받지 않는다
+
+
+def _model_or_platform(key: str) -> bool:
+    return key in _BLOCKED_EXACT or key.startswith(_BLOCKED_PREFIX) or key.startswith(_MODEL_URL_PREFIX)
+
+
+def parse_owner_urls(raw: str) -> dict:
+    """AAS_OWNER_ENV_URLS 원문(`이름=https 출처` 짝, 쉼표 구분)을 해석한다. 형식이 틀린 항목은 버려 잠긴 채로 둔다.
+    돌려주는 값: urls(이름 → 정규형 출처, 모델·플랫폼 이름 포함), dropped([(이름, 사유 코드)], 값 원문은 담지 않는다),
+    overridden(같은 이름이 두 번 나와 뒤 항목이 앞을 덮은 이름). 사유 코드: malformed·not_base_url·bad_origin."""
+    urls: dict[str, str] = {}
+    dropped: list[tuple[str, str]] = []
+    overridden: list[str] = []
+    for item in str(raw or "").split(","):
+        item = item.strip()
+        if not item:                                 # 끝 쉼표로 생긴 빈 항목은 세지 않는다
+            continue
+        name, sep, url = item.partition("=")
+        name = name.strip()
+        if not sep or not _ENV_NAME.fullmatch(name):
+            dropped.append((name[:80] if _ENV_NAME_LOOSE.fullmatch(name) else "?", "malformed"))
+            continue
+        if not _OWNER_URL_NAME.fullmatch(name):
+            dropped.append((name, "not_base_url"))
+            continue
+        origin = _canonical_https_origin(url.strip())
+        if not origin:
+            dropped.append((name, "bad_origin"))
+            continue
+        if name in urls:
+            overridden.append(name)
+        urls[name] = origin
+    return {"urls": urls, "dropped": dropped, "overridden": overridden}
+
+
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_ENV_NAME_LOOSE = re.compile(r"[A-Za-z0-9_]{1,80}")     # 로그에 이름을 적어도 되는 꼴(값이 섞였을 수 있는 것은 「?」로)
+
+
+def owner_urls() -> dict[str, str]:
+    """지금 설정의 허용 목록(이름 → 출처). 요청마다 한 번 부르고 결과를 아래 함수들에 넘긴다(스펙 2026-11-24-009 단계 1a)."""
+    return parse_owner_urls(config.get("AAS_OWNER_ENV_URLS", ""))["urls"]
+
+
+def owner_urls_log_line() -> str:
+    """서버 시작 때 남기는 해석 결과 한 줄. 설정이 비어 있으면 빈 문자열. 이름·출처·사유 코드만 적고 값 원문은 적지 않는다."""
+    raw = config.get("AAS_OWNER_ENV_URLS", "")
+    if not str(raw or "").strip():
+        return ""
+    got = parse_owner_urls(raw)
+    opened = [f"{n}={o}" for n, o in got["urls"].items() if not _model_or_platform(n)]
+    locked = [n for n in got["urls"] if _model_or_platform(n)]
+    dropped = [f"{n}({why})" for n, why in got["dropped"]]
+    return ("AAS_OWNER_ENV_URLS: 연 이름 " + (", ".join(opened) or "없음") + " | 접두어로 잠김 " + (", ".join(locked) or "없음")   # i18n-ignore: 서버 로그
+            + " | 버린 항목 " + (", ".join(dropped) or "없음") + " | 덮인 이름 " + (", ".join(got["overridden"]) or "없음"))   # i18n-ignore: 서버 로그
+
+
+def owner_url_allowed(key: str, catalog: dict[str, str] | None, urls: dict[str, str] | None = None) -> str:
+    """주인이 허용 주소로 넣을 수 있는 접속 주소 변수면 그 허용 출처, 아니면 빈 문자열. 모델·플랫폼 변수는 목록에 있어도 열지 않는다.
+    카탈로그를 못 읽으면 빈 문자열(fail-closed). urls 는 요청에서 한 번 해석한 owner_urls() 결과다."""
+    urls = owner_urls() if urls is None else urls
+    if catalog is None or key not in urls or _model_or_platform(key):
+        return ""
+    return urls[key] if catalog.get(key, "") not in _BLOCKED_CATEGORY else ""
+
+
+def env_lock_reason(key: str, catalog: dict[str, str] | None, urls: dict[str, str] | None = None) -> str:
+    """주인 화면의 잠금 사유. 허용 주소 변수는 값으로 검사하므로 잠그지 않는다."""
+    return "" if owner_url_allowed(key, catalog, urls) else env_key_error(key, catalog)
+
+
+def env_value_check(key: str, value: object, allowed: str | None = None) -> tuple[str, str, str]:
+    """허용 주소 변수의 값 검사. (사유 코드, 문장, 저장할 정규형). 통과면 사유·문장이 빈 문자열.
+    allowed 는 같은 요청에서 owner_url_allowed 가 돌려준 출처다(다시 읽지 않아 검사 사이에 설정이 바뀌는 틈이 없다).
+    문장에는 소유자가 넣은 값을 싣지 않는다."""
+    allowed = owner_urls().get(key, "") if allowed is None else allowed
+    if allowed and _canonical_https_origin(value) == allowed:
+        return "", "", allowed
+    if not allowed:
+        return "url_not_allowed", tr(f"{key} 는 지금 허용 목록에 없습니다. 관리자에게 문의하세요.",
+                                     f"{key} is not on the allowed list right now. Ask an admin."), ""
+    return "url_not_allowed", tr(f"이 칸에는 관리자가 정한 주소 {allowed} 를 그대로 넣으세요.",
+                                 f"Enter the address the admin set for this field exactly: {allowed}"), ""
 
 
 _HOME_CHANNEL = {"telegram": re.compile(r"^-?\d{3,20}\Z"), "slack": re.compile(r"^[CG][A-Z0-9]{6,20}\Z"),
@@ -130,9 +235,12 @@ def profile_limit() -> int:
 
 
 def profile_count(names: list[str], root_hidden: bool) -> int:
-    """상한 셈. 숨긴 루트와 PC 가져오기 임시 프로파일(pcimp-)은 세지 않는다 — 화면의 「지금 N개」와 같게(OMAI-1444 ROV8)."""
-    from . import pc_import
-    return len([n for n in names if not (root_hidden and n == primary.ROOT) and not pc_import.reserved_name(n)])
+    """상한 셈. 숨긴 루트와 PC 가져오기 임시 프로파일(pcimp-)은 세지 않는다 — 화면의 「지금 N개」와 같게(OMAI-1444 ROV8).
+    MindWiki 자동화 프로파일(mindwiki-auto·-web·mwauto-…)도 세지 않는다(스펙 2026-11-21-002 §3-2 3). 만들기 검사(create_error·
+    marketplace.limit_error)와 화면의 「지금 N개」·상한 요청이 모두 이 한 곳을 쓴다."""
+    from . import mindwiki_webhook, pc_import
+    return len([n for n in names if not (root_hidden and n == primary.ROOT) and not pc_import.reserved_name(n)
+                and not mindwiki_webhook.is_auto_profile(n)])
 
 
 def create_error(pod_id: str, requested_from: str, no_skills: bool, names: list[str]) -> tuple[int, str]:

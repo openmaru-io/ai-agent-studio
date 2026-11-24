@@ -103,6 +103,7 @@ export default {
   'changes.kind.profile_mcp': 'Enabled or disabled an MCP server',
   'changes.kind.profile_env_set': 'Saved a secret',
   'changes.kind.profile_env_clear': 'Deleted a secret',
+  'changes.kind.profile_channel_remove': 'Deleted a messenger connection',
   'changes.kind.profile_credential_put': 'Saved a credential file',
   'changes.kind.profile_credential_clear': 'Deleted a credential file',
   'changes.kind.skill_save': 'Edited a skill document',

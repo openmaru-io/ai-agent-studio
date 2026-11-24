@@ -5,6 +5,7 @@ Hermes(d923a5e `hermes_cli/web_routers/messaging.py` test_messaging_platform)가
 import unittest
 
 from aas.common import i18n
+from aas.common.redact import redact
 from aas.ops import channel_admin
 
 
@@ -55,6 +56,43 @@ class TestMessageKoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaveErrorTest(unittest.TestCase):
+    """저장 거절 문장(스펙 2026-11-23-002 D6). Hermes v0.22.2 `_ENV_VALUE_RULES` 의 문장 그대로를 입력으로 쓴다"""
+    BOT = "Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions."
+    APP = "Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens."
+    USERS = "Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3."
+
+    def tearDown(self):
+        i18n.set_lang("ko")
+
+    def test_known_messages_name_the_field_in_korean(self):
+        i18n.set_lang("ko")
+        field, text = channel_admin.save_error(self.BOT)
+        self.assertEqual(field, "SLACK_BOT_TOKEN")
+        self.assertIn("xoxb-", text)
+        self.assertIn("칸이 바뀌지 않았는지", text)
+        self.assertEqual(channel_admin.save_error(self.APP)[0], "SLACK_APP_TOKEN")
+        self.assertEqual(channel_admin.save_error(self.USERS)[0], "SLACK_ALLOWED_USERS")
+
+    def test_english_uses_fixed_text_and_unknown_is_none(self):
+        i18n.set_lang("en")
+        field, text = channel_admin.save_error(self.BOT)
+        self.assertEqual(field, "SLACK_BOT_TOKEN")
+        self.assertIn("xoxb-", text)
+        self.assertIsNone(channel_admin.save_error("Telegram bot token must be the complete token"))
+
+    def test_redacted_hermes_text_still_reads_whole(self):
+        # HermesAPI.call 이 거절 문장을 redact 하면 "Basic Information" 이 "Basic ***" 가 된다
+        hidden = redact(self.APP, 300)
+        self.assertIn("***", hidden)
+        for lang in ("ko", "en"):
+            i18n.set_lang(lang)
+            field, text = channel_admin.save_error(hidden)
+            self.assertEqual(field, "SLACK_APP_TOKEN")
+            self.assertNotIn("***", text)
+            self.assertIn("Basic Information", text)
 
 
 class ChannelPlatformTest(unittest.TestCase):

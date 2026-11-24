@@ -157,8 +157,21 @@ def _raw(home: Path, rel: str) -> str:
     return target.read_bytes().decode("utf-8", errors="replace")
 
 
+def protected_copy(rel: str) -> bool:
+    """AAS 서버가 쓰고 되돌리는 보호 스킬 사본(skills/protected/… 또는 profiles/<이름>/skills/protected/…, 스펙 2026-11-21-003).
+    여기서 고쳐도 1분 안에 원본으로 돌아가 저장된 것처럼만 보였다(2026-11-21 OKE 6단계) — 보기만 된다."""
+    parts = Path(rel).parts
+    top = 2 if parts and parts[0] == "profiles" else 0
+    return len(parts) > top + 3 and parts[top] == "skills" and parts[top + 1] == "protected"   # skills/protected/<이름>/<파일>
+
+
+def protected_why() -> str:
+    return tr("AAS 서버가 관리하는 보호 스킬이라 고칠 수 없습니다. 고쳐도 1분 안에 원본으로 돌아갑니다.",
+              "This protected skill is managed by the AAS server and cannot be edited. Changes are restored within a minute.")
+
+
 def editable(rel: str) -> bool:
-    return Path(rel).name == "SKILL.md"
+    return Path(rel).name == "SKILL.md" and not protected_copy(rel)
 
 
 def has_secrets(text: str, kind: str = "") -> bool:
@@ -167,6 +180,8 @@ def has_secrets(text: str, kind: str = "") -> bool:
 
 def check(rel: str, content: str) -> None:
     """Hermes 에 보내기 전에 걸러 낼 것. 문제가 있으면 FileError(422). 나머지 검사는 Hermes 가 한다."""
+    if protected_copy(rel):
+        raise FileError(protected_why(), 403, reason="protected")
     if not editable(rel):
         raise FileError(tr("여기서는 스킬 문서(SKILL.md)만 고칠 수 있습니다", "Only skill documents (SKILL.md) can be edited here"), 403)
     if "\x00" in content:

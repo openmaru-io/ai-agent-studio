@@ -114,7 +114,20 @@ export function Toggle({
 }
 
 // ---- 비밀값: 이름과 채워져 있는지만 보여 준다. 값은 넣을 수만 있고 다시 볼 수 없다. ----
-export function SetValue({ name, target, overwrite, onDone }: { name: string; target: string; overwrite?: boolean; onDone: () => void }) {
+export function SetValue({
+  name,
+  target,
+  overwrite,
+  onDone,
+  allowedOrigin,
+}: {
+  name: string;
+  target: string;
+  overwrite?: boolean;
+  onDone: () => void;
+  /** 관리자가 정한 출처. 있으면 입력란 대신 그 주소를 그대로 넣는 단추(스펙 2026-11-24-009 단계 1b) */
+  allowedOrigin?: string;
+}) {
   const { act, refresh } = useProfileAct(name);
   const { enqueueSnackbar } = useSnackbar();
   const confirm = useConfirm();
@@ -122,14 +135,15 @@ export function SetValue({ name, target, overwrite, onDone }: { name: string; ta
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const first = useFocusOnMount<HTMLInputElement>();
-  const save = async () => {
-    if (!value) return;
+  const save = async (picked?: string) => {
+    const value_ = picked ?? value;
+    if (!value_) return;
     setError('');
     // 있는 값을 바꾸면 지금 값은 되찾을 수 없으므로 확인한다(OMAI-1135)
     if (overwrite && !(await confirm(t('profiles.envOverwriteConfirm', { target })))) return;
     setBusy(true);
     try {
-      await act('env_set', { target, value });
+      await act('env_set', { target, value: value_ });
       setValue('');
       enqueueSnackbar(t('profiles.envSaved', { target }), { variant: 'success' });
       await refresh();
@@ -141,6 +155,23 @@ export function SetValue({ name, target, overwrite, onDone }: { name: string; ta
       setBusy(false);
     }
   };
+  if (allowedOrigin)
+    return (
+      <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap" sx={{ width: '100%' }}>
+        <Typography variant="body2" component="code" sx={{ fontFamily: MONO_FONT }}>
+          {allowedOrigin}
+        </Typography>
+        <Button variant="contained" disabled={busy} onClick={() => void save(allowedOrigin)}>
+          {t('profiles.envApplyAllowed')}
+        </Button>
+        <Button onClick={onDone}>{t('profiles.cancel')}</Button>
+        {error && (
+          <Typography variant="caption" color="error" role="alert" sx={{ width: '100%' }}>
+            {error}
+          </Typography>
+        )}
+      </Stack>
+    );
   return (
     <Stack direction="row" spacing={1} sx={{ width: '100%' }}>
       <TextField
@@ -156,7 +187,7 @@ export function SetValue({ name, target, overwrite, onDone }: { name: string; ta
         onChange={(e) => setValue(e.target.value)}
         sx={{ flex: 1, minWidth: 160 }}
       />
-      <Button variant="contained" disabled={busy} onClick={save}>
+      <Button variant="contained" disabled={busy} onClick={() => void save()}>
         {t('profiles.save')}
       </Button>
       <Button onClick={onDone}>{t('profiles.cancel')}</Button>
@@ -218,7 +249,7 @@ function EnvRow({ v, name, ok }: { v: EnvVar; name: string; ok: boolean }) {
             {v.locked}
           </Typography>
         ) : mode === 'set' ? (
-          <SetValue name={name} target={v.name} overwrite={v.set} onDone={() => setMode('idle')} />
+          <SetValue name={name} target={v.name} overwrite={v.set} allowedOrigin={v.allowed_origin} onDone={() => setMode('idle')} />
         ) : mode === 'clear' ? (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%' }}>
             <Typography variant="caption">{t('profiles.envClearTypeName')}</Typography>
@@ -321,7 +352,7 @@ export function EnvPane({ d }: { d: ProfileDetailData }) {
           {adding ? (
             <Stack direction="row" spacing={1} alignItems="center">
               <code>{adding}</code>
-              <SetValue name={name} target={adding} onDone={() => setAdding(null)} />
+              <SetValue name={name} target={adding} allowedOrigin={d.allowed_origins?.[adding]} onDone={() => setAdding(null)} />
             </Stack>
           ) : (
             <Stack direction="row" spacing={1}>

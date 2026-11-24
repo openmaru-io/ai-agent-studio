@@ -195,12 +195,12 @@ def _multipart(path: str, overwrite: bool = False) -> tuple[str, bytes, bytes]:
     return boundary, head, f"\r\n--{boundary}--\r\n".encode()
 
 
-def _post_upload(auth, boundary: str, length: int, body) -> int:
-    """multipart 본문(조각을 내는 반복자)을 Hermes upload-stream 에 보낸다. Hermes 상태, 연결이 끊기면 502."""
+def _post_upload(auth, boundary: str, length: int, body, timeout: float = 120) -> int:
+    """multipart 본문(조각을 내는 반복자)을 Hermes upload-stream 에 보낸다. Hermes 상태, 시간이 지나면 504, 연결이 끊기면 502."""
     url = auth.s["url"].rstrip("/")
     parts = urllib.parse.urlsplit(url)
     cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    conn = cls(parts.hostname, parts.port, timeout=120)
+    conn = cls(parts.hostname, parts.port, timeout=timeout)
     try:
         conn.request("POST", (parts.path or "") + "/api/files/upload-stream", body=body, headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(length),
@@ -210,6 +210,8 @@ def _post_upload(auth, boundary: str, length: int, body) -> int:
         if resp.status in (401, 403):
             auth.logged_in = False                            # 다음 요청이 다시 로그인한다
         return resp.status
+    except TimeoutError:                                      # 보호 스킬 주기가 시간 제한과 끊김을 가른다(스펙 2026-11-21-003 §3-3)
+        return 504
     except (ConnectionAbortedError, OSError, http.client.HTTPException):
         return 502
     finally:
@@ -233,11 +235,11 @@ def push_file(auth, path: str, local_path: str) -> int:
     return _post_upload(auth, boundary, len(head) + size + len(tail), body())
 
 
-def push_bytes(auth, path: str, data: bytes, overwrite: bool = False) -> int:
+def push_bytes(auth, path: str, data: bytes, overwrite: bool = False, timeout: float = 120) -> int:
     """메모리의 바이트를 Hermes 경로에 올린다(기본은 덮어쓰지 않음). 인증 파일은 서버 디스크에 두지 않으려고 이 길을 쓴다
     (스펙 2026-10-22-004 §4-3). 허브 없는 설치본의 기본 스킬은 overwrite 로 판을 바꾼다(스펙 2026-10-29-001 R10). Hermes 상태."""
     boundary, head, tail = _multipart(path, overwrite)
-    return _post_upload(auth, boundary, len(head) + len(data) + len(tail), iter((head, data, tail)))
+    return _post_upload(auth, boundary, len(head) + len(data) + len(tail), iter((head, data, tail)), timeout)
 
 
 async def _stream_to_hermes(request: Request, auth, path: str, size: int, tee=None) -> int:

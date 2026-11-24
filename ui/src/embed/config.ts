@@ -65,6 +65,8 @@ export interface AASWidgetConfig {
   widgetInfo?: string;
   /** 처음 고를 AI 에이전트(작업공간 id). 사용자의 허용 목록 안에 있어야 고른다 */
   agent?: string;
+  /** 처음 열 프로파일(AAS 스펙 2026-11-21-002 §3-7, MindWiki 「내 AAS 에이전트」). 그 에이전트에 없으면 채팅 기본으로 돌아간다 */
+  profile?: string;
   /** 떠 있는 캐릭터 단추를 그린다(기본 참). 거짓이면 호스트가 open()·close()·toggle() 로만 연다(A1b, D5) */
   showLauncher?: boolean;
   /** 위젯 머리줄의 호스트 단추(D15·D17) */
@@ -149,6 +151,7 @@ export function readDataAttributes(el: Element): AASWidgetConfig {
     userId: s('user-id'),
     widgetInfo: s('widget-info'),
     agent: s('agent'),
+    profile: s('profile'),
     showLauncher: bool(el.getAttribute('data-aas-show-launcher')),
   };
 }

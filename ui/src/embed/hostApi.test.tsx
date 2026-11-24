@@ -76,7 +76,7 @@ describe('창 전환 계약(D15·D17)', () => {
 
   it('features 는 rect·context·headerAction·status·saveAnswer 다', () => {
     expect(make().features).toEqual([...WIDGET_FEATURES]);
-    expect(WIDGET_FEATURES).toEqual(['rect', 'context', 'headerAction', 'status', 'saveAnswer']); // saveAnswer: 스펙 2026-11-18-012 D12
+    expect(WIDGET_FEATURES).toEqual(['rect', 'context', 'headerAction', 'status', 'saveAnswer', 'agent']); // saveAnswer: 스펙 2026-11-18-012 D12, agent: 2026-11-21-002 §3-7
   });
 });
 

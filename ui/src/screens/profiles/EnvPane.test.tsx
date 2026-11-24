@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { mountScreen, stubApi } from '@/test/mountScreen';
+import { mountScreen, postedTo, stubApi } from '@/test/mountScreen';
 
 import { EnvPane } from './Panes';
 import type { ProfileDetailData } from './types';
@@ -54,5 +54,37 @@ describe('비밀값 탭의 ?key=(스킬 서랍 링크, 스펙 2026-10-16-010 2�
     mountScreen(<EnvPane d={D([{ name: 'WEATHER_KEY', set: true }])} />, '/profiles?name=ma&pane=env&key=WEATHER_KEY');
     expect(await screen.findByText('WEATHER_KEY')).toBeInTheDocument();
     expect(screen.queryByText(/Claude Code 로 돌아가세요/)).toBeNull();
+  });
+});
+
+describe('관리자가 정한 주소 넣기(스펙 2026-11-24-009 단계 1b)', () => {
+  const OWNER = (extra: Partial<ProfileDetailData>, env: { name: string; set: boolean; allowed_origin?: string; locked?: string }[]) =>
+    ({ profile: { name: 'ma' }, can_edit: false, owner: true, manages: true, secure: true, env, ...extra }) as unknown as ProfileDetailData;
+
+  it('allowed_origin 이 있는 줄은 「값 넣기」 뒤 입력란 대신 주소와 단추, 누르면 그 주소로 env_set', async () => {
+    const user = userEvent.setup();
+    const fn = stubApi({ '/api/profile/action': { ok: true, was_set: 'false' }, '/api/profile?': {} });
+    mountScreen(<EnvPane d={OWNER({}, [{ name: 'DOCS_BASE_URL', set: false, allowed_origin: 'https://docs.example.com', locked: '' }])} />,
+      '/profiles?name=ma&pane=env&key=DOCS_BASE_URL');
+    await user.click(await screen.findByRole('button', { name: '값 넣기' }));
+    expect(screen.getByText('https://docs.example.com')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/DOCS_BASE_URL/)).toBeNull(); // 가린 입력란이 없다
+    await user.click(screen.getByRole('button', { name: '관리자가 정한 주소 넣기' }));
+    await vi.waitFor(() => expect(postedTo(fn, '/api/profile/action')).toHaveLength(1));
+    expect(postedTo(fn, '/api/profile/action')[0]).toMatchObject({ action: 'env_set', target: 'DOCS_BASE_URL', value: 'https://docs.example.com' });
+  });
+
+  it('목록에 줄이 없는 새 이름(?key=)도 allowed_origins 로 단추를 보인다', async () => {
+    stubApi({});
+    mountScreen(<EnvPane d={OWNER({ allowed_origins: { DOCS_BASE_URL: 'https://docs.example.com' } }, [{ name: 'OTHER_KEY', set: true }])} />,
+      '/profiles?name=ma&pane=env&key=DOCS_BASE_URL');
+    expect(await screen.findByRole('button', { name: '관리자가 정한 주소 넣기' })).toBeInTheDocument();
+  });
+
+  it('allowed_origin 이 없으면(관리자 화면) 입력란 그대로', async () => {
+    stubApi({});
+    mountScreen(<EnvPane d={D([{ name: 'OTHER_KEY', set: true }])} />, '/profiles?name=ma&pane=env&key=DOCS_BASE_URL');
+    expect(await screen.findByPlaceholderText('새 값')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '관리자가 정한 주소 넣기' })).toBeNull();
   });
 });

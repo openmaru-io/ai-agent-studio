@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import time
 from contextlib import contextmanager
 import urllib.error
 import urllib.parse
@@ -511,13 +512,25 @@ def agent_skills(pkg: dict) -> list[str]:
 # 에이전트 패키지 설치는 요청을 줄에 세우고 나중에 리더가 만들므로, 줄에 선 것까지 세지 않으면 한도를 넘는다(R13).
 
 @contextmanager
-def create_lock(pod_id: str):
-    """작업공간마다 프로파일 만들기를 서버 사이에서도 하나씩. 공유 데이터 폴더(NFS)의 flock 은 읽기로도 연 파일이어야 해 "a+" 로 연다."""
+def create_lock(pod_id: str, timeout: float | None = None):
+    """작업공간마다 프로파일 만들기를 서버 사이에서도 하나씩. 공유 데이터 폴더(NFS)의 flock 은 읽기로도 연 파일이어야 해 "a+" 로 연다.
+    timeout 을 주면 그만큼만 기다리고 TimeoutError — 웹훅(마감 9초)이 다른 설치 뒤에 줄 서지 않게(스펙 2026-11-21-002)."""
     d = store.data_dir() / "market" / "create-locks"
     d.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", pod_id or "_")[:120]
     with open(d / f"{safe}.lock", "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        if timeout is None:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        else:
+            end = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= end:
+                        raise TimeoutError("create_lock") from None
+                    time.sleep(0.05)
         try:
             yield
         finally:
@@ -565,6 +578,9 @@ def request_install(pod_id: str, container: str, pkg: dict, version: str, profil
         raise MarketError(tr("공용(루트) 프로파일에는 설치할 수 없습니다 — Hermes 가 막습니다", "You cannot install to the shared (root) profile. Hermes blocks it"))
     if pc_import.reserved_name(profile):                          # PC 가져오기 임시 프로파일 이름(OMAI-1444 R11·ROV6)
         raise MarketError(pc_import.reserved_error())
+    from ..ops import mindwiki_webhook
+    if profile not in profiles and mindwiki_webhook.reserved_auto_name(profile):   # 새 프로파일(에이전트 패키지)은 MindWiki 자동화 이름을 쓰지 못한다
+        raise MarketError(mindwiki_webhook.reserved_auto_error())                   # (스펙 2026-11-21-002 §3-2 3). 이미 있는 자동화 프로파일에 넣는 기본·사용 규칙 스킬은 받는다
     if not VERSION.match(version) or version not in {v["version"] for v in pkg["versions"]}:
         raise MarketError(tr("공개된 버전이 아닙니다", "That version is not published"))
     size = hermes_bytes(pkg)

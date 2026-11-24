@@ -44,6 +44,7 @@ import { t } from '@/i18n';
 import { agentLabel, agentProfileLabel } from '@/lib/agentLabel';
 import { get, post } from '@/lib/api';
 import { useMe } from '@/lib/data';
+import { isAutoProfile } from '@/lib/mindwikiAuto';
 import { useFocusOnMount } from '@/lib/useFocusOnMount';
 
 import { AgentAnnouncer, useAgentList, useMakeChatDefault, useSwitchToSameName } from './profiles/AgentScope';
@@ -445,6 +446,14 @@ const COLUMNS = ({ defaultModel, groupOf, current, agentColumn, narrow }: Column
             <Tooltip key="chat" title={t('profiles.chatDefaultTip')}>
               <span>
                 <Pill>{t('profiles.chatDefaultTag')}</Pill>
+              </span>
+            </Tooltip>
+          ),
+          // MindWiki 자동화 전용 프로파일(스펙 2026-11-21-002 설계 DS5). 지우기는 그대로 된다
+          isAutoProfile(r.name) && (
+            <Tooltip key="mwauto" title={t('profiles.mindwikiAutoTip')}>
+              <span>
+                <Pill>{t('profiles.mindwikiAutoTag')}</Pill>
               </span>
             </Tooltip>
           ),

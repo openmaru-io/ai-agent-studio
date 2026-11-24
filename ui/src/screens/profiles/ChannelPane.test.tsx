@@ -326,3 +326,110 @@ describe('메신저 연결 탭: 공유한 작업공간(스펙 2026-11-17-008 §5
     await waitFor(() => expect(postedTo(fn, '/api/profile/action')).toContainEqual(expect.objectContaining({ action: 'pairing_clear' })));
   });
 });
+
+describe('Slack 창의 앱 만드는 법과 토큰 칸 안내(스펙 2026-11-23-002)', () => {
+  const NEW_SLACK = {
+    platforms: [
+      { id: 'telegram', name: 'Telegram', enabled: false, configured: false, state: 'not_configured', env_vars: [{ key: 'TELEGRAM_BOT_TOKEN', required: true, is_set: false }] },
+      {
+        id: 'slack',
+        name: 'Slack',
+        enabled: false,
+        configured: false,
+        state: 'not_configured',
+        env_vars: [
+          { key: 'SLACK_BOT_TOKEN', required: true, is_set: false },
+          { key: 'SLACK_APP_TOKEN', required: true, is_set: false },
+          { key: 'SLACK_ALLOWED_USERS', required: false, is_set: false },
+        ],
+      },
+    ],
+    pairing: { pending: [], approved: [] },
+  };
+
+  it('Slack 창 맨 위에 설정 파일이 든 「Slack 앱 만드는 법」이 있고 토큰 칸마다 시작 글자를 안내한다', async () => {
+    mount(D(), NEW_SLACK);
+    const dlg = await openPick('Slack');
+    expect(within(dlg).getByText('Slack 앱 만드는 법')).toBeInTheDocument();
+    expect(within(dlg).getByRole('button', { name: '설정 파일 복사' })).toBeInTheDocument();
+    expect(within(dlg).getByLabelText('Slack 앱 설정 파일').textContent).toContain('"socket_mode_enabled": true');
+    expect(within(dlg).getByText(/^필수 값 · xoxb- 로 시작합니다/)).toBeInTheDocument();
+    expect(within(dlg).getByText(/^필수 값 · xapp- 로 시작합니다/)).toBeInTheDocument();
+  });
+
+  it('다른 메신저 창에는 Slack 안내가 없다', async () => {
+    mount(D(), NEW_SLACK);
+    const dlg = await openPick('Telegram');
+    expect(within(dlg).queryByText('Slack 앱 만드는 법')).not.toBeInTheDocument();
+  });
+});
+
+describe('메신저 연결 탭의 「연결 삭제」(스펙 2026-11-24-005)', () => {
+  // 저장만 하고 켜지 않은 Slack(토큰이 남아 있다). 「끄기」는 막히지만 「연결 삭제」는 된다
+  const SAVED_OFF = {
+    platforms: [
+      {
+        id: 'slack',
+        name: 'Slack',
+        enabled: false,
+        configured: true,
+        state: 'fatal',
+        error_message: "Profile 'personal_agenta' and 'ma' both configure slack with the same credential.",
+        env_vars: [{ key: 'SLACK_BOT_TOKEN', required: true, is_set: true }],
+      },
+    ],
+    pairing: { pending: [], approved: [] },
+  };
+  const removeMount = (d = D(), data: unknown = SAVED_OFF, res: Record<string, unknown> = { ok: true, cleared: ['SLACK_BOT_TOKEN'], kept: [], duplicate: true }) => {
+    const fn = stubApi({ '/api/channels/platforms': data, '/api/profile/action': () => res });
+    mountScreen(<ChannelPane d={d} />, '/profiles');
+    return fn;
+  };
+
+  it('켜지지 않은 채널도 값이 있으면 삭제하고, 확인하면 channel_remove 를 보내고 대화 상자를 닫는다', async () => {
+    const fn = removeMount();
+    const dlg = await openCard('Slack');
+    expect(within(dlg).getByRole('button', { name: '끄기' })).toBeDisabled();
+    await userEvent.click(within(dlg).getByRole('button', { name: '연결 삭제' }));
+    const confirmDlg = await screen.findByRole('dialog', { name: 'Slack 연결 삭제' });
+    expect(within(confirmDlg).getByText(/쪽 앱은 그대로 남습니다/)).toBeInTheDocument();
+    await userEvent.click(within(confirmDlg).getByRole('button', { name: '연결 삭제' }));
+    await waitFor(() => expect(postedTo(fn, '/api/profile/action')).toContainEqual({ name: 'ma', action: 'channel_remove', platform: 'slack' }));
+    expect(await screen.findByText(/Slack 연결을 삭제했습니다.*같은 토큰을 쓰는 다른 프로파일/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Slack 설정' })).not.toBeInTheDocument());
+  });
+
+  it('취소하면 보내지 않는다', async () => {
+    const fn = removeMount();
+    const dlg = await openCard('Slack');
+    await userEvent.click(within(dlg).getByRole('button', { name: '연결 삭제' }));
+    await userEvent.click(within(await screen.findByRole('dialog', { name: 'Slack 연결 삭제' })).getByRole('button', { name: '취소' }));
+    expect(postedTo(fn, '/api/profile/action')).toEqual([]);
+  });
+
+  it('남은 관리자 값이 있으면 그 수를 알린다', async () => {
+    removeMount(D(), SAVED_OFF, { ok: true, cleared: ['SLACK_BOT_TOKEN'], kept: ['SLACK_ALLOW_ALL_USERS'], duplicate: false });
+    const dlg = await openCard('Slack');
+    await userEvent.click(within(dlg).getByRole('button', { name: '연결 삭제' }));
+    await userEvent.click(within(await screen.findByRole('dialog', { name: 'Slack 연결 삭제' })).getByRole('button', { name: '연결 삭제' }));
+    expect(await screen.findByText(/관리자가 넣은 값 1개는 남았습니다/)).toBeInTheDocument();
+  });
+
+  it('https 가 아니어도 삭제는 된다(비밀값을 보내지 않는다)', async () => {
+    removeMount(D({ secure: false }));
+    const dlg = await openCard('Slack');
+    expect(within(dlg).getByRole('button', { name: '저장하고 켜기' })).toBeDisabled();
+    expect(within(dlg).getByRole('button', { name: '연결 삭제' })).toBeEnabled();
+  });
+
+  it('권한이 없으면 단추가 꺼진다', async () => {
+    removeMount(D({ can_edit: false }));
+    expect(within(await openCard('Slack')).getByRole('button', { name: '연결 삭제' })).toBeDisabled();
+  });
+
+  it('값이 하나도 없는 메신저는 삭제 단추가 꺼진다', async () => {
+    mount();
+    const dlg = await openPick('Telegram');
+    expect(within(dlg).getByRole('button', { name: '연결 삭제' })).toBeDisabled();
+  });
+});

@@ -55,7 +55,7 @@ export interface Dependents {
   n_block?: number;
 }
 
-const BUILTIN = new Set(['bundled', 'bundled_modified', 'hub', 'aas']);
+const BUILTIN = new Set(['bundled', 'bundled_modified', 'hub', 'aas', 'protected']);
 
 const MINE = new Set(['local', 'agent']);
 const PENDING_KEY = ['skill-delete', 'pending'];
@@ -77,7 +77,11 @@ export function deleteMode(s: DeletableSkill, ctx: { admin: boolean; market?: Ma
     return { kind: 'archive' };
   }
   if (s.origin !== 'market' || !ctx.market)                                    // 출처를 모르거나 스킬 허브 기록을 아직 못 읽었다
-    return { kind: 'none', why: BUILTIN.has(s.origin ?? '') ? t('skills.del.why.builtin') : s.origin === 'market' ? undefined : t('skills.del.why.origin') };
+    return {
+      kind: 'none',
+      // 보호 스킬은 AAS 서버가 쓰고 되돌린다 — 「Hermes 기본 제공」 문구가 맞지 않았다(스펙 2026-11-21-003, OKE 화면 확인)
+      why: s.origin === 'protected' ? t('skills.del.why.protected') : BUILTIN.has(s.origin ?? '') ? t('skills.del.why.builtin') : s.origin === 'market' ? undefined : t('skills.del.why.origin'),
+    };
   const folder = marketFolder(s.id);
   const rec = (ctx.market.installed ?? []).find((r) => r.kind === 'skill' && r.profile === s.profile && r.name === folder);
   if (ctx.pending) return { kind: 'hub', disabled: t('skills.del.why.pending'), folder, namespace: rec?.namespace };

@@ -25,7 +25,7 @@ class API:
     def __init__(self, auth=None):
         pass
 
-    def call(self, method, path, body=None, query=None):
+    def call(self, method, path, body=None, query=None, timeout=30):
         p = query["path"]
         if p.endswith("config.yaml"):
             raise HermesError("Access to sensitive files is not allowed", 502)   # HermesAPI 는 403 을 502 로 올린다

@@ -31,6 +31,17 @@ class FakeHermes(BaseHTTPRequestHandler):
     skill_path = ""
     real_file = ""
     jobs_status = 200                                                  # GET /api/cron/jobs 가 돌려줄 상태(401·403 시험용)
+    # 2026-11-24 prod-cop 상황(스펙 2026-11-24-004): Hermes 목록은 기본 프로파일의 메신저(telegram)와 프로파일마다의 bot-chat 뿐이고,
+    # Slack 은 ma 프로파일에만 연결돼 있다
+    delivery_targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True},
+                        {"id": "telegram", "name": "Telegram", "home_target_set": True},
+                        {"id": "bot-chat:default", "name": "Bot Chat (default)", "home_target_set": True},
+                        {"id": "bot-chat:main", "name": "Bot Chat (main)", "home_target_set": True},
+                        {"id": "bot-chat:ma", "name": "Bot Chat (ma)", "home_target_set": True}]
+    platforms = {"ma": [{"id": "slack", "name": "Slack", "enabled": True, "configured": True, "home_channel": True},
+                        {"id": "discord", "name": "Discord", "enabled": False, "configured": True, "home_channel": True},
+                        {"id": "mattermost", "name": "Mattermost", "enabled": True, "configured": False, "home_channel": False}]}
+    platforms_status = 200
 
     def _send(self, code, obj):
         body = json.dumps(obj).encode()
@@ -65,6 +76,13 @@ class FakeHermes(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "frontmatter invalid"})
             Path(FakeHermes.real_file).write_text(body["content"], encoding="utf-8")
             return self._send(200, {"success": True})
+        if u.path == "/api/cron/delivery-targets":                     # 실제 Hermes 처럼 profile 을 받지 않고 기본 프로파일 기준으로 돌려준다
+            return self._send(200, {"targets": FakeHermes.delivery_targets})
+        if u.path == "/api/messaging/platforms":
+            if FakeHermes.platforms_status != 200:
+                return self._send(FakeHermes.platforms_status, {"detail": "no"})
+            prof = (parse_qs(u.query).get("profile") or [""])[0]
+            return self._send(200, {"platforms": FakeHermes.platforms.get(prof, [])})
         if u.path.endswith("/runs"):
             return self._send(200, {"runs": [{"id": "cron_j1_20261005_090000", "started_at": 1.0, "ended_at": 31.0, "secret_field": "x"}]})
         return self._send(200, {"id": "j1", "name": "digest-daily", "enabled": True, "schedule": {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"},
@@ -119,6 +137,52 @@ class CronApiTest(unittest.TestCase):
         self.assertNotIn("supersecretvalue1234", json.dumps(d))
         self.assertNotIn("hermes_home", d["job"])                        # 정해 둔 항목만 내보낸다
         self.assertEqual(d["runs"], [{"id": "cron_j1_20261005_090000", "started_at": 1.0, "ended_at": 31.0}])
+
+    def _targets(self, owner=False, root_hidden=True):
+        """작업 상세의 결과 전달 대상 id 목록. owner 이면 파드 t 의 주인(관리자 아님)으로 묻는다."""
+        from unittest import mock
+        from aas.ops import cron_policy
+        reg = server._registry
+        old = (server._auth, reg.is_admin)
+        class On:
+            enabled = True
+            email = "t@example.com"
+            def user(self, cookie): return {"email": self.email, "name": ""}
+        if owner:
+            server._auth = On(); reg.is_admin = lambda u: False
+        server._forget(reg.pods[0])                                                     # 채널 읽기 캐시를 비워 시험마다 새로 읽는다
+        try:
+            with mock.patch.object(cron_policy, "root_hidden", return_value=root_hidden):
+                code, d = self.req("GET", "/api/cron/job?profile=ma&id=j1")
+        finally:
+            server._auth, reg.is_admin = old
+        self.assertEqual(code, 200)
+        return d["targets"]
+
+    def test_job_targets_are_the_jobs_profile_channels(self):
+        """스펙 2026-11-24-004 P1: 작업 상세 목록은 그 작업 프로파일(ma)의 켜짐·설정 끝 메신저다. 기본 프로파일의 telegram 은 나오지 않는다."""
+        t = self._targets(owner=True)
+        self.assertEqual([x["id"] for x in t], ["local", "slack"])                      # 꺼진 discord·설정 안 된 mattermost·bot-chat 은 없다
+        self.assertEqual(t[1], {"id": "slack", "name": "Slack", "ready": True})
+        FakeHermes.platforms["ma"][0]["home_channel"] = False
+        try:
+            self.assertFalse(self._targets(owner=True)[1]["ready"])                     # 홈 채널이 없으면 화면이 「(홈 채널 없음)」을 붙인다
+        finally:
+            FakeHermes.platforms["ma"][0]["home_channel"] = True
+
+    def test_job_targets_bot_chat_only_for_admin_without_hidden_root(self):
+        """스펙 2026-11-24-004 P2·D1: bot-chat 은 관리자만 저장할 수 있어 관리자에게만 보이고, 숨긴 루트(bot-chat:default)는 뺀다."""
+        self.assertEqual([x["id"] for x in self._targets()], ["local", "slack", "bot-chat:main", "bot-chat:ma"])
+        self.assertIn("bot-chat:default", [x["id"] for x in self._targets(root_hidden=False)])
+        self.assertNotIn("telegram", [x["id"] for x in self._targets()])
+
+    def test_job_targets_fall_back_to_local_when_channels_cannot_be_read(self):
+        """채널을 읽지 못해도 기본 프로파일의 목록으로 떨어지지 않는다(그게 P1 이다)."""
+        FakeHermes.platforms_status = 500
+        try:
+            self.assertEqual([x["id"] for x in self._targets(owner=True)], ["local"])
+        finally:
+            FakeHermes.platforms_status = 200
 
     def test_delete_drops_job_from_cached_list_before_rebuild(self):
         # 지운 작업이 「전체 작업·일정」 목록에 남던 것: 흐름 그림을 다시 만드는 데 30초쯤 걸리는데,

@@ -92,6 +92,19 @@ class MindwikiCatalogTest(unittest.TestCase):
         self.assertTrue(mcp_servers.refresh_mindwiki_tools(api, "ma", pod="p", by="t"))
         self.assertEqual(api.servers["cogentai-mindwiki"]["tools"]["include"], list(mcp_servers.MINDWIKI_READ_TOOLS))
 
+    def test_automation_clone_gets_the_narrow_list_and_the_switch_brings_the_full_one_back(self):
+        """자동화 복제본(mwauto-…)은 tool_search 를 꺼 정의를 다 싣는다 — MindWiki 도구는 행 작업에 쓰는 여덟만(스펙 AAS 2026-11-22-004 M10)."""
+        from aas.ops import mindwiki_auto_clone
+        api = FakeHermes()
+        with _with_url():
+            _install(api, {KEY: TOKEN}, body={"write": True})
+            self.assertTrue(mcp_servers.refresh_mindwiki_tools(api, "mwauto-team-alpha", pod="p", by="t"))
+            self.assertEqual(api.servers["cogentai-mindwiki"]["tools"]["include"], list(mindwiki_auto_clone.CLONE_MINDWIKI_TOOLS))
+            self.assertFalse(mcp_servers.refresh_mindwiki_tools(api, "mwauto-team-alpha", pod="p", by="t"))
+            self.assertEqual(mcp_servers._mindwiki_tools(True, "mindwiki-auto"), list(mcp_servers.MINDWIKI_READ_TOOLS + mcp_servers.MINDWIKI_WRITE_TOOLS))
+            with mock.patch.dict(os.environ, {"AAS_MINDWIKI_CLONE_EAGER_TOOLS": "0"}):
+                self.assertEqual(mcp_servers._mindwiki_tools(True, "mwauto-team-alpha"), list(mcp_servers.MINDWIKI_READ_TOOLS + mcp_servers.MINDWIKI_WRITE_TOOLS))
+
     def test_foreign_turns_block_mindwiki_write_and_trash_tools(self):
         blocked = mcp_servers.foreign_write_blocks()
         for tool in mcp_servers.MINDWIKI_WRITE_TOOLS + ("trash_page",):

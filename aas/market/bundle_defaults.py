@@ -23,6 +23,7 @@ from datetime import datetime
 
 from ..common import db, store
 from ..common.i18n import tr
+from ..ops import mindwiki_webhook
 from . import marketplace, skill_bundle
 
 NAMESPACE = "free"
@@ -151,7 +152,8 @@ def deliver(pods: list, profiles_of) -> list[str]:
         with _conn() as conn:
             rows = {(r["profile"], r["package"]): dict(r) for r in conn.execute("SELECT * FROM market_bundle_delivery WHERE pod=?", (pod.id,))}
         _settle(pod.id, rows)
-        profiles = [p for p in profiles_of(pod) if p != "default"]
+        # 자동화 프로파일(mindwiki-auto · mwauto-…)은 자동화 카드만 맡아 기본 스킬을 쓰지 않는다 — 스킬 목록이 호출마다 바탕 지침에 실린다(스펙 2026-11-22-004 M5)
+        profiles = [p for p in profiles_of(pod) if p != "default" and not mindwiki_webhook.is_auto_profile(p)]
         have = {(r["profile"], r["package"]) for r in marketplace.installed(pod.id)}
         for profile in profiles:
             for package_id in packages():

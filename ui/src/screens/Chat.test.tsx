@@ -180,6 +180,14 @@ describe('Chat: 에이전트 목록', () => {
     expect(screen.getByText('마케팅 담당')).toBeInTheDocument();
   });
 
+  it('MindWiki 자동화 프로파일(mindwiki-auto·mwauto-)은 채팅 고르기 목록에 없다(스펙 2026-11-21-002 DS5)', async () => {
+    mount('/chat', STATUS({ agents: [...STATUS().agents, { name: 'mwauto-x', title: '', description: '' }, { name: 'mindwiki-auto', title: '', description: '' }] }));
+    await screen.findByRole('button', { name: /^마케팅 세션 보기/ });
+    expect(screen.queryByRole('button', { name: /^mwauto-x/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^mindwiki-auto/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^ops 세션 보기/ })).toBeInTheDocument();
+  });
+
   it('검색은 이름·제목·설명으로 거른다', async () => {
     const user = userEvent.setup();
     mount();

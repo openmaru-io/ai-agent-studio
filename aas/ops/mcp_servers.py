@@ -986,6 +986,28 @@ def mindwiki_url() -> str:
     return url if urlsplit(url).scheme in ("http", "https") and urlsplit(url).netloc else ""
 
 
+def mindwiki_public_url() -> str:
+    """브라우저가 여는 MindWiki 주소(스펙 2026-11-23-019 G4·G5). AAS_MINDWIKI_URL 이 비면 빈 값(MindWiki 를 함께 설치하지 않음 — 상단 단추·저장
+    단추를 함께 숨긴다). 있으면 AAS_MINDWIKI_PUBLIC_URL, 없으면 AAS_MINDWIKI_URL. AAS_MINDWIKI_URL 은 서버·Hermes 가 부르는 주소라
+    클러스터 안 주소일 수 있어 브라우저용 값을 따로 둔다."""
+    if not mindwiki_url():
+        return ""
+    pub = config.get("AAS_MINDWIKI_PUBLIC_URL", "").strip().rstrip("/")
+    return pub if urlsplit(pub).scheme in ("http", "https") and urlsplit(pub).netloc else mindwiki_url()
+
+
+def mindwiki_url_warning() -> str:
+    """서버 시작 로그 한 줄(스펙 2026-11-23-019 4-7). 바깥 호출 없이 값의 모양만 본다(G3)."""
+    pub = config.get("AAS_MINDWIKI_PUBLIC_URL", "").strip()
+    if pub and not (urlsplit(pub).scheme in ("http", "https") and urlsplit(pub).netloc):
+        return f"AAS_MINDWIKI_PUBLIC_URL 은 http(s):// 로 시작하는 절대 주소여야 합니다: {pub!r}. AAS_MINDWIKI_URL 을 씁니다"   # i18n-ignore: 서버 로그
+    host = urlsplit(mindwiki_url()).hostname or ""
+    if mindwiki_url() and not pub and ("." not in host or host.endswith(".svc") or ".svc." in host):
+        return (f"AAS_MINDWIKI_URL({host}) 이 클러스터 안 주소로 보입니다. 브라우저의 MindWiki 단추가 열 주소를 "   # i18n-ignore: 서버 로그
+                "AAS_MINDWIKI_PUBLIC_URL 에 넣으세요")
+    return ""
+
+
 def mindwiki_mcp_url() -> str:
     return mindwiki_url() + "/mcp" if mindwiki_url() else ""
 
@@ -1012,11 +1034,16 @@ def _mindwiki_entry(api: HermesAPI, prof: str | None) -> dict:
             "description": tr("사내 위키 MindWiki 문서를 찾고 읽습니다. 내 개인 토큰으로 연결하고 기본은 읽기 도구만 등록합니다. 이 프로파일의 브라우저·외부 연결 도구는 끄고 MindWiki 사용 규칙 스킬을 설치합니다.",
                               "Finds and reads documents in the MindWiki company wiki. Connects with your own personal token and registers read tools by default. Turns off this profile's browser and connection tools and installs the MindWiki usage skill."),
             "required_env": [{"name": MINDWIKI_KEY, "required": True, "secret": True,
-                              "prompt": tr(f"MindWiki › 설정 › MCP 연결에서 만든 개인 토큰(wiki_pat_ 로 시작). 읽기만 쓰려면 쓰기 권한 없이 만드세요. 설정 화면: {mindwiki_url()}",
-                                           f"The personal token created in MindWiki › Settings › MCP connection (starts with wiki_pat_). To read only, create it without write access. Settings: {mindwiki_url()}")}]}
+                              "prompt": tr(f"MindWiki › 설정 › 연결 › 「MCP 연결」 탭에서 만든 개인 토큰(wiki_pat_ 로 시작, 「API 토큰」 탭의 wiki_api_ 는 쓰지 못함). 읽기만 쓰려면 쓰기 권한 없이 만드세요. 설정 화면: {mindwiki_url()}",
+                                           f"The personal token created in MindWiki › Settings › Connections › the MCP connection tab (starts with wiki_pat_; a wiki_api_ token from the API tokens tab does not work). To read only, create it without write access. Settings: {mindwiki_url()}")}]}
 
 
-def _mindwiki_tools(write: bool) -> list[str]:
+def _mindwiki_tools(write: bool, profile: str | None = None) -> list[str]:
+    """MindWiki 연결의 tools.include. 자동화 복제본(mwauto-…)은 자동화 행 작업에 쓰는 아홉만(여덟 + prepare_context, 스펙 2026-11-23-003) — 복제본은 tool_search 를 꺼 정의를
+    호출마다 다 싣는다(스펙 AAS 2026-11-22-004 M10, 끄기 AAS_MINDWIKI_CLONE_EAGER_TOOLS=0)."""
+    from . import mindwiki_auto_clone, mindwiki_webhook
+    if profile and mindwiki_webhook.is_clone(profile) and mindwiki_auto_clone.eager_tools():
+        return list(mindwiki_auto_clone.CLONE_MINDWIKI_TOOLS)
     return list(MINDWIKI_READ_TOOLS + (MINDWIKI_WRITE_TOOLS if write else ()))
 
 
@@ -1031,17 +1058,21 @@ def refresh_mindwiki_tools(api: HermesAPI, prof: str | None, *, pod: str, by: st
     include = (raw.get("tools") or {}).get("include") if isinstance(raw, dict) and isinstance(raw.get("tools"), dict) else None
     if not include:
         return False                                    # include 가 없으면 Hermes 가 모든 도구를 받는다 — 고칠 것이 없다
-    want = _mindwiki_tools("create_page" in include)
-    if all(t in include for t in want):
+    write = "create_page" in include or "edit_block" in include      # 좁힌 복제본 목록에는 create_page 가 없다
+    want = _mindwiki_tools(write, prof)
+    if want != _mindwiki_tools(write):                  # 자동화 복제본: 좁힌 목록과 똑같아야 한다(넓은 목록이면 좁힌다)
+        if sorted(include) == sorted(want):
+            return False
+    elif all(t in include for t in want):
         return False
-    set_mindwiki_write(api, prof, "create_page" in include, pod=pod, by=by)
+    set_mindwiki_write(api, prof, write, pod=pod, by=by)
     return True
 
 
 def set_mindwiki_write(api: HermesAPI, prof: str | None, write: bool, *, pod: str, by: str) -> dict:
     """설치한 MindWiki 서버의 쓰기 도구를 켜고 끈다. 토큰에 쓰기 권한이 없으면 MindWiki 가 쓰기 도구를 내지 않으므로 켜도 보이지 않는다."""
     def build(item: dict) -> dict:
-        item["tools"] = {**(item.get("tools") if isinstance(item.get("tools"), dict) else {}), "include": _mindwiki_tools(write)}
+        item["tools"] = {**(item.get("tools") if isinstance(item.get("tools"), dict) else {}), "include": _mindwiki_tools(write, prof)}
         return item
     replace_server(api, prof, MINDWIKI, build, pod=pod, by=by, note="MindWiki 도구 범위 바꾸기")   # i18n-ignore: 판 메모
     return {"ok": True, "name": MINDWIKI, "write": write}
@@ -1088,7 +1119,7 @@ def _install_mindwiki(api: HermesAPI, prof: str | None, env: dict, write: bool, 
                            f"MindWiki rejected the token (HTTP {status}). Check that the whole token was copied and that it is not expired or revoked."),
                         400, reason="mindwiki_key_rejected", field="env")
     out = add(api, prof, {"server": MINDWIKI, "kind": "url", "url": url, "auth": "header", "bearer_token": key},
-              owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile, tools_include=_mindwiki_tools(write))
+              owner=owner, secure=secure, profs=profs, pod=pod, by=by, profile=profile, tools_include=_mindwiki_tools(write, prof or profile))
     _mindwiki_key_check(api, prof)
     return {**out, "write": write, "browser_off": _toolset_off(api, prof, BROWSER_TOOLSET),
             "connections_off": _toolset_off(api, prof, CONNECTIONS_TOOLSET), "skill_package": MINDWIKI_SKILL}

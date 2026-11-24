@@ -104,6 +104,13 @@ class OpsTest(unittest.TestCase):
             mw.begin("i", "5", "c")
         self.assertEqual((cm.exception.status, cm.exception.reason), (422, "install_daily_limit"))
 
+    def test_한도_기본값은_백만(self):
+        # 환경 변수가 없으면 1,000,000 · 1,000,000(MindWiki 스펙 2026-11-22-010 §4-6)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AAS_MINDWIKI_WEBHOOK_LIMIT_AUTHOR", None)
+            os.environ.pop("AAS_MINDWIKI_WEBHOOK_LIMIT_INSTALL", None)
+            self.assertEqual(mw.limits(), (1_000_000, 1_000_000))
+
     def test_하루_경계는_AAS_TIMEZONE_의_자정(self):
         kst = 9 * 3600
         before = datetime(2026, 11, 15, 23, 59, 59, tzinfo=timezone.utc).timestamp() - kst
@@ -258,6 +265,23 @@ class RouteTest(unittest.TestCase):
         code, out = self.send()
         self.assertEqual((code, out["card_id"]), (200, "t_1"))
         self.assertEqual(len(FakeAPI.calls), n)
+
+    def test_켠_보호_스킬은_카드에_실어_보낸다(self):
+        # mindwiki-auto 는 skills 묶음을 꺼 두어 켠 보호 스킬을 읽지 못했다(스펙 2026-11-21-003 §9, OKE state.db) — 카드 skills 칸으로 미리 싣는다
+        FakeAPI.profiles.append("mindwiki-auto")
+        self.connect()
+        msgs = []
+        with mock.patch.object(route.protected_skills, "preload_for", lambda pod, profile, message=None: msgs.append(message) or (["protected-fixture"] if profile == "mindwiki-auto" else [])):
+            code, out = self.send()
+        self.assertTrue(msgs and msgs[0])                                 # 기본 경로도 맡길 일을 넘긴다(스펙 2026-11-24-002 D8)
+        self.assertEqual((code, out["reason"]), (202, "ok"))
+        task = next(c for c in FakeAPI.calls if c[1] == "/api/plugins/kanban/tasks")
+        self.assertEqual(task[2]["skills"], ["protected-fixture"])
+        FakeAPI.calls.clear()
+        with mock.patch.object(route.protected_skills, "preload_for", lambda pod, profile, message=None: []):
+            code, out = self.send(delivery=self.delivery + 1)
+        task = next(c for c in FakeAPI.calls if c[1] == "/api/plugins/kanban/tasks")
+        self.assertNotIn("skills", task[2])                               # 켠 것이 없으면 칸을 보내지 않는다
 
     def test_웹_조사를_켠_자동화는_웹_프로파일(self):
         FakeAPI.profiles.append("mindwiki-auto-web")

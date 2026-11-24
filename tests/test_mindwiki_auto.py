@@ -373,6 +373,17 @@ class AutoTest(unittest.TestCase):
         self.assertEqual((r["status"], r["workspace"], r["write"]), ("connected", "ws-2", 1))
         self.assertTrue(self.wiki.tokens[r["tid"]].get("automation"))
 
+    def test_clone_of_a_chosen_profile_gets_the_same_automation_first_connect(self):
+        """복제본 mwauto-<T>(스펙 2026-11-21-002 §3-2 3): 주 프로파일이 아니어도 웹훅이 둔 빈 행으로 자동화 전용 첫 연결, 그 워크스페이스로."""
+        self.wiki.workspaces = [{"id": "ws-1", "slug": "dev"}, {"id": "ws-2", "slug": "sales"}]
+        mc.want_auto(self.sub, POD, "mwauto-team-alpha", "ws-2")
+        self.addCleanup(lambda: mc.forget(POD, "mwauto-team-alpha"))
+        with mock.patch.dict(os.environ, {"AAS_MINDWIKI_AUTO_CONNECT": "true"}):
+            self.assertEqual(self.login(), 1)
+        r = mc._row(self.sub, POD, "mwauto-team-alpha")
+        self.assertEqual((r["status"], r["workspace"], r["write"]), ("connected", "ws-2", 1))
+        self.assertTrue(self.wiki.tokens[r["tid"]].get("automation"))
+
     def test_automation_profile_does_not_fall_back_to_read_only(self):
         self.wiki.no_write = True
         mc.want_auto(self.sub, POD, "mindwiki-auto", "ws-1")

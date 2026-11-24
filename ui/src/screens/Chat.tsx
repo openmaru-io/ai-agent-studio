@@ -80,6 +80,7 @@ import { useIsAdmin, useMe } from '@/lib/data';
 import { useEmbed } from '@/lib/embedContext';
 import { fmtClock, zonedDate } from '@/lib/format';
 import { CH } from '@/lib/labels';
+import { isAutoProfile } from '@/lib/mindwikiAuto';
 import { MONO_FONT } from '@/lib/monoFont';
 import { chatTitle } from '@/lib/officeName';
 import { FOCUS_RING, gridTokens } from '@/lib/shellTokens';
@@ -709,8 +710,10 @@ function AgentList({
   }, [preparing, store]);
 
   // 줄이 에이전트 이름을 보이면(프로파일 1개) 그 이름으로도 찾는다(2026-10-19-013 C2)
+  // MindWiki 자동화 전용 프로파일(mindwiki-auto·mwauto-…)은 칸반 카드만 맡는다 — 채팅 고르기에서 뺀다(스펙 2026-11-21-002 설계 DS5)
   const rowsOf = (agents: AgentInfo[], groupHit: boolean, pod?: string) =>
     agents
+      .filter((a) => !isAutoProfile(a.name))
       .filter(
         (a) =>
           groupHit ||
@@ -1165,10 +1168,19 @@ function Messages({
                             {copied === i ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 16 }} />}
                           </IconButton>
                         </Tooltip>
-                        {!embed && <ReadAloudButton target={readTarget} conv={readConv} msg={rk} name={title} text={it.text ?? ''} streaming={it === writing} />}
+                        {/* [복사] 바로 다음이 「MindWiki 에 저장」(스펙 2026-11-23-019 S1). 저장 위치·결과 글자는 행동 줄 맨 끝으로 간다(order) */}
                         {!embed && it !== writing && store.pod && profile && (
-                          <SaveToMindwiki pod={store.pod} profile={profile} conversation={readConv} message={rk} markdown={it.text ?? ''} agent={title} />
+                          <SaveToMindwiki
+                            pod={store.pod}
+                            profile={profile}
+                            conversation={readConv}
+                            message={rk}
+                            markdown={it.text ?? ''}
+                            agent={title}
+                            latest={it === answers[answers.length - 1]}
+                          />
                         )}
+                        {!embed && <ReadAloudButton target={readTarget} conv={readConv} msg={rk} name={title} text={it.text ?? ''} streaming={it === writing} />}
                         {embed && it !== writing && !guardOf[i] && !it.llmBlocked && (it.text ?? '').trim() && store.pod && profile && (
                           <SaveAnswerButton
                             target={{ markdown: it.text ?? '', question: questionBefore(S?.items ?? [], it), answerKey: rk, session: S?.storedId ?? '', agent: title, pod: store.pod, profile }}

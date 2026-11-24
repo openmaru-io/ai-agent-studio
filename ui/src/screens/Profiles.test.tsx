@@ -279,6 +279,15 @@ describe('Profiles 목록', () => {
     expect(screen.getByText('채팅 기본')).toBeInTheDocument();
   });
 
+  it('MindWiki 자동화 프로파일(mindwiki-auto·mwauto-)에는 「MindWiki 자동화」 표시가 붙는다(스펙 2026-11-21-002 DS5)', async () => {
+    mount('/profiles?tab=all', DETAIL(), {
+      ...LIST(),
+      profiles: [ROW(), ROW({ name: 'mwauto-team-alpha', title: '', issues: [], channels: [] }), ROW({ name: 'mindwiki-auto', title: '', issues: [], channels: [] })],
+    });
+    await rowByName(/^마케팅/);
+    expect(screen.getAllByText('MindWiki 자동화')).toHaveLength(2);
+  });
+
   it('새 프로파일: 복제 원본과 옵션을 보내고 만든 프로파일 상세로 간다', async () => {
     const user = userEvent.setup();
     const fn = mount('/profiles');

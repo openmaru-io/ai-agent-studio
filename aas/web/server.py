@@ -22,20 +22,22 @@ import secrets
 import ssl
 import threading
 import time
+import traceback
 import types
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from ..ops import skill_periods, notify_out
-from ..ops import activity, admin_requests, bundled_repair, catalog_plugins, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mindwiki_connect, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, restart_pending, shared_skills, slogan, card_brief, tts, usage_hours, workspace_notices
+from ..ops import mindwiki_auto_clone
+from ..ops import activity, admin_requests, bundled_repair, catalog_plugins, changes, channels, chat_hidden, chat_session_meta, collect_all, channel_admin, cron_done, cron_health, cron_policy, dashboard, issue_acks, models, mcp_oauth_relay, mcp_servers, mindwiki_connect, mindwiki_webhook, mutes, network_mode, notices, observed, owner_guard, pc_import, profile_copy, restart_pending, shared_skills, slogan, card_brief, tts, usage_hours, workspace_notices
 from ..fleet import agents, chat_default, export, identity, k8s, lifecycle, primary, profile_names, profiles, retained_volumes, rollouts, sharing
 from ..common import brand, cache_epoch, config, db, i18n, leader, owner, settings, soul_templates, store, table_cache
 from ..common.names import person_name
 from ..assets import agent_skills, credentials, explain, files, flow, image_packages, inventory, skill_deps, skill_graph, skill_header, skill_setup
 from ..office import hub_auto, inbox, meeting, meeting_files, office, office_access, office_changed, office_state, presence, relay, shared
 from ..auth import embed, keycloak, login_alias
-from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, profile_template, tags as market_tags, template_checks, template_post, templates as market_templates, updates as market_updates
+from ..market import bundle_defaults, bundle_local, bundle_publish, hub_admin, hub_hide, market_dispatch, market_publish, marketplace, protected_skills, publish_auto, skill_bundle, skill_desc, skill_keep, summary as skill_summary, profile_template, tags as market_tags, template_checks, template_post, templates as market_templates, updates as market_updates
 from ..auth.auth import COOKIE as SESSION_COOKIE, Auth, AuthError, _cookie, _env, has_admin_session, load_users, safe_next
 from ..hermes.hermes_api import HermesAPI, HermesError, job_view, run_view
 from ..common.i18n import tr
@@ -1305,7 +1307,7 @@ def _with_market_issues(pod: Pod, rows: list[dict]) -> list[dict]:
     latest = {f"{i['namespace']}/{i['name']}": str(i.get("version") or "") for i in cat_.get("items") or []}
     out = []
     for r in rows:
-        extra = ([market_updates.issue(r["name"], by[r["name"]])] if r["name"] in by else []) + market_updates.auto_issues(pod.id, r["name"]) + bundle_defaults.issues(pod.id, r["name"]) + bundle_local.issues(pod.id, r["name"]) \
+        extra = ([market_updates.issue(r["name"], by[r["name"]])] if r["name"] in by else []) + market_updates.auto_issues(pod.id, r["name"]) + bundle_defaults.issues(pod.id, r["name"]) + bundle_local.issues(pod.id, r["name"]) + protected_skills.issues(pod.id, r["name"]) \
             + _template_issues(pod, r["name"], templ) + template_post.issues(pod.id, r["name"], list(templ.values()))
         row = {**r, "issues": [*r.get("issues", []), *extra]} if extra else r
         if r["name"] in templ:                                       # 「템플릿 x 1.2 에서 만듦」·「새 판 있음」(스펙 2026-11-18-002 §4-2 7)
@@ -1316,6 +1318,34 @@ def _with_market_issues(pod: Pod, rows: list[dict]) -> list[dict]:
                                        **({"latest": latest_} if latest_ and marketplace._ver(latest_) > marketplace._ver(cur_) else {})}}
         out.append(row)
     return out
+
+
+def _profile_channels(pod: Pod, prof: str, admin: bool) -> dict:
+    """그 프로파일의 채널 상태(channel_admin.read). 기본 프로파일은 이름 없이(None) 묻는다. 「메신저 연결」 탭과 예약 작업 상세가 같은 캐시를 쓴다."""
+    scoped = None if next((r for r in _profile_rows(pod) if r["name"] == prof), {}).get("is_default") else prof
+    return _cached(f"{pod.id}:chanhermes:{prof}:{int(admin)}", 20, lambda: channel_admin.read(HermesAPI(hub(pod).auth), scoped, True))
+
+
+def _job_targets(pod: Pod, prof: str, admin: bool) -> list[dict]:
+    """예약 작업 상세의 결과 전달 대상(스펙 2026-11-24-004). Hermes /api/cron/delivery-targets 는 profile 을 받지 않고 기본 프로파일의
+    메신저만 돌려주므로 메신저 줄은 그 작업 프로파일의 채널(켜짐·설정 끝)로 만든다. 읽지 못하면 비운다 — 기본 프로파일 목록으로 떨어지지 않는다.
+    bot-chat 은 관리자만 저장할 수 있어(cron_policy) 관리자에게만 Hermes 목록에서 붙이고, 숨긴 루트(bot-chat:default)는 뺀다."""
+    targets = [{"id": "local", "name": "Local (save only)", "ready": True}]
+    try:
+        targets += [{"id": str(p["id"]), "name": str(p.get("name") or p["id"]), "ready": bool(p.get("home_channel"))}
+                    for p in _profile_channels(pod, prof, admin).get("platforms", []) if p.get("enabled") and p.get("configured")]
+    except HermesError:
+        pass
+    if admin:
+        hidden = f"bot-chat:{primary.ROOT}" if cron_policy.root_hidden(pod.id) else ""
+        try:
+            tg = HermesAPI(hub(pod).auth).call("GET", "/api/cron/delivery-targets")
+            targets += [{"id": str(t["id"]), "name": str(t.get("name") or t["id"]), "ready": True}
+                        for t in (tg.get("targets", []) if isinstance(tg, dict) else tg)
+                        if isinstance(t, dict) and str(t.get("id") or "").startswith("bot-chat:") and t["id"] != hidden]
+        except HermesError:
+            pass
+    return targets
 
 
 def _profile_rows(pod: Pod) -> list[dict]:
@@ -1447,6 +1477,41 @@ def _linked_targets(pod_id: str, profile: str) -> list[tuple[str, str]]:
     return [(t["email"], f"{t['platform']}:{t['chat_id']}") for t in notify_out.targets(messenger_links.links(pod_id, profile=profile))]
 
 
+def _channel_remove(pod: Pod, api: HermesAPI, name: str, prof: str | None, plat: str, owner: bool, who: str) -> dict:
+    """「메신저 연결」의 「연결 삭제」(스펙 2026-11-24-005, OMAI-2200). 지울 이름은 서버가 정한다(D1).
+
+      Hermes 직접 읽기(캐시 없음) → is_set 이름 + 승인 목록
+      → 주인은 owner_guard 허용 이름만 clear_env, 나머지는 kept(이름만)
+      → PUT {clear_env, enabled:false}  (실패하면 아래를 하지 않는다)
+      → 캐시(channels·chanhermes) 버리기 → _messenger_sync   ← 순서: sync 가 _channels 를 읽는다
+      → 다시 시작 필요 기록(hot_served 와 상관없이)
+      → 그 메신저의 승인 철회(연결 줄 + 그 밖의 승인 사용자, D2)
+
+    끄는 PUT 이 hot_served 여도 켜져 있던 봇은 멈추지 않는다. Hermes 는 다시 훑을 때 꺼진 메신저를 건너뛸 뿐 살아 있는 연결을 끊지 않는다
+    (gateway/run_adapters.py _start_one_profile_adapters). 그래서 needs_restart 를 쓰지 않고 직접 기록한다.
+    비밀값을 보내지 않으므로 https(_secure)를 요구하지 않는다."""
+    from . import messenger_api
+    from ..ops import messenger_links
+    now = channel_admin.read(api, prof, True)                      # 20초 캐시를 거치지 않는다 — 방금 저장한 값도 지운다
+    row = next((p for p in now.get("platforms", []) if p.get("id") == plat), {})
+    is_set = [str(v["key"]) for v in row.get("env_vars", []) if v.get("is_set") and v.get("key")]
+    allowed = owner_guard._allowed_names(plat) if owner else None
+    cleared = [k for k in is_set if allowed is None or k in allowed]
+    kept = [k for k in is_set if k not in cleared]
+    api.call("PUT", f"/api/messaging/platforms/{plat}", {"env": {}, "clear_env": cleared, "enabled": False}, {"profile": prof})
+    _drop_pod_key(pod, "channels", f"chanhermes:{name}:0", f"chanhermes:{name}:1")
+    restart = _messenger_sync(pod)
+    restart_pending.note([("channel", plat)])
+    rows = [r for r in messenger_links.links(pod.id, profile=name) if r["platform"] == plat]
+    seen = {r["platform_user_id"] for r in rows}
+    rows += [{"profile": name, "platform": plat, "platform_user_id": str(r["user_id"])} for r in ((now.get("pairing") or {}).get("approved") or [])
+             if r.get("platform") == plat and r.get("user_id") and r["user_id"] not in seen]   # 구성원을 고르지 않고 승인한 사람·외부인
+    for r in rows:
+        messenger_api.revoke(pod, r)                                # AAS 줄 + Hermes 승인. 닿지 않으면 재시도 큐
+    return {"ok": True, "cleared": cleared, "kept": kept, "revoked": len(rows),
+            "duplicate": "both configure" in str(row.get("error_message") or ""), "restart_needed": restart}
+
+
 def _messenger_sync(pod: Pod) -> list[str]:
     """구성원이 있으면 연결된 메신저의 페어링을 켜고 없으면 끈다(스펙 2026-11-17-008 §5-1). 실패해도 부른 일을 막지 않는다."""
     from . import messenger_api
@@ -1485,15 +1550,49 @@ def _template_enable_ready(pod: Pod, api: HermesAPI, name: str, prof: str | None
         return []
 
 
-def _profile_action(pod: Pod, body: dict, who: str) -> dict:
+def _profile_action(pod: Pod, body: dict, who: str, *, auto: bool = False, locked: bool = False) -> dict:
     """프로파일을 바꾸는 요청을 Hermes 대시보드 API 로 보낸다. 잘못된 요청은 ValueError, Hermes 의 거절은 HermesError.
-    이 요청에서 다시 시작이 필요한 변경이 기록되면 응답에 restart_pending([{profile, kind, target}] 또는 "unrecorded")을 싣는다(스펙 2026-11-18-016 4-4)."""
+    이 요청에서 다시 시작이 필요한 변경이 기록되면 응답에 restart_pending([{profile, kind, target}] 또는 "unrecorded")을 싣는다(스펙 2026-11-18-016 4-4).
+    auto·locked 는 내부 호출만 넣는 인자다(요청 본문 키가 아니다 — HTTP·MCP 입구는 넣을 수 없다, 스펙 2026-11-21-002 엔지니어링 E4):
+    auto = MindWiki 웹훅의 자동화 프로파일 만들기(mwauto-·mindwiki-auto 예약 이름 통과), locked = 부르는 쪽이 marketplace.create_lock 을 이미 잡았다."""
     with restart_pending.recording(pod.id, str(body.get("name") or ""), who) as rec:
-        out = _profile_action_run(pod, body, who)
+        out = _profile_action_run(pod, body, who, auto=auto, locked=locked)
     got = restart_pending.outcome(rec)
     if got and isinstance(out, dict):
         out = {**out, "restart_pending": got}
     return out
+
+
+PROTECTED_RULES = "/api/protected-skills/rules"
+# 설치 규칙 쓰기 경로 넷(스펙 2026-11-24-001 4-3). 옛 Handler 의 POST 허용 목록에 들어간다 — 빠지면 404
+PROTECTED_RULES_WRITES = (PROTECTED_RULES, f"{PROTECTED_RULES}/restore", f"{PROTECTED_RULES}/preview", f"{PROTECTED_RULES}/ack")
+
+
+def _clone_of(pod_id: str, profile: str) -> str:
+    """MindWiki 자동화 복제본이면 원래 프로파일 이름(복제 상태 행의 template), 아니면 빈 글."""
+    row = mindwiki_auto_clone.get(pod_id, profile)
+    return str((row or {}).get("template") or "")
+
+
+def _protected_toggle(pod: Pod, api: HermesAPI, name: str, prof: str | None, skill: str, on: bool) -> dict:
+    """보호 스킬 켜기·끄기(스펙 2026-11-21-003 §3-2): Hermes 끔 목록이 아니라 AAS 기록을 바꾼다. 설치 값이 꺼진 이름도 이리 와서
+    「없는 스킬」로 거절된다 — 일반 스킬 끄기로 넘기지 않는다. 사람이 켜면 Hermes 쪽에서 꺼진 것도 켠다(주기는 다시 켜지 않는다)."""
+    listed = None
+    if on:
+        try:
+            listed = list(api.call("GET", "/api/skills", query={"profile": prof}) or [])
+        except HermesError:
+            listed = None                                        # 목록을 못 읽으면 같은 이름 검사 없이 켠다 — 주기가 5분 안에 알린다
+    try:
+        out = protected_skills.set_enabled(pod.id, name, skill, on, listed=listed)
+    except protected_skills.ProtectedError as exc:
+        err = files.FileError(str(exc), exc.status, reason=exc.code)
+        err.extra = {"code": exc.code}                            # 화면 API 오류 꼴에 code(§3-2 거절 표)
+        raise err from exc
+    mine = [s for s in listed or [] if s.get("name") in (skill, f"protected/{skill}") and s.get("category") == "protected"]
+    if mine and not any(s.get("enabled", True) for s in mine):
+        api.call("PUT", "/api/skills/toggle", {"name": mine[0]["name"], "enabled": True, "profile": prof}, {"profile": prof})
+    return {"ok": True, **out}
 
 
 def _raw_config(api: HermesAPI, prof: str | None) -> dict | None:
@@ -1515,13 +1614,33 @@ def _restart_locked_error(exc: restart_pending.Locked) -> files.FileError:
     return err
 
 
-def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
+def _with_allowed_origins(pod: Pod, user, a, profile: str, rows: list[dict]) -> list[dict]:
+    """스킬 「설정 필요」 창의 요구 변수 줄에 「관리자가 정한 주소 넣기」 단추용 allowed_origin 을 붙인다(스펙 2026-11-24-009 단계 1b).
+    관리자가 아닌 소유자에게만, env_set 과 같은 판단(Hermes 카탈로그 범주 포함)으로. 카탈로그를 못 읽으면 붙이지 않는다(fail-closed)."""
+    if not rows or not _manages_pod(pod, user, a.enabled) or (not a.enabled) or registry().is_admin(user):
+        return rows
+    urls = owner_guard.owner_urls()
+    if not any(r.get("name") in urls for r in rows):
+        return rows
+    try:
+        listing = HermesAPI(hub(pod).auth).call("GET", "/api/env", query=None if profile == "default" else {"profile": profile})
+    except HermesError:
+        return rows
+    catalog = owner_guard.catalog_of(listing)
+    out = []
+    for r in rows:
+        origin = owner_guard.owner_url_allowed(str(r.get("name") or ""), catalog, urls)
+        out.append({**r, "allowed_origin": origin} if origin else r)
+    return out
+
+
+def _profile_action_run(pod: Pod, body: dict, who: str, *, auto: bool = False, locked: bool = False) -> dict:
     action, name = str(body.get("action") or ""), str(body.get("name") or "")
     if action not in profiles.ACTIONS:
         raise ValueError(tr("알 수 없는 요청", "Unknown request"))
-    if action == "create" and not body.get("_create_locked"):     # 프로파일 만들기는 작업공간마다 하나씩 — 에이전트 패키지 설치와 같은 잠금(스펙 2026-11-18-002 E7)
+    if action == "create" and not locked:                         # 프로파일 만들기는 작업공간마다 하나씩 — 에이전트 패키지 설치와 같은 잠금(스펙 2026-11-18-002 E7)
         with marketplace.create_lock(pod.id):
-            return _profile_action(pod, {**body, "_create_locked": True}, who)
+            return _profile_action(pod, body, who, auto=auto, locked=True)
     api = HermesAPI(hub(pod).auth)
     known = {r["name"]: r for r in _profile_rows(pod)}
     q = lambda n: quote(n, safe="")                               # noqa: E731
@@ -1536,6 +1655,8 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
             raise ValueError(tr("이름은 영문 소문자·숫자·-·_ 로, 소문자나 숫자로 시작해야 합니다", "Use lowercase letters, digits, - and _, and start with a lowercase letter or digit"))
         if pc_import.reserved_name(name):                          # PC 가져오기 임시 프로파일 이름(OMAI-1444 R11)
             raise ValueError(pc_import.reserved_error())
+        if mindwiki_webhook.reserved_auto_name(name) and not auto:   # MindWiki 자동화 프로파일 이름(스펙 2026-11-21-002 §3-2 3) — 웹훅의 만들기만
+            raise ValueError(mindwiki_webhook.reserved_auto_error())
         if name in known:
             raise ValueError(tr("이미 있는 이름입니다", "That name is already in use"))
         if src and src not in known:
@@ -1573,7 +1694,8 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
             except (HermesError, files.FileError, ValueError) as exc:
                 out["share_error" if share else "copy_error"] = str(exc)
             return out
-        api.call("POST", "/api/profiles", {"name": name, "clone_from": src or None, "no_skills": False, "description": desc})
+        # 자동화 복제본(auto)은 Hermes 기본 스킬 없이 빈 프로파일로 만든다 — 스킬은 보호 스킬만(스펙 2026-11-21-002 「복제 방식」). 사람의 만들기는 그대로
+        api.call("POST", "/api/profiles", {"name": name, "clone_from": src or None, "no_skills": bool(auto and no_skills and not src), "description": desc})
         if src:                                                    # 복제한 스킬 패키지의 설치 기록도 새 프로파일로(스펙 2026-10-24-003 R16)
             marketplace.copy_records(pod.id, src, name, who)
         return {"ok": True, "name": name}
@@ -1712,6 +1834,8 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
         if not target or len(target) > 120 or "/" in target and action != "skill":
             raise ValueError(tr("대상이 없습니다", "Target is missing"))
         on = bool(body.get("enabled"))
+        if action == "skill" and target in protected_skills.protected_names():
+            return _protected_toggle(pod, api, name, prof, target, on)
         if action == "skill":
             api.call("PUT", "/api/skills/toggle", {"name": target, "enabled": on, "profile": prof}, {"profile": prof})
         elif action == "toolset":
@@ -1747,9 +1871,17 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
         was_set = next((("true" if r["set"] else "false") for r in profiles.env_view(listing) if r["name"] == key), "false") if listing is not None else "unknown"
         if owner:                                                    # 주인: 모델 키·동작·접속 변수와 채널 변수는 거절. 목록을 읽지 못해도 거절(fail-closed)
             catalog = owner_guard.catalog_of(listing) if listing is not None else None
-            why, refused = owner_guard.env_key_check(key, catalog)
-            if refused:
-                raise files.FileError(refused, 403, reason=why, field=key)
+            allowed = owner_guard.owner_url_allowed(key, catalog, owner_guard.owner_urls())   # 허용 목록은 이 요청에서 한 번만 해석한다(스펙 2026-11-24-009 단계 1a)
+            if allowed:                                              # 관리자가 허용한 접속 주소 변수: 이름 대신 값을 검사한다. 지우기는 주소를 바꾸지 않으므로 통과
+                if action == "env_set":
+                    why, refused, canonical_url = owner_guard.env_value_check(key, body.get("value"), allowed)
+                    if refused:
+                        raise files.FileError(refused, 403, reason=why, field=key)
+                    body = {**body, "value": canonical_url}
+            else:
+                why, refused = owner_guard.env_key_check(key, catalog)
+                if refused:
+                    raise files.FileError(refused, 403, reason=why, field=key)
         if action == "env_set":
             value = body.get("value")
             if isinstance(value, str) and key.startswith("MCP_") and key.endswith("_API_KEY"):   # MCP 토큰은 헤더에 Bearer 가 붙으므로 앞의 Bearer 를 뗀다(스펙 2026-10-23-002 R7)
@@ -1772,10 +1904,12 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
             if enabled:
                 out["mcp_enabled"] = enabled
         return out
-    elif action in ("channel_save", "channel_test", "pairing_approve", "pairing_revoke"):     # 채널 연결(스펙 2026-10-15-003 단계 2)
+    elif action in ("channel_save", "channel_remove", "channel_test", "pairing_approve", "pairing_revoke"):     # 채널 연결(스펙 2026-10-15-003 단계 2)
         if known[name]["is_default"] and cron_policy.root_hidden(pod.id):
             raise ValueError(tr("숨긴 루트에는 채널을 연결할 수 없습니다. 주 프로파일(main)을 고르세요.", "Channels cannot be connected to the hidden root. Choose the main profile."))
         plat, qs = channel_admin.platform(body), {"profile": prof}
+        if action == "channel_remove":
+            return _channel_remove(pod, api, name, prof, plat, owner, who)
         if action == "channel_save":
             payload = channel_admin.save_payload(body)
             if owner:                                                # 주인: 봇 토큰·허용 사용자(실제 ID)만. `*`·인가 변수는 열린 봇이 된다
@@ -1790,8 +1924,14 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
             if payload["env"] and not body.get("_secure"):
                 raise files.FileError(tr("암호화되지 않은 주소(http, 사내 IP)에서는 비밀값을 다룰 수 없습니다. https 주소나 이 맥의 localhost 에서 여세요.",
                    "Secrets cannot be handled over an unencrypted address (http, internal IP). Open this page over https or on localhost of this Mac."), 403)
-            res = api.call("PUT", f"/api/messaging/platforms/{plat}", payload, qs)
-            restart = _messenger_sync(pod)                           # 구성원이 있는 작업공간에 새 봇을 이으면 페어링도 켠다(스펙 2026-11-17-008 §5-1)
+            try:
+                res = api.call("PUT", f"/api/messaging/platforms/{plat}", payload, qs)
+            except HermesError as exc:                               # 값 모양 거절은 화면 언어로, 그 칸 아래에(스펙 2026-11-23-002 D6)
+                refused = channel_admin.save_error(str(exc))
+                if refused:
+                    raise files.FileError(refused[1], 400, reason="value_invalid", field=refused[0]) from None
+                raise
+            restart = _messenger_sync(pod)                          # 구성원이 있는 작업공간에 새 봇을 이으면 페어링도 켠다(스펙 2026-11-17-008 §5-1)
             hot = bool(res.get("hot_served")) if isinstance(res, dict) else False
             restart_pending.note(restart_pending.needs_restart("channel", name=plat, hot_served=hot))   # 페어링 뒤에 — 같은 플랫폼이면 channel 한 줄(4-3)
             return {"ok": True, "hot_served": hot, "restart_needed": restart}
@@ -1831,6 +1971,8 @@ def _profile_action_run(pod: Pod, body: dict, who: str) -> dict:
             raise ValueError(tr("새 이름이 맞지 않거나 이미 있습니다", "The new name is invalid or already in use"))
         if pc_import.reserved_name(new):
             raise ValueError(pc_import.reserved_error())
+        if mindwiki_webhook.is_auto_profile(name) or mindwiki_webhook.reserved_auto_name(new):   # 자동화 프로파일 이름은 키다 — 어느 쪽으로도 바꾸지 않는다(스펙 2026-11-21-002 E9)
+            raise ValueError(mindwiki_webhook.reserved_auto_error())
         _import_guard(pod, name)
         api.call("PATCH", f"/api/profiles/{q(name)}", {"new_name": new})
         files.move_key(pod.id, f"agents:{name}", f"agents:{new}")      # 작업 지침의 판·확인 기록이 이름을 따라간다(스펙 2026-10-19-004 §10 M1)
@@ -2108,13 +2250,14 @@ def _profile_text_io(api: HermesAPI, kind: str, name: str, prof: str | None):
             lambda text: api.call("PUT", "/api/config/raw", {"yaml_text": text, "profile": prof}, {"profile": prof}))
 
 
-def _bundle_reader(pod: Pod):
-    """허브 없는 설치본의 기본 스킬 쓰기용: Hermes 파일 API 로 /opt/data 아래 상대 경로를 읽는다. 없으면 None(스펙 2026-10-29-001 R10)."""
+def _bundle_reader(pod: Pod, timeout: float = 30):
+    """허브 없는 설치본의 기본 스킬 쓰기용: Hermes 파일 API 로 /opt/data 아래 상대 경로를 읽는다. 없으면 None(스펙 2026-10-29-001 R10).
+    보호 스킬 주기는 timeout 을 줄여 부른다(스펙 2026-11-21-003)."""
     api = HermesAPI(hub(pod).auth)
 
     def read(path: str) -> bytes | None:
         try:
-            res = api.call("GET", "/api/files/read", query={"path": path})
+            res = api.call("GET", "/api/files/read", query={"path": path}, timeout=timeout)
         except HermesError as exc:
             if exc.code in (400, 404):
                 return None
@@ -2127,10 +2270,10 @@ def _bundle_reader(pod: Pod):
     return read
 
 
-def _bundle_writer(pod: Pod):
+def _bundle_writer(pod: Pod, timeout: float = 120):
     from . import files as web_files                       # web.files 가 server 를 불러와 위에서 부르면 순환한다
     auth = hub(pod).auth
-    return lambda path, data: web_files.push_bytes(auth, path, data, overwrite=True)
+    return lambda path, data: web_files.push_bytes(auth, path, data, overwrite=True, timeout=timeout)
 
 
 def primary_sync_once(reg: Registry) -> list[str]:
@@ -2671,6 +2814,59 @@ def _market_tag_loop(every: float = 600.0, first: float = 60.0):
             print(f"스킬 태그 분류 실패: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
 
 
+class _ProtectedOps:
+    """보호 스킬 주기의 파일 연산(스펙 2026-11-21-003 §3-3). 호출마다 시간 제한 PROTECTED_CALL_TIMEOUT 초 — 사용자 Hermes 하나가
+    응답하지 않아도 주기 전체가 멈추지 않게. 읽기의 「sensitive files」 오류를 빈 값으로 보는 규칙(OMAI-2031)을 목록에도 둔다."""
+
+    def __init__(self, pod: Pod):
+        self.api = HermesAPI(hub(pod).auth)
+        self.read = _bundle_reader(pod, timeout=PROTECTED_CALL_TIMEOUT)
+        self.write = _bundle_writer(pod, timeout=PROTECTED_CALL_TIMEOUT)
+
+    def listdir(self, path: str):
+        try:
+            return list(self.api.call("GET", "/api/files", query={"path": path}, timeout=PROTECTED_CALL_TIMEOUT).get("entries") or [])
+        except HermesError as exc:
+            if exc.code in (400, 404) or "access to sensitive files" in str(exc).lower():
+                return None
+            raise
+
+    def delete(self, path: str, recursive: bool) -> None:
+        try:
+            self.api.call("DELETE", "/api/files", {"path": path, "recursive": recursive}, timeout=PROTECTED_CALL_TIMEOUT)
+        except HermesError as exc:
+            if exc.code != 404:
+                raise
+
+    def skills(self, profile: str):
+        try:
+            return list(self.api.call("GET", "/api/skills", query={"profile": profile}, timeout=PROTECTED_CALL_TIMEOUT) or [])
+        except HermesError:
+            return None
+
+
+PROTECTED_CALL_TIMEOUT = 10.0
+
+
+def _protected_loop(tick: float = 5.0, first: float = 30.0):
+    """보호 스킬 쓰기·점검·되돌리기(스펙 2026-11-21-003 §3-3). 리더만. 묶음 주기와 따로 돈다 — 주기 상한 60초가 다른 리더 일을 밀지 않게.
+    5초마다 「바로 점검」 부탁(켜기 요청은 리더가 아닌 서버로도 온다 — DB 칸 check_requested_at 으로 알린다)만 보고, 주기 간격마다 전체를 돈다."""
+    due = time.time() + first
+    while True:
+        time.sleep(tick)
+        if not leader.is_leader():
+            continue
+        try:
+            if time.time() < due and not protected_skills.requested():
+                continue
+            due = time.time() + protected_skills.interval()
+            reg = registry()
+            protected_skills.cycle(reg.pods, lambda pod: [p.name for p in cron_health.hr.profiles(pod.hermes_home)], _ProtectedOps)
+        except Exception as exc:                                   # 주기 자체가 죽지 않게 — 원인은 로그로(보호가 조용히 꺼지지 않게)
+            print(f"protected_skill_cycle_error pod= profile= skill= error={type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+            traceback.print_exc()
+
+
 _DESC_WAKE = threading.Event()
 
 
@@ -2780,7 +2976,7 @@ def _text_problem(kind: str, content: str) -> str:
 # toolset(도구 켜고 끄기)은 OMAI-1193 에서 더했다. MCP·모델·설정 파일은 계속 관리자만
 OWNER_PROFILE_ACTIONS = frozenset({"soul", "soul_preview", "soul_revert", "skill", "toolset",
                                    "agents", "agents_preview", "agents_revert", "agents_ack",   # 작업 지침(AGENTS.md)은 SOUL 과 같은 권한(스펙 2026-10-19-004 D2·§10 H3)
-                                   "env_set", "env_clear", "channel_save", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",   # 비밀값·채널(스펙 2026-10-15-011 D2·D3). 이름·값은 owner_guard 가 가린다
+                                   "env_set", "env_clear", "channel_save", "channel_remove", "channel_test", "pairing_approve", "pairing_revoke", "pairing_clear",   # 비밀값·채널(스펙 2026-10-15-011 D2·D3). 이름·값은 owner_guard 가 가린다. 연결 삭제(2026-11-24-005)
                                    "config", "config_preview", "config_revert", "mcp", "mcp_test", "rename",   # 설정 파일·MCP·이름 바꾸기(D4·D10, 단계 1b). 잠글 키는 owner_guard.config_error, main 은 rename 분기가 막는다
                                    "mcp_add", "mcp_remove", "mcp_catalog", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_mindwiki_write", "mcp_mindwiki_connect", "mcp_mindwiki_ack", "mcp_url_check", "mcp_to_oauth",   # MCP 서버 추가·삭제·카탈로그(스펙 2026-10-15-025). YAML 편집으로 이미 할 수 있는 일이라 권한은 넓어지지 않는다. 검사는 mcp_servers
                                    "mcp_apply",   # 바꾼 MCP 서버를 에이전트에 붙이려는 게이트웨이 다시 시작 하나만(스펙 2026-10-15-025 §12). 시작·멈추기는 관리자 전용 gateway 로 남는다
@@ -3109,7 +3305,8 @@ def _profile_detail(pod: Pod, name: str, user=None) -> dict:
         return {**profiles.soul_view(text), "sha": files.text_sha(text), "versions": len(files.versions(pod.id, f"config:{name}"))}
     part("config", config)
     part("toolsets", lambda: profiles.toolsets_view(api.call("GET", "/api/tools/toolsets", query={"profile": prof})))
-    part("skills", lambda: skill_desc.apply(profiles.skills_view(api.call("GET", "/api/skills", query={"profile": prof})), 200))
+    part("skills", lambda: skill_desc.apply(protected_skills.merge_profile_skills(   # 보호 스킬: 기록 기준 켬·끔, 쓰기 전 줄(스펙 2026-11-21-003 §3-2)
+        pod.id, name, profiles.skills_view(api.call("GET", "/api/skills", query={"profile": prof}))), 200))
     def mcp():
         raw = api.call("GET", "/api/mcp/servers", query={"profile": prof})
         rows = profiles.mcp_view(raw)
@@ -6290,7 +6487,8 @@ class Handler(BaseHTTPRequestHandler):
         """이 파일을 여기서 고칠 수 있는가, 안 되면 왜. 관리자와 그 파드의 주인이 고친다(주인은 숨긴 루트를 못 만진다, 스펙 2026-10-15-011 D10)."""
         admin = (not a.enabled) or registry().is_admin(user)
         may = admin or (pod is not None and not content_gate(pod, user, a.enabled, admin, _profile_of_path(rel)))
-        why = ("" if files.editable(rel) else tr("스크립트는 보기만 됩니다. 고치려면 AI 에이전트와의 대화로 요청하세요.", "Scripts are read-only. To change one, ask the AI Agent in a chat.")) \
+        why = (files.protected_why() if files.protected_copy(rel) else "") \
+            or ("" if files.editable(rel) else tr("스크립트는 보기만 됩니다. 고치려면 AI 에이전트와의 대화로 요청하세요.", "Scripts are read-only. To change one, ask the AI Agent in a chat.")) \
             or ("" if may else tr("관리자만 고칠 수 있습니다", "Only admins can edit this")) \
             or (tr("비밀값으로 보이는 줄이 있어 여기서는 고칠 수 없습니다", "Some lines look like secrets, so this cannot be edited here") if data["masked_lines"] else "")
         return {"editable": not why, "why_not": why}
@@ -6803,6 +7001,8 @@ class Handler(BaseHTTPRequestHandler):
                                 # 좌측 메뉴·오피스 제목 「<회사> > <부서> 오피스」(OMAI-1121). 회사명은 설정한 값만(미설정이면 빈 값)
                                 "department": settings.departments().get(str((user or {}).get("email") or "").lower(), ""),
                                 "company_name": settings.company_name(),
+                                # 브라우저가 여는 MindWiki 주소. 함께 설치하지 않았으면 빈 값 — 상단 단추·저장 단추를 숨긴다(스펙 2026-11-23-019 G1·G4)
+                                "mindwiki_url": mcp_servers.mindwiki_public_url(),
                                 # 새 사용자의 주 프로파일(main)이 아직 준비되지 않았으면 화면이 「준비 중」을 보인다(스펙 2026-10-14-003 리뷰 D6)
                                 "primary": _primary_view(pod),
                                 # 내 정보 서랍: 비밀번호를 어디서 바꾸는가(스펙 2026-10-14-017)
@@ -6858,6 +7058,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "<p>If you run from source, first run <code>cd ui &amp;&amp; npm ci &amp;&amp; npm run build</code>. The container image includes the built UI.</p>")), "text/html; charset=utf-8")
             elif path == "/api/health":
                 self._json({**health_payload(pod), "dashboard_url": dashboard_url(self.headers.get("Host", "localhost"))})
+            elif path == PROTECTED_RULES:                    # 보호 스킬 설치 규칙 읽기(스펙 2026-11-24-001 4-3)
+                self._protected_rules_get(query, a, user, pod)
             elif path == "/api/skills":
                 g = _skills(pod)
                 tag_table, tag_rules = market_tags.load(), market_tags.work_prefixes()   # 스킬 태그(OMAI-1283): 표·접두어 규칙을 한 번만 읽어 행마다 붙인다
@@ -6872,6 +7074,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     states, agents = {}, []
                 slim = [{**row, **states.get(row["id"], {})} for row in slim]
+                slim = protected_skills.merge_list_rows(pod.id, slim, _skill_targets(pod))   # 보호 스킬(스펙 2026-11-21-003 §3-2)
                 # 게시한 스킬(게시됨·검토 중): 「많이 쓴 내 스킬」 줄의 「스킬 허브에 게시」 대신 「게시됨」(스펙 2026-11-19-005 U8, R7)
                 try:
                     shipped = {(r.get("profile") or "", str(r.get("path") or "").strip("/")) for r in market_publish.requests(pod.id)
@@ -6927,8 +7130,11 @@ class Handler(BaseHTTPRequestHandler):
                     env_rows, mixed = skill_setup.with_status(hit["required_env"], home / ".env")
                     # 프로파일 값이 AAS 값을 덮는 줄: 주인이 지울 수 없는 이름(owner_guard 의 이름 규칙 — _BASE_URL·HERMES_ 등)이면
                     # 화면이 링크 대신 「관리자가 지우면 AAS 값을 씁니다」를 보인다(스펙 2026-11-19-002 §4-3)
+                    # owner_locked 는 AAS_MANAGED 이름(LLM_*·HERMES_LLM_*)에만 붙는다. 이 이름들은 AAS_OWNER_ENV_URLS 에 적어도 모델·플랫폼
+                    # 접두어로 잠기므로(owner_url_allowed) 이름 검사 그대로 둔다(스펙 2026-11-24-009 F1)
                     env_rows = [{**e, "owner_locked": True} if e.get("managed_source") == "profile" and owner_guard.env_key_check(e["name"], {})[0] else e
                                 for e in env_rows]
+                    env_rows = _with_allowed_origins(pod, user, a, hit["profile"], env_rows)
                     hit = {**hit, "required_env": env_rows}
                     if mixed:
                         hit["managed_mixed"] = True
@@ -6939,6 +7145,13 @@ class Handler(BaseHTTPRequestHandler):
                     rows = _skills(pod)["skills"]
                     d = skill_deps.dependents(_flow_peek(pod), rows, next(s for s in rows if s["id"] == sid))
                     hit = {**hit, "dependents": d, "delete_block": skill_delete_block(next(s for s in rows if s["id"] == sid), rows, d if d["checked"] else None)}
+                if hit and hit.get("origin") == "protected":
+                    hit = {**hit, "protected": protected_skills.status(pod.id, hit["profile"], hit["name"]) or dict(protected_skills.OFF)}
+                if not hit:                                       # 아직 쓰지 않은 보호 스킬(pending·off) — 목록 줄과 같은 id
+                    prof_, _, rest = sid.partition(":")
+                    skill_ = rest.rpartition("/")[2]
+                    if rest == f"profiles/{prof_}/skills/protected/{skill_}" and skill_ in protected_skills.protected_enabled() and prof_ in _skill_targets(pod):
+                        hit = protected_skills.pending_row(prof_, skill_, protected_skills.status(pod.id, prof_, skill_))
                 self._json(hit or {"error": tr("없는 스킬", "Skill not found")}, 200 if hit else 404)
             elif path == "/api/skill/summary":                # 스킬 AI 요약 읽기(스펙 2026-10-17-002). ?id=<스킬> 또는 ?ns=&name=<마켓 패키지>
                 try:
@@ -7038,8 +7251,14 @@ class Handler(BaseHTTPRequestHandler):
                         owner_name = office.display_name(pod.owner, office.people()) if (not a.enabled or registry().is_admin(user)) and not owner and pod.owner and pod.owner != "*" else ""
                         if manages and not admin and detail.get("env"):    # 주인 화면: 서버가 막는 변수는 잠금 사유를 함께 준다(디자인 결정 2C, TD5)
                             catalog = {r["name"]: r["category"] for r in detail["env"]}
+                            urls = owner_guard.owner_urls()                  # 허용 목록은 요청마다 한 번(스펙 2026-11-24-009 단계 1a)
                             for r in detail["env"]:
-                                r["locked"] = owner_guard.env_key_error(r["name"], catalog)
+                                r["locked"] = owner_guard.env_lock_reason(r["name"], catalog, urls)
+                                origin = owner_guard.owner_url_allowed(r["name"], catalog, urls)
+                                if origin:                                    # 「관리자가 정한 주소 넣기」 단추(단계 1b). 관리자 출처는 비밀값이 아니다
+                                    r["allowed_origin"] = origin
+                            # 아직 넣지 않아 목록에 줄이 없는 이름(?key= 로 여는 새 이름 칸)에도 단추를 보이도록 열 수 있는 이름만 싣는다
+                            detail["allowed_origins"] = {n: o for n in urls if (o := owner_guard.owner_url_allowed(n, catalog, urls))}
                         secure = self._secrets_ok()
                         may = admin or manages                                # 이 서랍의 탭별 권한과 막힌 이유(디자인 결정 1A, TD1). 문장은 화면이 코드로 고른다
                         hidden = bool(detail["profile"].get("hidden_root"))
@@ -7280,12 +7499,7 @@ class Handler(BaseHTTPRequestHandler):
                     except HermesError:
                         runs = []
                     runs = runs.get("runs", []) if isinstance(runs, dict) else runs
-                    try:
-                        tg = api.call("GET", "/api/cron/delivery-targets")
-                        targets = [{"id": str(t.get("id")), "name": str(t.get("name") or t.get("id")), "ready": t.get("home_target_set") is not False}
-                                   for t in (tg.get("targets", []) if isinstance(tg, dict) else tg) if isinstance(t, dict) and t.get("id")]
-                    except HermesError:
-                        targets = []
+                    targets = _job_targets(pod, prof, (not a.enabled) or registry().is_admin(user))
                     raw_job = job.get("job", job) if isinstance(job, dict) else {}
                     ptext = str(raw_job.get("prompt") or "")
                     self._json({"profile": prof, "targets": targets, "muted": mutes.get(prof, jid),
@@ -7365,9 +7579,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": tr("없는 프로파일입니다", "Profile not found")}, 400)
                 else:
                     try:
-                        scoped = None if next((r for r in _profile_rows(pod) if r["name"] == prof), {}).get("is_default") else prof
-                        got = _cached(f"{pod.id}:chanhermes:{prof}:{int(admin)}", 20, lambda: channel_admin.read(HermesAPI(hub(pod).auth), scoped, True))
-                        self._json(_with_link_names(pod, prof, got))
+                        self._json(_with_link_names(pod, prof, _profile_channels(pod, prof, admin)))
                     except HermesError as exc:
                         self._json(_error_body(exc), exc.code)
             elif path == "/api/models":
@@ -7724,6 +7936,71 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(out)
 
+    def _protected_rules_args(self, src: dict, pod: Pod | None) -> tuple[str, str] | None:
+        """(프로파일, 스킬). 요청의 pod 가 지금 작업공간과 다르면 None(쿠키로 고른 작업공간에만 쓴다)."""
+        if pod is None or (src.get("pod") and str(src["pod"]) != pod.id):
+            return None
+        return str(src.get("profile") or ""), str(src.get("skill") or "")
+
+    def _protected_rules_get(self, query: dict, a, user, pod: Pod | None) -> None:
+        """GET /api/protected-skills/rules?pod=&profile=&skill=[&rev=N]. 읽기는 그 작업공간을 볼 수 있는 사람(Q4)."""
+        got = self._protected_rules_args({k: v[0] for k, v in query.items() if v}, pod)
+        if got is None:
+            self._json({"error": tr("AI 에이전트 작업공간이 맞지 않습니다", "The AI Agent Workspace does not match"), "reason": "invalid"}, 400)
+            return
+        prof, skill = got
+        clone_of = _clone_of(pod.id, prof)
+        try:
+            if query.get("rev", [""])[0]:
+                try:
+                    rev = int(query["rev"][0])
+                except ValueError:
+                    self._json({"error": tr("rev 가 숫자가 아닙니다", "rev is not a number"), "reason": "invalid", "field": "rev"}, 400)
+                    return
+                self._json(protected_skills.rules_at(pod.id, prof, skill, rev, clone_of=clone_of))
+                return
+            can = may_change_profile("skill", pod, user, a.enabled, registry().is_admin(user))
+            self._json(protected_skills.rules_view(pod.id, prof, skill, can_write=can, clone_of=clone_of))
+        except protected_skills.RulesError as exc:
+            self._json(exc.body(), exc.status)
+
+    def _protected_rules_post(self, path: str, body: dict, a, user, pod: Pod | None) -> None:
+        """설치 규칙 쓰기. 저장 · 되돌리기 · 확인함은 사람의 화면 세션만 — MCP 도구 · 임베드 위젯은 같은 프로세스 안에서 principal 을 싣고
+        부르므로(_same_origin 이 통과시킨다) principal 을 먼저 보고, 토큰 요청(actor_via=token)도 거절한다(4-3 「사람만」).
+        미리보기는 저장하지 않아 읽기 권한만 본다."""
+        got = self._protected_rules_args(body, pod)
+        if got is None:
+            self._json({"error": tr("AI 에이전트 작업공간이 맞지 않습니다", "The AI Agent Workspace does not match"), "reason": "invalid"}, 400)
+            return
+        prof, skill = got
+        writes = not path.endswith("/preview")
+        if writes and (getattr(self, "principal", None) is not None or store.actor_via.get() == "token"):
+            self._json({"error": tr("사람이 AAS 스킬 화면의 「설치 규칙」에서 고칩니다", "A person edits this in Install rules on the AAS skill screen"),
+                        "reason": "human_only"}, 403)
+            return
+        if writes and not may_change_profile("skill", pod, user, a.enabled, registry().is_admin(user)):
+            self._json({"error": tr("편집 권한이 있는 사람(소유자·팀 관리자·「편집」으로 공유받은 사람·관리자)에게 요청하세요",
+                                    "Ask someone with edit access (owner, team admin, people shared with Edit, admin)"), "reason": "forbidden"}, 403)
+            return
+        who = (user or {}).get("email", "local")
+        clone_of = _clone_of(pod.id, prof)
+        try:
+            if path.endswith("/preview"):
+                out = protected_skills.preview_rules(pod.id, prof, skill, str(body.get("text") or ""), clone_of=clone_of)
+            elif path.endswith("/restore"):
+                out = protected_skills.restore_rules(pod.id, prof, skill, body.get("rev"), body.get("base_rev"), who, clone_of=clone_of)
+            elif path.endswith("/ack"):
+                out = protected_skills.ack_rules(pod.id, prof, skill, body.get("rev"), who, clone_of=clone_of)
+            else:
+                out = protected_skills.save_rules(pod.id, prof, skill, body.get("text"), body.get("base_rev"), who, str(body.get("note") or ""),
+                                                  clone_of=clone_of)
+        except protected_skills.RulesError as exc:
+            self._json(exc.body(), exc.status)
+            return
+        if writes:
+            store.log_usage("protected_skill_rules", f"{who} {prof} {skill} {path.rsplit('/', 1)[-1]} {out.get('rev')}", pod=pod.id)
+        self._json({"ok": True, **out})
+
     def _skill_delete(self, a, user, pod: Pod, body: dict) -> None:
         """POST /api/skill/delete {id} — 내가 만들거나 올린 스킬(출처 local·agent)을 Hermes 보관함(skills/.archive)으로 옮긴다(스펙 2026-10-29-005).
         항목은 서버가 스킬 목록에서 id 로 찾고, 권한·출처·같은 이름·이름 규칙을 그 항목으로 다시 본다(R1·R8·R10). Hermes 가 실패하거나 늦으면
@@ -7832,7 +8109,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/auth/password":
                 self._password_login()
                 return
-            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/settings/login", "/api/settings/login/bulk", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, *SHARING_WRITES, "/api/market/install", "/api/market/grant", "/api/market/grants", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/check", "/api/market/publish/decide", "/api/market/publish/withdraw", "/api/market/publish/auto", "/api/market/template/publish", "/api/market/template/unpublish", "/api/market/template/post-retry", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/market/work-prefixes", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel", EMBED_APPS_PATH, *RESTART_PENDING_WRITES)):
+            if not (path.startswith("/api/chat/") or path.startswith(OFFICE_REST) or path in ("/api/session/touch", "/api/settings", "/api/notices", TTS_PREVIEW_PATH, "/api/soul-templates", "/api/soul-templates/render", "/api/models/probe", "/api/pod", "/api/registry", "/api/cron/action", "/api/file/save", "/api/file/revert", "/api/file/preview", "/api/profile/action", "/api/cron/mute", "/api/cron/note", "/api/text/label", "/api/skill/create", "/api/skill/upload", "/api/skill/apply", "/api/skill/delete", *PROTECTED_RULES_WRITES, "/api/users/logout", "/api/users/set", *USER_WRITES, *DEPARTMENT_WRITES, *SELF_WRITES, *TOKEN_WRITES, "/api/office/action", "/api/office/layout", "/api/office/presence", "/api/office/face", "/api/office/inbox/answer", "/api/requests", "/api/settings/goal", "/api/settings/goal/suggest", "/api/settings/login", "/api/settings/login/bulk", "/api/office/brief/suggest", "/api/agents", "/api/agents/delete", "/api/agents/limit", "/api/agents/resume", "/api/agents/owner", "/api/agents/update", *ROLLOUT_WRITES, *SIZE_WRITES, *SHARING_WRITES, "/api/market/install", "/api/market/grant", "/api/market/grants", "/api/market/remove", "/api/market/restore", "/api/market/updates/queue", "/api/market/updates/skip", "/api/market/updates/seen", "/api/market/updates/auto", "/api/profile/issue/ack", "/api/market/publish", "/api/market/publish/check", "/api/market/publish/decide", "/api/market/publish/withdraw", "/api/market/publish/auto", "/api/market/template/publish", "/api/market/template/unpublish", "/api/market/template/post-retry", *HUB_ADMIN_WRITES, "/api/market/tags/refresh", "/api/market/work-prefixes", "/api/skill/summary", "/api/skill/retranslate", "/api/mcp/oauth/start", "/api/mcp/oauth/cancel", EMBED_APPS_PATH, *RESTART_PENDING_WRITES)):
                 self._json({"error": "not found"}, 404)
                 return
             if not self._same_origin():
@@ -8130,6 +8407,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/skill/delete":                  # 내 스킬을 Hermes 보관함으로(스펙 2026-10-29-005)
                 self._skill_delete(a, user, pod, body)
+                return
+            if path in PROTECTED_RULES_WRITES:               # 보호 스킬 설치 규칙 저장 · 되돌리기 · 미리보기 · 확인함(스펙 2026-11-24-001)
+                self._protected_rules_post(path, body, a, user, pod)
                 return
             if path == "/api/skill/create":                  # 새 스킬 — Hermes 의 스킬 API 가 만들고 검사한다
                 refused = content_gate(pod, user, a.enabled, registry().is_admin(user), str(body.get("profile") or primary.primary_of(pod.id)))
@@ -8557,6 +8837,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(out)
                 return
             if path == "/api/profile/action":                # 프로파일을 바꾸는 일 — 전부 Hermes 대시보드 API 로 보낸다
+                # _ 로 시작하는 키는 서버가 정하는 내부 값이다(_owner·_secure·_sub·_import·_cookie 는 아래에서 다시 넣는다). 클라이언트가 보낸 것은
+                # 모두 버린다 — 전에는 _create_locked 를 보내면 만들기 잠금을 건너뛰었다(스펙 2026-11-21-002 엔지니어링 재검토 「내부 표시」)
+                for k in [k for k in body if str(k).startswith("_")]:
+                    body.pop(k, None)
                 # 화면이 보던 에이전트와 쿠키의 에이전트가 다르면 거절한다(스펙 2026-10-19-011 R1 ③). 다른 탭에서 에이전트를 바꾼 뒤
                 # 이 탭에서 저장하면 옛 에이전트의 글이 새 에이전트에 들어갔다. expect_pod 가 없는 옛 화면·다른 호출은 그대로 통과
                 expect = str(body.pop("expect_pod", "") or "")
@@ -8623,10 +8907,17 @@ class Handler(BaseHTTPRequestHandler):
                                 usage_hours.rename_profile(pod.id, str(body.get("name") or ""), str(out.get("name") or ""))
                         except Exception as exc:                 # noqa: BLE001 — 프로파일은 이미 바뀌었다
                             print(f"사용 집계 칸 정리 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
+                        try:                                     # 보호 스킬 켬 기록도 따라가게(스펙 2026-11-21-003 §3-2) — 안 옮기면 새 이름에서 꺼지고 옛 이름 행은 주기가 지운다
+                            if action == "delete":
+                                protected_skills.forget_profile(pod.id, str(body.get("name") or ""))
+                            else:
+                                protected_skills.rename_profile(pod.id, str(body.get("name") or ""), str(out.get("name") or ""))
+                        except Exception as exc:                 # noqa: BLE001 — 프로파일은 이미 바뀌었다
+                            print(f"보호 스킬 기록 정리 실패 {pod.id}: {type(exc).__name__}", flush=True)   # i18n-ignore: 로그
                     # 프로파일이 생기거나 없어질 때만 전부 새로 읽는다. 그 밖에는 프로파일 상태에 딸린 것만 버린다(다음 화면이 빨리 뜨게).
                     # 비밀값을 넣거나 지우고(.env 줄) 설정 파일을 고치거나 되돌리고(providers 의 api_key, mcp_servers 의 env·headers)
                     # 모델을 바꾸면(Hermes 가 config.yaml 을 다시 써 providers 의 base_url 등이 바뀐다) 자격증명 표가 바뀌므로 그 캐시(120초)는 남기지 않는다(OMAI-1175)
-                    kept = ("flow", "tools", "libraries", "skills", "observed", "activity7", "activity30") if action in ("env_set", "env_clear", "config", "config_revert", "model", "mcp_add", "mcp_remove", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_to_oauth", "channel_save", "channel_test", "pairing_approve", "pairing_revoke") else \
+                    kept = ("flow", "tools", "libraries", "skills", "observed", "activity7", "activity30") if action in ("env_set", "env_clear", "config", "config_revert", "model", "mcp_add", "mcp_remove", "mcp_install", "mcp_docmost_write", "mcp_outline_write", "mcp_to_oauth", "channel_save", "channel_remove", "channel_test", "pairing_approve", "pairing_revoke") else \
                         ("flow", "credentials", "credentials_nousage", "tools", "libraries", "skills", "observed", "activity7", "activity30")
                     if action in ("config", "config_revert", "mcp", "mcp_add", "mcp_remove", "mcp_install", "mcp_to_oauth"):          # 도구 화면의 MCP 서버 목록이 config.yaml 의 mcp_servers 를 읽는다(OMAI-1249)
                         kept = tuple(k for k in kept if k != "tools")
@@ -9765,6 +10056,7 @@ def start_background() -> None:
     threading.Thread(target=_identity_loop, daemon=True, name="aas-identity").start()
     threading.Thread(target=_market_tag_loop, daemon=True, name="aas-market-tags").start()
     threading.Thread(target=_skill_desc_loop, daemon=True, name="aas-skill-desc").start()
+    threading.Thread(target=_protected_loop, daemon=True, name="aas-protected-skills").start()
     threading.Thread(target=_lifecycle_loop, daemon=True, name="aas-lifecycle").start()
     threading.Thread(target=market_dispatch.loop, args=(k8s.client, lambda: {a["name"] for a in registry().agents}),
                      kwargs={"get_home": lambda pod: next((p.hermes_home for p in registry().pods if p.id == pod), None),   # 덮기 전에 그 POD 의 프로파일을 읽어 고친 스킬을 지킨다(스펙 2026-10-14-015)

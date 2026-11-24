@@ -106,6 +106,9 @@ def _target_profile(pod, profile: str, exists: bool = False) -> str:
         raise _Denied("root_profile", 409)                       # Hermes·오퍼레이터가 profiles/<이름> 만 다룬다
     if pc_import.reserved_name(profile):
         raise _Denied("bad_profile", 400)
+    from ..ops import mindwiki_webhook
+    if mindwiki_webhook.reserved_auto_name(profile):             # MindWiki 자동화 프로파일(스펙 2026-11-21-002 §3-2 3)
+        raise _Denied("bad_profile", 400)
     if exists:
         try:
             listed = _api(pod).call("GET", "/api/profiles").get("profiles", [])

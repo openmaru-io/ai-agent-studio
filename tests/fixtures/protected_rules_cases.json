@@ -1,0 +1,23 @@
+{
+  "_about": "보호 스킬 설치 규칙 글 검사 사례(cogentai-aas-docs 스펙 2026-11-24-001 4-3). Python 시험(tests/test_protected_skill_rules.py)과 화면 Vitest 가 함께 읽어 두 검사가 갈라지지 않게 한다. check 가 null 이면 통과.",
+  "limits": {"max_chars": 8000, "keep": 20, "note_max": 200, "poll_s": 10, "poll_max_s": 120},
+  "cases": [
+    {"name": "plain", "text": "- 게시 답변 끝에 담당 부서 이름을 한 줄 넣는다.", "check": null, "line": 0},
+    {"name": "h3 is allowed", "text": "### 맺음말\n- 담당 부서를 적는다.", "check": null, "line": 0},
+    {"name": "bullets and numbers", "text": "1. 첫째\n2. 둘째\n- 셋째\n  - 넷째", "check": null, "line": 0},
+    {"name": "h2", "text": "첫 줄\n## 다른 절", "check": "heading", "line": 2},
+    {"name": "h1", "text": "# 제목", "check": "heading", "line": 1},
+    {"name": "indented h2", "text": "   ## x", "check": "heading", "line": 1},
+    {"name": "bare hashes", "text": "##", "check": "heading", "line": 1},
+    {"name": "setext equals", "text": "제목\n===", "check": "setext", "line": 2},
+    {"name": "setext dashes", "text": "제목\n---", "check": "setext", "line": 2},
+    {"name": "hr spaced dashes", "text": "앞\n- - -", "check": "hr", "line": 2},
+    {"name": "hr stars", "text": "***", "check": "hr", "line": 1},
+    {"name": "hr underscores", "text": "앞 줄\n___", "check": "hr", "line": 2},
+    {"name": "comment open", "text": "규칙 <!-- 몰래", "check": "comment", "line": 1},
+    {"name": "comment close", "text": "규칙\n끝 -->", "check": "comment", "line": 2},
+    {"name": "redaction mark", "text": "키는 «가림» 이다", "check": "redaction", "line": 1},
+    {"name": "secret token", "text": "토큰\nAPI_KEY=sk-live-abcdefghijklmnopqrstuvwxyz0123456789", "check": "secret", "line": 2},
+    {"name": "nul", "text": "a\u0000b", "check": "nul", "line": 0}
+  ]
+}
